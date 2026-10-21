@@ -6,6 +6,7 @@ import os
 import sqlite3
 import socket
 import re
+import sys
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -20,9 +21,15 @@ PORT = int(os.environ.get("CAR_PORT", "8787"))
 TIME_RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
 LOG = logging.getLogger("car-dashboard")
 TILE_ROOT = Path(os.environ.get("CAR_MAP_TILES", "/var/lib/car-dashboard/tiles"))
-TILE_ROUTE = re.compile(r"^/tiles/([0-9]{1,2})/([0-9]{1,8})/([0-9]{1,8})\\.png$")
+TILE_ROUTE = re.compile(r"^/tiles/([0-9]{1,2})/([0-9]{1,8})/([0-9]{1,8})\.png$")
 
 
+
+sys.path.insert(0, str(WEB_DIR.parent.parent))
+from control.config_core import read_config
+
+CONFIG_FILE = Path(os.environ.get("CAR_UI_CONFIG", "/etc/car-dashboard/ui-config.json"))
+OVERRIDE_DIR = Path(os.environ.get("CAR_OVERRIDE_DIR", "/var/lib/car-dashboard/overrides"))
 
 def connect():
     """No file creation and no SQL writes; don't use immutable with a live recorder."""
@@ -246,8 +253,18 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         if url.path in STATIC:
             filename, mime = STATIC[url.path]
-            self.send_bytes((WEB_DIR / filename).read_bytes(), mime=mime, cache="public, max-age=120")
+            allowed = {"cockpit.html","cockpit.css","cockpit.js","index.html","styles.css","app.js"}
+            original = WEB_DIR / filename
+            override = OVERRIDE_DIR / "app" / "web" / filename
+            path = override if filename in allowed and override.is_file() else original
+            self.send_bytes(path.read_bytes(), mime=mime, cache="no-store")
             return
+        if url.path == "/api/ui-config":
+            try:
+                return self.send_json(read_config(CONFIG_FILE))
+            except (OSError, ValueError, TypeError) as exc:
+                LOG.warning("Ignoring invalid UI configuration: %s", exc)
+                return self.send_json({"error": "Invalid UI configuration"}, 503)
         if url.path == "/api/update-status":
             try:
                 revision = subprocess.check_output(
