@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import sqlite3
+import socket
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -17,6 +19,9 @@ HOST = os.environ.get("CAR_BIND", "127.0.0.1")
 PORT = int(os.environ.get("CAR_PORT", "8787"))
 TIME_RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
 LOG = logging.getLogger("car-dashboard")
+TILE_ROOT = Path(os.environ.get("CAR_MAP_TILES", "/var/lib/car-dashboard/tiles"))
+TILE_ROUTE = re.compile(r"^/tiles/([0-9]{1,2})/([0-9]{1,8})/([0-9]{1,8})\\.png$")
+
 
 
 def connect():
@@ -149,11 +154,72 @@ def route_alerts(db):
     return alerts
 
 
+def parse_gps_message(message):
+    """Extract a real gpsd TPV 2D/3D position; never invent coordinates."""
+    if not isinstance(message, dict) or message.get("class") != "TPV":
+        return None
+    mode = message.get("mode", 0)
+    try:
+        lat, lon = float(message["lat"]), float(message["lon"])
+        mode = int(mode)
+        if mode < 2 or not all(map(__import__("math").isfinite, (lat, lon))):
+            return None
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            return None
+        return {"fix": True, "lat": lat, "lon": lon, "mode": mode,
+                "source": "gpsd", "time": message.get("time"),
+                "speedMps": message.get("speed")}
+    except (TypeError, ValueError, KeyError, OverflowError):
+        return None
+
+
+def query_gpsd():
+    """One bounded localhost-only gpsd WATCH request, best effort."""
+    result = {"fix": False, "source": "gpsd", "message": "No GNSS fix received"}
+    try:
+        with socket.create_connection(("127.0.0.1", 2947), timeout=0.6) as sock:
+            sock.settimeout(0.75)
+            sock.sendall(b'?WATCH={"enable":true,"json":true};\n')
+            with sock.makefile("rb") as stream:
+                for _ in range(12):
+                    try:
+                        raw = stream.readline(8192)
+                    except (TimeoutError, OSError):
+                        break
+                    if not raw:
+                        break
+                    try:
+                        message = json.loads(raw.decode("utf-8"))
+                    except (UnicodeError, ValueError):
+                        continue
+                    position = parse_gps_message(message)
+                    if position is not None:
+                        return position
+        return result
+    except OSError:
+        return {"fix": False, "source": "gpsd", "message": "GPS daemon not connected"}
+
+
+def local_tile_path(path):
+    """Resolve only numeric XYZ PNG tiles below the configured local tile folder."""
+    matched = TILE_ROUTE.fullmatch(path)
+    if not matched:
+        return None
+    z, x, y = map(int, matched.groups())
+    if z < 0 or z > 19 or x >= 2 ** z or y >= 2 ** z:
+        return None
+    return TILE_ROOT / str(z) / str(x) / (str(y) + ".png")
+
+
 ROUTES = {"/api/live": route_live, "/api/summary": route_summary,
           "/api/sensors": route_sensors, "/api/snapshots": route_snapshots,
           "/api/events": route_events, "/api/trips": route_trips,
           "/api/alerts": route_alerts}
-STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
+STATIC = {"/": ("cockpit.html", "text/html; charset=utf-8"),
+          "/cockpit.html": ("cockpit.html", "text/html; charset=utf-8"),
+          "/classic.html": ("index.html", "text/html; charset=utf-8"),
+          "/cockpit.css": ("cockpit.css", "text/css; charset=utf-8"),
+          "/cockpit.js": ("cockpit.js", "text/javascript; charset=utf-8"),
           "/index.html": ("index.html", "text/html; charset=utf-8"),
           "/styles.css": ("styles.css", "text/css; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8")}
@@ -182,6 +248,18 @@ class Handler(BaseHTTPRequestHandler):
             filename, mime = STATIC[url.path]
             self.send_bytes((WEB_DIR / filename).read_bytes(), mime=mime, cache="public, max-age=120")
             return
+        if url.path == "/api/gps":
+            return self.send_json(query_gpsd())
+        tile = local_tile_path(url.path)
+        if tile is not None:
+            try:
+                if not tile.is_file() or tile.stat().st_size > 2097152:
+                    return self.send_json({"error": "Local map tile missing"}, 404)
+                return self.send_bytes(tile.read_bytes(), mime="image/png", cache="public, max-age=86400")
+            except OSError:
+                return self.send_json({"error": "Local map tile unavailable"}, 404)
+        if url.path.startswith("/tiles/"):
+            return self.send_json({"error": "Invalid tile path"}, 404)
         if url.path == "/api/build":
             # Read installed Git revision, so an already-open kiosk reloads after a dashboard update.
             try:
