@@ -33,6 +33,13 @@ X-GNOME-Autostart-enabled=true
 EOF
 chmod 0644 "$TMP"
 mv "$TMP" "$HOME/.config/autostart/car-dashboard-kiosk.desktop"
+# A previously configured software-only monitor can hide a later physical touchscreen.
+# Warn instead of removing it during SSH/MeshCentral installation.
+if [[ -f /etc/X11/xorg.conf.d/90-car-headless.conf ]]; then
+  echo "NOTICE: the headless Xorg dummy-monitor configuration is still enabled."
+  echo "When your real touchscreen is connected, disable that file and reboot to use the real screen."
+  echo "Do not remove it while relying on a headless MeshCentral desktop connection."
+fi
 sudo python3 "$ROOT/deploy/kiosk-gdm.py" enable "$LOGIN_USER"
 echo "Kiosk enabled for $LOGIN_USER on next reboot; current display session untouched."
 echo "Physical access can expose this user's files and privileges. See README."
