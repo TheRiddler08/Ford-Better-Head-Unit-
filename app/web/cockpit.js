@@ -5,7 +5,7 @@ const state = {
   view: "home", priorView: "home", units: "us", theme: "night",
   live: {}, freshness: null, sensors: [], summary: null, gps: null,
   tilesZoom: 13, currentTrack: -1, tracks: [], currentUrl: null,
-  build: null, mapTicket: 0, toastTimer: null
+  build: null, mapTicket: 0, toastTimer: null, uiConfigRevision: -1, obdPoller: null
 };
 const nf = (v, digits=0) => v === null || v === undefined || !Number.isFinite(Number(v)) ?
   "—" : Number(v).toLocaleString(undefined,{maximumFractionDigits:digits});
@@ -242,6 +242,35 @@ async function refreshUpdates(){
     $("updateConfigRevision").textContent="Configuration revision: "+status.configRevision;
   }catch(err){$("updateRevision").textContent="Could not read update status: "+err.message;}
 }
+async function refreshRemoteConfiguration(){
+  let config;
+  try{config=await api("/api/ui-config");}
+  catch(_){return;}
+  if(!config || !config.home || config.revision===state.uiConfigRevision)return;
+  state.uiConfigRevision=config.revision;
+  if(config.theme) setTheme(config.theme);
+  if(config.units) setUnits(config.units);
+  for(const [component,settings] of Object.entries(config.home)){
+    const item=document.querySelector('[data-widget="'+component+'"]');
+    if(!item || !settings)continue;
+    item.hidden=!settings.visible;
+    // Flex-group order is applied independently in left/right stacks; the map
+    // remains the center region to keep the landscape driving layout usable.
+    item.style.order=String(settings.order);
+  }
+  for(const [page,shown] of Object.entries(config.nav||{})){
+    for(const item of document.querySelectorAll('[data-view="'+page+'"]')){
+      if(item.classList.contains("rail-item"))item.hidden=!shown;
+    }
+  }
+  const vehicleHeading=document.querySelector(".vehicle-art-title .eyebrow");
+  if(vehicleHeading && config.labels)vehicleHeading.textContent=config.labels.vehicle;
+  const brand=document.querySelector(".top-center .small-brand");
+  if(brand && config.labels)brand.textContent=config.labels.dashboard;
+  const interval=Number(config.telemetry&&config.telemetry.pollSeconds)||3;
+  if(state.obdPoller)clearInterval(state.obdPoller);
+  state.obdPoller=setInterval(pollOBD,Math.max(2,Math.min(60,interval))*1000);
+}
 function attach(){
   document.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>show(button.dataset.view)));
   document.querySelectorAll("[data-unavailable]").forEach(button=>button.addEventListener("click",()=>notice(button.dataset.unavailable)));
@@ -292,7 +321,9 @@ function main(){
   catch(_){setTheme("night");setUnits("us");}
   clock();pollOBD();pollGPS();watchBuild();
   setInterval(clock,15000);
-  setInterval(pollOBD,3000);
+  state.obdPoller=setInterval(pollOBD,3000);
+  refreshRemoteConfiguration();
+  setInterval(refreshRemoteConfiguration,45000);
   setInterval(pollGPS,12000);
   setInterval(watchBuild,30000);
   setInterval(()=>{if(state.view==="vehicle")refreshVehicle();else if(state.view==="diagnostics")refreshDiagnostics();},60000);
