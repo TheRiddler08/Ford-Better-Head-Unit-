@@ -54,6 +54,7 @@ WantedBy=multi-user.target
 EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now car-dashboard.service
+bash "$ROOT/deploy/install-recorder.sh"
 # Install the dashboard kiosk by default. Opt out with CAR_KIOSK=0.
 # Do not reboot or restart GDM: remote MeshCentral sessions stay connected.
 if [[ "${CAR_KIOSK:-1}" == "1" ]]; then
@@ -64,5 +65,5 @@ else
 fi
 printf '\nDashboard installed: http://127.0.0.1:8787\n'
 printf 'Service status: sudo systemctl status car-dashboard --no-pager\n'
-printf 'OBD recorder service was not changed.\n'
+printf 'OBD recorder installed with dashboard.\n'
 printf 'GitHub auto-updates are OFF. Run bash deploy/enable-updates.sh after pushing the repository.\n'
