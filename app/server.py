@@ -248,6 +248,28 @@ class Handler(BaseHTTPRequestHandler):
             filename, mime = STATIC[url.path]
             self.send_bytes((WEB_DIR / filename).read_bytes(), mime=mime, cache="public, max-age=120")
             return
+        if url.path == "/api/update-status":
+            try:
+                revision = subprocess.check_output(
+                    ["git", "-C", str(WEB_DIR.parent.parent), "rev-parse", "--short", "HEAD"],
+                    stderr=subprocess.DEVNULL, timeout=2).decode().strip()
+            except (OSError, subprocess.SubprocessError):
+                revision = "unknown"
+            try:
+                result = subprocess.run(["systemctl", "is-enabled", "car-dashboard-update.timer"],
+                                        capture_output=True, text=True, timeout=2, check=False)
+                timer = "GitHub update timer: " + result.stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                timer = "GitHub update timer: unavailable"
+            try:
+                cfg = json.loads(Path(os.environ.get("CAR_UI_CONFIG", "/etc/car-dashboard/ui-config.json")).read_text())
+                config_rev = int(cfg.get("revision", 0))
+            except (OSError, ValueError, TypeError):
+                config_rev = 0
+            return self.send_json({"revision": revision, "updateTimer": timer,
+                                   "lorawan": "Not configured (radio driver and network server required)",
+                                   "configRevision": config_rev,
+                                   "packagesExecutable": False})
         if url.path == "/api/gps":
             return self.send_json(query_gpsd())
         tile = local_tile_path(url.path)

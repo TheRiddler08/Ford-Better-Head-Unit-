@@ -18,6 +18,7 @@
     <button class="rail-item" data-view="media" aria-label="Media"><span class="ico">♫</span><span>Media</span></button>
     <button class="rail-item" data-view="vehicle" aria-label="Vehicle"><span class="ico">▰</span><span>Vehicle</span></button>
     <button class="rail-item" data-view="diagnostics" aria-label="Diagnostics"><span class="ico">⚙</span><span>Health</span></button>
+    <button class="rail-item" data-view="updates" aria-label="Updates"><span class="ico">↻</span><span>Updates</span></button>
     <button class="rail-item rail-settings" data-view="settings" aria-label="Settings"><span class="ico">☷</span><span>Settings</span></button>
   </nav>
 
@@ -154,6 +155,15 @@
       <div class="glass notice" id="sensorNotice">Checking sensor quality…</div>
     </section>
 
+    <section class="view view-panel" id="view-updates" aria-labelledby="updatesTitle">
+      <div class="panel-heading"><div><span class="eyebrow">SYSTEM DELIVERY</span><h1 id="updatesTitle">Updates &amp; synchronization</h1><p>GitHub is the full-update source. LoRaWAN configuration and patch transport requires a configured gateway.</p></div></div>
+      <div class="settings-grid">
+        <div class="glass setting-box"><h2>Installed software</h2><p id="updateRevision">Checking installed revision…</p><p id="updateAuto">Update timer status is managed by systemd.</p></div>
+        <div class="glass setting-box"><h2>LoRaWAN connection</h2><p id="updateRadio">No gateway transport is connected yet.</p><p>UI and recorder changes require signed and validated packages before application. No unverified radio commands are executed.</p></div>
+        <div class="glass setting-box"><h2>Remote configuration</h2><p id="updateConfigRevision">Loading configuration…</p><p>Control-panel changes use versioned leaf-field deltas. Last known settings remain usable offline.</p></div>
+        <div class="glass setting-box"><h2>Delivery policy</h2><p>Verified approved updates are mandatory when a delivery channel is available. Integrity, rollback, and safe vehicle operation still take priority.</p><button class="subtle-button" id="updateRefresh">Refresh update status</button></div>
+      </div>
+    </section>
     <section class="view view-panel" id="view-settings" aria-labelledby="settingsTitle">
       <div class="panel-heading"><div><span class="eyebrow">PREFERENCES</span><h1 id="settingsTitle">Display settings</h1><p>Settings stay in the local browser on this head unit.</p></div></div>
       <div class="settings-grid">
@@ -173,7 +183,7 @@
         <button class="app-tile" data-unavailable="Podcasts integration is not connected yet. You can play downloaded audio files in Music." aria-label="Podcasts (not connected)"><span class="app-icon podcasts">◉</span><span>Podcasts</span></button>
         <button class="app-tile" data-view="vehicle" aria-label="Vehicle"><span class="app-icon vehicle">▰</span><span>Vehicle</span></button>
         <button class="app-tile" data-view="diagnostics" aria-label="Diagnostics"><span class="app-icon diag">✚</span><span>Health</span></button>
-        <button class="app-tile" data-view="settings" aria-label="More apps"><span class="app-icon more">▦</span><span>More</span></button>
+        <button class="app-tile" data-view="updates" aria-label="Updates"><span class="app-icon more">↻</span><span>Updates</span></button>
       </div>
       <div class="controlbar">
         <div class="sound-controls"><span aria-hidden="true">◖))</span><label for="audioVolume">MEDIA VOLUME</label><input id="audioVolume" type="range" min="0" max="100" value="65" aria-label="Media volume"><span id="volumeLabel">65%</span></div>

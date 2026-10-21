@@ -55,6 +55,7 @@ function show(view){
   if(view==="vehicle")refreshVehicle();
   if(view==="diagnostics")refreshDiagnostics();
   if(view==="navigation")renderGPS();
+  if(view==="updates")refreshUpdates();
 }
 function setTheme(theme){
   state.theme=theme==="day"?"day":"night";
@@ -232,9 +233,19 @@ function syncAudio(){
   const fraction=Number.isFinite(audio.duration)&&audio.duration>0?(audio.currentTime/audio.duration*100):0;
   $("mediaSeek").value=String(fraction);
 }
+async function refreshUpdates(){
+  try{
+    const status=await api("/api/update-status");
+    $("updateRevision").textContent="Git revision: "+(status.revision||"unknown");
+    $("updateAuto").textContent=status.updateTimer || "Auto-update timer not detected";
+    $("updateRadio").textContent=status.lorawan || "LoRaWAN adapter not configured";
+    $("updateConfigRevision").textContent="Configuration revision: "+status.configRevision;
+  }catch(err){$("updateRevision").textContent="Could not read update status: "+err.message;}
+}
 function attach(){
   document.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>show(button.dataset.view)));
   document.querySelectorAll("[data-unavailable]").forEach(button=>button.addEventListener("click",()=>notice(button.dataset.unavailable)));
+  $("updateRefresh").addEventListener("click",refreshUpdates);
   $("backButton").addEventListener("click",()=>show(state.priorView||"home"));
   $("quickTheme").addEventListener("click",()=>setTheme(state.theme==="night"?"day":"night"));
   $("setNight").addEventListener("click",()=>setTheme("night"));
