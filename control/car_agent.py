@@ -60,11 +60,11 @@ def apply_message(message, path=CONFIG):
             raise ValueError("Malformed config delta")
         current=read_config(path)
         rev=payload["revision"]
-        if rev!=current["revision"]+1:
+        if type(rev) is not int or rev!=current["revision"]+1:
             raise ValueError("Configuration dependency missing; request an earlier revision")
         changed=apply_changes(current,rev,payload["changes"])
         write_config(path,changed)
-        return {"revision":rev,"applied":True,"kind":"configuration"}
+        return {"revision":message["sequence"],"configRevision":rev,"applied":True,"kind":"configuration"}
     if kind in ("ui-patch","recorder-patch"):
         from control.patches import install_patch
         repo=Path(os.getenv("CAR_CODE_REPO",str(Path(__file__).resolve().parents[1])))
