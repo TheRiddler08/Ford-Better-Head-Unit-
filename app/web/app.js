@@ -47,4 +47,22 @@ async function refreshTrips(){try{const sessions=await get('/api/trips');$('trip
 async function refreshDiagnostics(){try{const [snap,ev]=await Promise.all([get('/api/snapshots'),get('/api/events')]);$('snapshotsList').innerHTML=snap.map(s=>`<div class="event-row"><div><strong>Scan #${n(s.id)} · ${esc((s.stage||'unknown').replaceAll('_',' '))}</strong><p>${n(s.successes)} / ${n(s.total)} successful responses</p></div><span class="time">${esc(date(s.started,true))}</span></div>`).join('')||'<div class="empty-text">No snapshots yet</div>';$('eventsList').innerHTML=ev.map(e=>`<div class="event-row"><div><strong>${esc((e.name||'unknown').replaceAll('_',' '))}</strong><p>${esc(e.detail)}</p></div><span class="time">${esc(date(e.ts,true))}</span></div>`).join('')||'<div class="empty-text">No events yet</div>';}catch(err){$('snapshotsList').textContent=err.message;$('eventsList').textContent=err.message;}}
 function show(page){state.page=page;document.querySelectorAll('.page').forEach(e=>e.classList.toggle('active',e.id===`page-${page}`));document.querySelectorAll('.nav-btn').forEach(e=>e.classList.toggle('selected',e.dataset.page===page));$('pageBreadcrumb').textContent=page.toUpperCase();if(page==='sensors')refreshSensors();else if(page==='trips')refreshTrips();else if(page==='diagnostics')refreshDiagnostics();else{refreshChart();refreshSummary();refreshAlerts();}}
 function init(){document.querySelectorAll('.nav-btn').forEach(x=>x.addEventListener('click',()=>show(x.dataset.page)));$('chartSensor').addEventListener('change',refreshChart);$('chartPeriod').addEventListener('change',refreshChart);$('sensorSearch').addEventListener('input',renderSensors);$('unitSelect').addEventListener('change',e=>{state.units=e.target.value;renderGauges();renderChart();if(state.page==='trips')refreshTrips();});$('refreshBtn').addEventListener('click',()=>{pollLive();refreshSummary();refreshChart();refreshAlerts();});pollLive();refreshSummary();refreshChart();refreshAlerts();setInterval(pollLive,3000);setInterval(()=>{if(state.page==='overview'){refreshSummary();refreshAlerts();refreshChart();}},60000);}
+let initialKioskBuild = null;
+async function checkForKioskUpdate(){
+  try {
+    const build = await get('/api/build');
+    if(!build.revision || build.revision === 'not-a-git-checkout')return;
+    if(initialKioskBuild !== null && build.revision !== initialKioskBuild){
+      // The updater has installed a new revision; refresh the full-screen view.
+      window.location.reload();
+      return;
+    }
+    initialKioskBuild = build.revision;
+  }catch(err){
+    // Dashboard service may be restarting during updates or the car booting.
+    console.info('Version check unavailable:',err.message);
+  }
+}
 init();
+checkForKioskUpdate();
+setInterval(checkForKioskUpdate,30000);
