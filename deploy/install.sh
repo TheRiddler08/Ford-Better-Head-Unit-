@@ -54,6 +54,14 @@ WantedBy=multi-user.target
 EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now car-dashboard.service
+# Install the dashboard kiosk by default. Opt out with CAR_KIOSK=0.
+# Do not reboot or restart GDM: remote MeshCentral sessions stay connected.
+if [[ "${CAR_KIOSK:-1}" == "1" ]]; then
+  echo 'Configuring automatic desktop login and full-screen dashboard kiosk...'
+  bash "$ROOT/deploy/enable-kiosk.sh"
+else
+  echo 'Kiosk skipped (CAR_KIOSK=0). To enable later: bash deploy/enable-kiosk.sh'
+fi
 printf '\nDashboard installed: http://127.0.0.1:8787\n'
 printf 'Service status: sudo systemctl status car-dashboard --no-pager\n'
 printf 'OBD recorder service was not changed.\n'
