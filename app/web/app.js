@@ -1,7 +1,7 @@
 /* Read-only local UI: no external libraries, trackers or network calls. */
 'use strict';
 const $ = (id) => document.getElementById(id);
-const state = { units: 'us', latest: {}, sensors: [], page: 'overview', chart: null };
+const state = { units: 'us', latest: {}, sensors: [], page: 'overview', chart: null, fresh: false, lastReading: null, theme: 'night' };
 const ICONS = { fuel_zero: '⚠' };
 const n = (value, d=0) => value === null || value === undefined || !Number.isFinite(Number(value)) ? '—' : Number(value).toLocaleString(undefined, {maximumFractionDigits:d,minimumFractionDigits:d});
 const esc = s => String(s ?? '').replace(/[&<>"']/g, x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));
@@ -15,17 +15,74 @@ function unitSpeed(){return state.units==='us'?'MPH':'KM/H';}
 function ageFor(name){return ago(state.latest[name]?.ts);}
 function metric(id, val, digits=0){$(id).textContent=n(val,digits);}
 function meter(id,val,max){$(id).style.width=(val===null?'0':Math.min(100,Math.max(0,(val/max)*100))).toFixed(2)+'%';}
-function renderGauges(){const l=state.latest;
- const sp=speed(value(l.SPEED)), rpm=value(l.RPM), ct=temp(value(l.COOLANT_TEMP)), volts=value(l.CONTROL_MODULE_VOLTAGE);
- metric('speedValue',sp,0);metric('rpmValue',rpm,0);metric('coolantValue',ct,0);metric('voltageValue',volts,2);
- $('speedUnit').textContent=unitSpeed();$('tempUnit').textContent=state.units==='us'?'°F':'°C';
- meter('speedBar',sp,state.units==='us'?110:180);meter('rpmBar',rpm,7000);
- meter('coolantBar',value(l.COOLANT_TEMP),125);meter('voltageBar',volts,16);
- for(const [name,id] of [['SPEED','speedAge'],['RPM','rpmAge'],['COOLANT_TEMP','coolantAge'],['CONTROL_MODULE_VOLTAGE','voltageAge']])$(id).textContent=ageFor(name);
+function arc(id,val,max){
+ const el=$(id);if(!el)return;
+ const fraction = val===null || !Number.isFinite(val) ? 0 : Math.max(0, Math.min(1, val/max));
+ const arcLength = (575*fraction).toFixed(2);
+ el.setAttribute('stroke-dasharray',arcLength+' 767');
 }
-function setOnline(data){const pill=$('statusPill');const online=!!data.fresh;pill.classList.toggle('offline',!online);pill.innerHTML=`<i></i> ${online?'RECENT DATA':'DATA STALE'}`;$('lastSync').textContent=data.lastReading?`Last reading · ${ago(data.lastReading)}`:'No readings yet';}
-async function pollLive(){try{const data=await get('/api/live');state.latest=data.sensors;renderGauges();setOnline(data);$('connectionError').hidden=true;}catch(err){$('connectionError').hidden=false;$('connectionError').textContent=`Data unavailable: ${err.message}. The database path and file permissions may need checking.`;$('statusPill').innerHTML='<i></i> UNAVAILABLE';$('statusPill').classList.add('offline');}}
-async function refreshSummary(){try{const s=await get('/api/summary');metric('totalReadings',s.totalReadings);metric('uniqueSensors',s.sensorCount);metric('totalSnapshots',s.snapshotCount);$('lastRecorded').textContent=s.lastReading?ago(s.lastReading):'—';}catch(err){console.error(err);}}
+function renderGauges(){
+ const l=state.latest;
+ const sp=speed(value(l.SPEED)), rpm=value(l.RPM), ct=temp(value(l.COOLANT_TEMP));
+ const volts=value(l.CONTROL_MODULE_VOLTAGE);
+ const fuel=value(l.FUEL_LEVEL), engineLoad=value(l.ENGINE_LOAD);
+ const intake=temp(value(l.INTAKE_TEMP));
+ metric('speedValue',sp,0);metric('rpmValue',rpm,0);
+ metric('coolantValue',ct,0);metric('voltageValue',volts,2);
+ // Fuel sensor has shown contradictory 0% records. Display raw values, never estimated range.
+ metric('fuelValue',fuel,0);
+ $('speedUnit').textContent=unitSpeed();
+ $('tempUnit').textContent=state.units==='us'?'°F':'°C';
+ const speedMax=state.units==='us'?120:200;
+ meter('speedBar',sp,speedMax);meter('rpmBar',rpm,7000);
+ meter('coolantBar',value(l.COOLANT_TEMP),125);meter('voltageBar',volts,16);
+ meter('fuelBar',fuel,100);
+ arc('speedArc',sp,speedMax);arc('rpmArc',rpm,7000);
+ $('engineLoadValue').textContent=engineLoad===null?'—':n(engineLoad,0)+'%';
+ $('intakeTempValue').textContent=intake===null?'—':n(intake,0)+(state.units==='us'?'°F':'°C');
+ for(const [name,id] of [['SPEED','speedAge'],['RPM','rpmAge'],['COOLANT_TEMP','coolantAge'],
+                         ['CONTROL_MODULE_VOLTAGE','voltageAge'],['FUEL_LEVEL','fuelAge']]){
+   $(id).textContent=ageFor(name);
+ }
+}
+function setOnline(data){
+ const pill=$('statusPill');const online=!!data.fresh;
+ state.fresh=online;state.lastReading=data.lastReading;
+ pill.classList.toggle('offline',!online);
+ pill.innerHTML='<i></i> '+(online?'RECENT DATA':'DATA STALE');
+ $('lastSync').textContent=data.lastReading?'Updated '+ago(data.lastReading):'No readings yet';
+ $('heroState').textContent=online?'Recent OBD readings':data.lastReading?'Recorded data · '+ago(data.lastReading):'No vehicle data yet';
+ document.body.classList.toggle('data-stale',!online);
+ const led=document.querySelector('.band-led');
+ if(led)led.classList.toggle('stale',!online);
+}
+async function pollLive(){
+ try{
+   const data=await get('/api/live');
+   state.latest=data.sensors||{};
+   renderGauges();setOnline(data);
+   $('connectionError').hidden=true;
+ }catch(err){
+   state.fresh=false;
+   $('connectionError').hidden=false;
+   $('connectionError').textContent='Recorder data unavailable: '+err.message+'. Check the database path and permissions.';
+   $('statusPill').innerHTML='<i></i> UNAVAILABLE';
+   $('statusPill').classList.add('offline');
+   $('heroState').textContent='Vehicle data unavailable';
+   document.body.classList.add('data-stale');
+   const led=document.querySelector('.band-led');
+   if(led)led.classList.add('stale');
+ }
+}
+async function refreshSummary(){
+ try{
+   const sum=await get('/api/summary');
+   metric('totalReadings',sum.totalReadings);
+   metric('uniqueSensors',sum.sensorCount);
+   metric('totalSnapshots',sum.snapshotCount);
+   $('lastRecorded').textContent=sum.lastReading?ago(sum.lastReading):'—';
+ }catch(err){console.error('Summary unavailable',err);}
+}
 async function refreshAlerts(){try{const a=await get('/api/alerts');const el=$('alertsContainer');if(!a.length){el.innerHTML='<div class="notice safe"><span>✓</span><span>No suspicious fuel-zero readings identified by the current rule. This does not establish that every sensor is accurate.</span></div>';return;}el.innerHTML=a.map(item=>`<div class="notice"><span>${ICONS[item.code]||'⚠'}</span><span><strong>${esc(item.message)}</strong><br><small>${esc(date(item.ts))}</small></span></div>`).join('');}catch(err){$('alertsContainer').textContent=`Unable to check notices: ${err.message}`;}}
 function chartNumbers(sensor,points){return points.map(p=>({ts:Number(p.ts),y:(sensor==='SPEED'?speed(Number(p.number)):sensor==='COOLANT_TEMP'||sensor==='INTAKE_TEMP'||sensor==='AMBIANT_AIR_TEMP'?temp(Number(p.number)):Number(p.number))})).filter(p=>Number.isFinite(p.y)&&Number.isFinite(p.ts));}
 function renderChart(){const sensor=$('chartSensor').value,payload=state.chart;const svg=$('historyChart'),msg=$('chartMessage');
@@ -45,8 +102,57 @@ async function refreshSensors(){try{state.sensors=await get('/api/sensors');rend
 function renderSensors(){const q=$('sensorSearch').value.trim().toLowerCase();const filtered=state.sensors.filter(x=>x.name.toLowerCase().includes(q));$('sensorTable').innerHTML=filtered.map(s=>`<tr><td>${esc(s.name)}</td><td>${n(s.samples)}</td><td>${n(s.min,2)}</td><td>${n(s.max,2)}</td><td>${n(s.average,2)}</td><td>${esc(ago(s.lastSeen))}</td></tr>`).join('')||'<tr><td colspan="6">No matching sensors</td></tr>';}
 async function refreshTrips(){try{const sessions=await get('/api/trips');$('tripsList').innerHTML=sessions.map((s,i)=>`<article class="session-card"><div class="session-title"><span>SESSION ${String(sessions.length-i).padStart(2,'0')}</span><span class="session-tag">INFERRED</span></div><p class="session-time">${esc(date(s.start))} — ${esc(date(s.end,true))}</p><div class="session-stats"><div><strong>${n(Math.round(s.durationSeconds/60))}<small>MINUTES</small></strong></div><div><strong>${n(speed(s.maxSpeed),0)}<small>MAX ${unitSpeed()}</small></strong></div><div><strong>${n(s.maxRpm,0)}<small>MAX RPM</small></strong></div></div><p class="session-time" style="margin:22px 0 0">Approx. ${n(state.units==='us'?s.distanceKmEstimate*.621371:s.distanceKmEstimate,1)} ${state.units==='us'?'mi':'km'} from sampled speed · ${n(s.speedSamples)} speed readings</p></article>`).join('')||'<div class="panel loading-panel">No speed/RPM sessions saved yet.</div>';}catch(err){$('tripsList').textContent=err.message;}}
 async function refreshDiagnostics(){try{const [snap,ev]=await Promise.all([get('/api/snapshots'),get('/api/events')]);$('snapshotsList').innerHTML=snap.map(s=>`<div class="event-row"><div><strong>Scan #${n(s.id)} · ${esc((s.stage||'unknown').replaceAll('_',' '))}</strong><p>${n(s.successes)} / ${n(s.total)} successful responses</p></div><span class="time">${esc(date(s.started,true))}</span></div>`).join('')||'<div class="empty-text">No snapshots yet</div>';$('eventsList').innerHTML=ev.map(e=>`<div class="event-row"><div><strong>${esc((e.name||'unknown').replaceAll('_',' '))}</strong><p>${esc(e.detail)}</p></div><span class="time">${esc(date(e.ts,true))}</span></div>`).join('')||'<div class="empty-text">No events yet</div>';}catch(err){$('snapshotsList').textContent=err.message;$('eventsList').textContent=err.message;}}
-function show(page){state.page=page;document.querySelectorAll('.page').forEach(e=>e.classList.toggle('active',e.id===`page-${page}`));document.querySelectorAll('.nav-btn').forEach(e=>e.classList.toggle('selected',e.dataset.page===page));$('pageBreadcrumb').textContent=page.toUpperCase();if(page==='sensors')refreshSensors();else if(page==='trips')refreshTrips();else if(page==='diagnostics')refreshDiagnostics();else{refreshChart();refreshSummary();refreshAlerts();}}
-function init(){document.querySelectorAll('.nav-btn').forEach(x=>x.addEventListener('click',()=>show(x.dataset.page)));$('chartSensor').addEventListener('change',refreshChart);$('chartPeriod').addEventListener('change',refreshChart);$('sensorSearch').addEventListener('input',renderSensors);$('unitSelect').addEventListener('change',e=>{state.units=e.target.value;renderGauges();renderChart();if(state.page==='trips')refreshTrips();});$('refreshBtn').addEventListener('click',()=>{pollLive();refreshSummary();refreshChart();refreshAlerts();});pollLive();refreshSummary();refreshChart();refreshAlerts();setInterval(pollLive,3000);setInterval(()=>{if(state.page==='overview'){refreshSummary();refreshAlerts();refreshChart();}},60000);}
+function show(page){
+ state.page=page;
+ document.querySelectorAll('.page').forEach(e=>e.classList.toggle('active',e.id==='page-'+page));
+ document.querySelectorAll('.nav-btn').forEach(e=>{
+   const selected=e.dataset.page===page;
+   e.classList.toggle('selected',selected);
+   if(selected)e.setAttribute('aria-current','page');else e.removeAttribute('aria-current');
+ });
+ $('pageBreadcrumb').textContent=page.toUpperCase();
+ if(page==='sensors')refreshSensors();
+ else if(page==='trips')refreshTrips();
+ else if(page==='diagnostics')refreshDiagnostics();
+ else{refreshChart();refreshSummary();refreshAlerts();}
+}
+function updateClock(){
+ const d=new Date();
+ $('clockTime').textContent=d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+ $('clockDate').textContent=d.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
+}
+function applyTheme(theme){
+ state.theme=theme==='day'?'day':'night';
+ document.documentElement.dataset.theme=state.theme;
+ $('themeToggle').textContent=state.theme==='day'?'☾':'☼';
+ $('themeToggle').setAttribute('aria-label','Switch to '+(state.theme==='day'?'night':'day')+' theme');
+ try{localStorage.setItem('car-dashboard-theme',state.theme);}catch(_err){}
+}
+function init(){
+ document.querySelectorAll('.nav-btn').forEach(x=>x.addEventListener('click',()=>show(x.dataset.page)));
+ $('chartSensor').addEventListener('change',refreshChart);
+ $('chartPeriod').addEventListener('change',refreshChart);
+ $('sensorSearch').addEventListener('input',renderSensors);
+ $('unitSelect').addEventListener('change',e=>{
+   state.units=e.target.value;
+   renderGauges();renderChart();
+   if(state.page==='trips')refreshTrips();
+ });
+ $('refreshBtn').addEventListener('click',()=>{pollLive();refreshSummary();refreshChart();refreshAlerts();});
+ $('themeToggle').addEventListener('click',()=>applyTheme(state.theme==='day'?'night':'day'));
+ $('fullscreenBtn').addEventListener('click',async()=>{
+   try{
+     if(document.fullscreenElement)await document.exitFullscreen();
+     else if(document.documentElement.requestFullscreen)await document.documentElement.requestFullscreen();
+   }catch(err){console.info('Fullscreen unavailable',err);}
+ });
+ try{applyTheme(localStorage.getItem('car-dashboard-theme')||'night');}
+ catch(_err){applyTheme('night');}
+ updateClock();setInterval(updateClock,15000);
+ pollLive();refreshSummary();refreshChart();refreshAlerts();
+ setInterval(pollLive,3000);
+ setInterval(()=>{if(state.page==='overview'){refreshSummary();refreshAlerts();refreshChart();}},60000);
+}
 let initialKioskBuild = null;
 async function checkForKioskUpdate(){
   try {
