@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Car Configuration Panel · Home Server</title><link rel="stylesheet" href="/panel.css"><script defer src="/panel.js"></script></head>
+<body><div class="layout"><aside><div class="brand"><span>◆</span> FORD <b>CONTROL</b><small>HOME SERVER</small></div><p class="muted">Configure the car while offline. Small changes are queued for its next LoRaWAN contact.</p><div class="navtag">CONFIGURATION</div><div class="side-tab current">⚙ &nbsp; Car configuration</div><div class="side-tab">↻ &nbsp; Update queue</div><div class="spacer"></div><div class="side-notice">Authenticated local administration. No arbitrary JavaScript, shell commands or unverified code is delivered over the radio.</div></aside>
+<main><header><div><div class="eyebrow">HEAD UNIT / ADMINISTRATION</div><h1>carConfigurationPanel</h1><p>Manage display modules, navigation, vehicle labels and update delivery.</p></div><div class="pill">● LOCAL SERVER</div></header>
+<section class="login panel" id="loginArea"><h2>Administrator access</h2><p>Enter the control-panel token configured on your home server. It stays in this browser tab's memory.</p><div class="inline"><input type="password" id="adminToken" placeholder="CAR_PANEL_TOKEN" autocomplete="off"><button id="connect">Unlock panel →</button></div><div id="authMessage" class="notice"></div></section>
+<div id="editor" hidden><div class="toolbar panel"><div><label for="device">Car device ID</label><input id="device" value="car-1" pattern="[a-zA-Z0-9_-]+" maxlength="48"></div><div><label>Desired configuration revision</label><strong id="configRevision">—</strong></div><div><label>Pending LoRaWAN transmissions</label><strong id="pendingCount">—</strong></div><button id="refresh">Refresh status</button></div>
+<div class="section-head"><div><h2>Display modules</h2><p>Configure what appears on the main touchscreen. Controls are schema-validated.</p></div><span class="pill neutral">FIELD-LEVEL DELTAS</span></div>
+<div id="moduleCards" class="module-grid"></div>
+<div class="section-head"><div><h2>Display &amp; system preferences</h2><p>Changes stay queued if the car is outside coverage.</p></div></div>
+<div class="panel settings-grid" id="preferences"></div>
+<div class="section-head"><div><h2>Navigation visibility</h2><p>Show or hide application sections. Home and Settings remain accessible for recovery.</p></div></div>
+<div class="panel nav-grid" id="navPreferences"></div>
+<div class="panel commitbar"><div><strong id="pendingEdits">No unsaved changes</strong><small>Settings are validated on the server, versioned and then queued for transmission.</small></div><div class="inline"><button id="reset" class="secondary">Discard edits</button><button id="save">Save &amp; queue for car</button></div></div>
+<div class="section-head"><div><h2>Delivery queue</h2><p>Actual LoRaWAN delivery requires a configured network-server bridge; queued is not the same as received.</p></div></div>
+<div class="panel" id="queueDetails">No delivery information yet.</div>
+</div><footer>CAR CONTROL · VERSIONED SETTINGS · RADIO TRANSPORT REQUIRES GATEWAY</footer></main></div></body></html>
