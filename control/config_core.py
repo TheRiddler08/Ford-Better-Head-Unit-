@@ -71,7 +71,7 @@ def apply_changes(current, revision, changes):
     result = copy.deepcopy(current)
     for path, val in changes.items():
         parts = path.split(".")
-        if len(parts) not in (1, 2) or any(p.startswith("_") for p in parts):
+        if len(parts) not in (1, 2, 3) or any(p.startswith("_") for p in parts):
             raise ValueError("Invalid configuration path")
         target = result
         for part in parts[:-1]:
