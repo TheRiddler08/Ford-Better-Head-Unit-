@@ -50,6 +50,8 @@ bash deploy/install.sh
 
 Installer uses `sudo` only to configure systemd units and `/etc/car-dashboard/dashboard.env`. It **does not** stop or change your recorder.
 
+At the next reboot, a regular install also opens the dashboard full-screen without showing the Ubuntu login screen. See [Boot-to-dashboard kiosk instructions](docs/KIOSK.md) for how it works, security considerations, disabling it, and manual setup. For backend-only installs, use `CAR_KIOSK=0 bash deploy/install.sh`.
+
 Visit **http://127.0.0.1:8787/** through a browser *running on the Lenovo PC*.
 
 If your GUI/physical display is unavailable, test the API through MeshCentral's terminal:
