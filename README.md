@@ -1,8 +1,21 @@
-# Car Console / Telemetry Dashboard
+# Drive Console · Car Head Unit
 
 An offline-capable, read-only web interface for the existing Ubuntu/Python OBD2 recorder. Designed for a Lenovo ThinkCentre M910q with a 2016 Ford and a CH340 USB ELM327 adapter, but it only reads SQLite and can also run without an adapter attached.
 
-![Version](https://img.shields.io/badge/version-1.0.0-55e6c1) ![Dependencies](https://img.shields.io/badge/python-stdlib_only-blue) ![Privacy](https://img.shields.io/badge/data-local_only-lightgrey)
+![Cockpit](https://img.shields.io/badge/touchscreen_UI-v2.0-55e6c1) ![Dependencies](https://img.shields.io/badge/python-stdlib_only-blue) ![Privacy](https://img.shields.io/badge/data-local_only-lightgrey)
+
+## Touchscreen cockpit v2
+
+The default home screen now uses a purpose-built car-console layout optimized for the Lenovo's touch display and for 16:9 landscape screens:
+
+- Large circular speed/RPM indicators with **individual measurement timestamps**; readings are clearly marked stale when the separate recorder stops.
+- Big coolant, ECU voltage, and **unverified raw fuel percentage** cards, plus engine load and intake temperature when available.
+- Interactive sensor timeline, stored readings, driving-session history and diagnostics remain available through the left navigation rail (bottom navigation on small screens).
+- Full-screen toggle, automatic time/date, high-contrast **day/night appearance toggle**, and US/metric unit selection.
+- Entirely local CSS, SVG and JavaScript with no third-party scripts, mapping API, analytics, web fonts or network connection needed to render. The data still comes from the existing local SQLite recorder.
+- No fabricated maps, media, climate controls, CarPlay or Ford controls: those require real hardware/service integrations later. The UI **never** writes to the ECU and must not be used as a substitute for factory instruments.
+
+For touchscreens use the fullscreen kiosk provided by `deploy/install.sh`; existing kiosks auto-reload the page when the updater installs a new Git commit. Recheck or refresh readings manually with the button, or let it poll every three seconds.
 
 ## Features
 
