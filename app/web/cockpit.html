@@ -37,11 +37,11 @@
     <div id="view-home" class="view active">
       <div class="home-layout">
         <div class="left-stack">
-          <section class="glass clock-card">
+          <section class="glass clock-card" data-widget="clock">
             <div class="clock-scenery"></div>
             <div class="clock-detail"><span class="eyebrow">GOOD DRIVE</span><div class="hero-time" id="heroTime">--:--</div><div class="hero-date" id="heroDate">—</div><span class="clock-bottom">YOUR LOCAL HEAD UNIT</span></div>
           </section>
-          <section class="glass music-card" aria-label="Local music player">
+          <section class="glass music-card" data-widget="media" aria-label="Local music player">
             <div class="card-caption"><span>NOW PLAYING</span><span class="media-tag">LOCAL AUDIO</span></div>
             <div class="album-art" aria-hidden="true"><div class="album-orbit"></div><span>♫</span></div>
             <div class="track-detail"><strong id="trackTitle">Nothing playing</strong><span id="trackArtist">Choose audio files from your device</span></div>
@@ -56,7 +56,7 @@
           </section>
         </div>
 
-        <section class="glass map-card" aria-label="Offline navigation map">
+        <section class="glass map-card" data-widget="map" aria-label="Offline navigation map">
           <div id="mapSurface" class="map-surface">
             <div class="map-pattern"></div>
             <div id="mapTiles" class="map-tiles" aria-hidden="true"></div>
@@ -82,7 +82,7 @@
         </section>
 
         <div class="right-stack">
-          <section class="glass vehicle-art">
+          <section class="glass vehicle-art" data-widget="vehicleArt">
             <div class="vehicle-art-title"><span class="eyebrow">MY VEHICLE</span><span>FORD</span></div>
             <svg class="truck-art" viewBox="0 0 490 240" role="img" aria-label="Illustration of a pickup truck, not a vehicle model identifier">
               <defs>
@@ -104,7 +104,7 @@
             </svg>
             <div class="vehicle-art-subtitle">VEHICLE TELEMETRY <span>•</span> READ ONLY</div>
           </section>
-          <section class="glass gauge-card" aria-label="Vehicle gauges">
+          <section class="glass gauge-card" data-widget="gauges" aria-label="Vehicle gauges">
             <div class="card-caption"><span>DRIVING DATA</span><span id="gaugeFreshness">WAITING</span></div>
             <div class="dual-gauges">
               <div class="round-gauge"><div class="gauge-ring speed-ring" id="speedRing"><div class="gauge-content"><strong id="speedValue">—</strong><small id="speedUnit">MPH</small></div></div><div class="gauge-caption">SPEED</div></div>
@@ -112,7 +112,7 @@
             </div>
             <div class="gauge-age">Last sensor reading: <span id="gaugeAge">—</span></div>
           </section>
-          <section class="metric-tiles" aria-label="Additional OBD2 data">
+          <section class="metric-tiles" data-widget="metrics" aria-label="Additional OBD2 data">
             <div class="glass metric-tile"><span class="metric-ico">♨</span><strong id="coolantValue">—</strong><small>Coolant</small></div>
             <div class="glass metric-tile"><span class="metric-ico">ϟ</span><strong id="voltageValue">—</strong><small>ECU voltage</small></div>
             <div class="glass metric-tile"><span class="metric-ico">◕</span><strong id="fuelValue">—</strong><small>Fuel %*</small></div>
