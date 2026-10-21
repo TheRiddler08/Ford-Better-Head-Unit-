@@ -85,6 +85,47 @@ def queue_change(name, old_rev, changes):
         write_config(cfg_file,next_config)
         return {"revision":next_config["revision"],"frames":len(frames),"bytes":sum(map(len,frames))}
 
+def queue_code_patch(name, kind, signed_delta):
+    """Queue only patches verified with the car's pinned PUBLIC signing key."""
+    from control.patches import verify_delta
+    public=os.getenv("CAR_SIGNING_PUBLIC_PEM","")
+    if not public or not Path(public).is_file():
+        raise ValueError("Public code-signing key not configured")
+    verify_delta(signed_delta,public)
+    if kind not in ("ui-patch","recorder-patch") or signed_delta["component"]!=("ui" if kind=="ui-patch" else "recorder"):
+        raise ValueError("Mismatched component")
+    with LOCK:
+        _,queue_file=paths(name)
+        old=read_outbox(queue_file)
+        if len(old)>=64:
+            raise ValueError("Too many pending updates")
+        seq=max([int(v["revision"]) for v in old] + [int(time.time())])
+        seq=(seq+1) % (2**32)
+        if seq<1:seq=1
+        frames=split_message(kind,seq,signed_delta,radio_key())
+        old.append({"revision":seq,"kind":kind,"created":int(time.time()),
+                    "frames":[v.hex() for v in frames],"transmitted":0,"acked":False})
+        save_outbox(queue_file,old)
+        return {"sequence":seq,"fragments":len(frames),"totalBytes":sum(map(len,frames))}
+
+
+def rewind_chunks(name, message_sequence, missing):
+    """For a verified car-origin missing-chunk request, resend from first gap."""
+    if not isinstance(missing,list) or len(missing)>1024 or any(type(x) is not int for x in missing):
+        return False
+    with LOCK:
+        _,queue_file=paths(name)
+        queue=read_outbox(queue_file)
+        for item in queue:
+            if item["revision"]==message_sequence and missing:
+                allowed=[i for i in missing if 0<=i<len(item["frames"])]
+                if not allowed:return False
+                item["transmitted"]=min(item["transmitted"],min(allowed))
+                save_outbox(queue_file,queue)
+                return True
+        return False
+
+
 def export_next(name):
     """For ChirpStack bridge: one queued frame at a time, never flood downlinks."""
     with LOCK:
@@ -176,6 +217,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data=self.request_json()
             if not isinstance(data,dict):raise ValueError("Invalid object")
+            if self.path=="/api/package":
+                return self.response(queue_code_patch(data.get("device","car-1"),data["kind"],data["package"]))
             if self.path=="/api/change":
                 return self.response(queue_change(data.get("device","car-1"),
                     data["baseRevision"],data["changes"]))
