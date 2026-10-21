@@ -14,11 +14,13 @@ run_git fetch --no-tags --quiet origin "$BRANCH"
 NEW="$(run_git rev-parse FETCH_HEAD)"
 [[ "$NEW" != "$OLD" ]] || { echo "Already current at ${OLD:0:12}"; exit 0; }
 run_git merge-base --is-ancestor "$OLD" "$NEW" || { echo 'Refusing rewritten branch'; exit 1; }
+RECORDER_WAS_ACTIVE=0
+if systemctl is-active --quiet car-obd-monitor.service; then RECORDER_WAS_ACTIVE=1; fi
 rollback(){
  echo "Rolling back dashboard to ${OLD:0:12}" >&2
  run_git reset --hard "$OLD"
  systemctl restart car-dashboard.service || true
- if [[ -f /etc/systemd/system/car-obd-monitor.service ]] && grep -Fq "$REPO/recorder/obd_full_recorder.py" /etc/systemd/system/car-obd-monitor.service; then
+ if [[ "$RECORDER_WAS_ACTIVE" == 1 ]] && [[ -f /etc/systemd/system/car-obd-monitor.service ]] && grep -Fq "$REPO/recorder/obd_full_recorder.py" /etc/systemd/system/car-obd-monitor.service; then
    systemctl restart car-obd-monitor.service || true
  fi
 }
