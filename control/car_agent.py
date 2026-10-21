@@ -66,9 +66,20 @@ def apply_message(message, path=CONFIG):
         write_config(path,changed)
         return {"revision":rev,"applied":True,"kind":"configuration"}
     if kind in ("ui-patch","recorder-patch"):
-        # Fail closed until the independent code-signature verifier and
-        # code slot activation service are installed and configured.
-        raise ValueError("Signed code patch deployment is not configured; no code executed")
+        from control.patches import install_patch
+        repo=Path(os.getenv("CAR_CODE_REPO",str(Path(__file__).resolve().parents[1])))
+        overrides=Path(os.getenv("CAR_OVERRIDE_DIR","/var/lib/car-dashboard/overrides"))
+        public=Path(os.getenv("CAR_SIGNING_PUBLIC_PEM","/etc/car-dashboard/update-signing.pub"))
+        if not public.is_file():
+            raise ValueError("No trusted offline update signing key installed; code patch rejected")
+        installed=install_patch(payload,repo,overrides,public)
+        if installed["component"]=="recorder":
+            # Do not interrupt OBD logging mid-drive. Activation service applies
+            # the installed overlay only when safely stationary or offline.
+            pending=overrides/"recorder-update-pending"
+            pending.parent.mkdir(parents=True,exist_ok=True)
+            pending.write_text(installed["sha256"],encoding="ascii")
+        return {"revision":message["sequence"],"applied":True,"kind":kind,"target":installed["sha256"]}
     return {"kind":kind,"status":"received"}
 
 def process_frame(agent, frame, state_path, config_path, secret):
