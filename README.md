@@ -144,3 +144,15 @@ For large databases, the `trips` query and sensor grouping may become slow. Late
 ## License
 
 MIT (`LICENSE`).
+
+
+## GitHub-managed OBD2 recorder (separate service)
+
+The same repository now contains `recorder/obd_full_recorder.py`, a standalone, read-only USB ELM327 recorder that writes to the existing `vehicle.sqlite3`. Its installer is intentionally separate and must be run once to adopt it, because your current recorder is already operational. **The original local script source is not in this repository, so the new recorder is a compatible replacement rather than the exact same code.** See [recorder migration instructions](docs/RECORDER.md).
+
+```bash
+cd ~/car-dashboard
+bash deploy/install-recorder.sh
+```
+
+After adoption, the GitHub updater will check both pieces of software. Updates always restart the dashboard; when recorder code changes, the updater restarts the recorder only if it was already running. If you've stopped it to use FORScan, the updater leaves it stopped. Both have separate systemd services.
