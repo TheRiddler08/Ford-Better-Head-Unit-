@@ -62,6 +62,24 @@ def save_outbox(path, entries):
     tmp.write_text(json.dumps(entries,separators=(",",":")),encoding="utf-8")
     os.replace(tmp,path)
 
+def next_sequence(device):
+    """Monotonic per-device transport sequence, independent of UI revision."""
+    safe_device(device)
+    path=ROOT/"devices"/device/"next-sequence.txt"
+    try:
+        last=int(path.read_text(encoding="ascii").strip())
+    except (OSError,ValueError):
+        last=0
+    sequence=max(last+1,int(time.time()))
+    if sequence>=2**32:
+        raise RuntimeError("Sequence exhausted; rotate link key and re-pair")
+    path.parent.mkdir(parents=True,exist_ok=True)
+    temp=path.with_suffix(".tmp")
+    temp.write_text(str(sequence),encoding="ascii")
+    os.replace(temp,path)
+    return sequence
+
+
 def queue_change(name, old_rev, changes):
     """Persist desired config and exact ordered frames before sending anything."""
     with LOCK:
@@ -72,10 +90,11 @@ def queue_change(name, old_rev, changes):
         next_config=apply_changes(current,old_rev+1,changes)
         compact=diff(current,next_config)
         if not compact:return {"revision":current["revision"],"frames":0}
-        frames=split_message("configuration",next_config["revision"],
+        sequence=next_sequence(name)
+        frames=split_message("configuration",sequence,
                              {"revision":next_config["revision"],"changes":compact},radio_key())
         existing=read_outbox(queue_file)
-        item={"revision":next_config["revision"],"created":int(time.time()),
+        item={"revision":sequence,"configRevision":next_config["revision"],"created":int(time.time()),
               "kind":"configuration","frames":[b.hex() for b in frames],
               "transmitted":0,"acked":False}
         # Preserve in-flight revisions; each must be applied in order on car.
@@ -83,7 +102,7 @@ def queue_change(name, old_rev, changes):
         existing.append(item)
         save_outbox(queue_file,existing)
         write_config(cfg_file,next_config)
-        return {"revision":next_config["revision"],"frames":len(frames),"bytes":sum(map(len,frames))}
+        return {"revision":next_config["revision"],"sequence":sequence,"frames":len(frames),"bytes":sum(map(len,frames))}
 
 def queue_code_patch(name, kind, signed_delta):
     """Queue only patches verified with the car's pinned PUBLIC signing key."""
@@ -99,9 +118,7 @@ def queue_code_patch(name, kind, signed_delta):
         old=read_outbox(queue_file)
         if len(old)>=64:
             raise ValueError("Too many pending updates")
-        seq=max([int(v["revision"]) for v in old] + [int(time.time())])
-        seq=(seq+1) % (2**32)
-        if seq<1:seq=1
+        seq=next_sequence(name)
         frames=split_message(kind,seq,signed_delta,radio_key())
         old.append({"revision":seq,"kind":kind,"created":int(time.time()),
                     "frames":[v.hex() for v in frames],"transmitted":0,"acked":False})
@@ -203,8 +220,8 @@ class Handler(BaseHTTPRequestHandler):
             if req.path=="/api/config":
                 return self.response(read_config(cfg_file))
             if req.path=="/api/pending":
-                return self.response({"device":name,"items":[{"revision":v["revision"],
-                   "fragments":len(v.get("frames",[])),"queued":v.get("transmitted",0),
+                return self.response({"device":name,"items":[{"revision":v.get("configRevision",v["revision"]),
+                   "sequence":v["revision"],"kind":v.get("kind"),"fragments":len(v.get("frames",[])),"queued":v.get("transmitted",0),
                    "acked":v.get("acked",False)} for v in read_outbox(queue_file)]})
             if req.path=="/api/radio-next":
                 return self.response({"next":export_next(name)})
