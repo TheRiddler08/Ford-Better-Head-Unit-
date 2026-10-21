@@ -31,8 +31,14 @@ until curl --fail --silent --max-time 2 "$URL/api/health" >/dev/null; do sleep 2
 while :; do
   echo "$(date -Is): launching $BROWSER"
   if [[ "$BROWSER" == "firefox" ]]; then
-    mkdir -p "$HOME/.local/share/car-dashboard-kiosk-firefox"
-    "$BROWSER" --no-remote --profile "$HOME/.local/share/car-dashboard-kiosk-firefox" --kiosk --private-window "$URL" || true
+    if command -v snap >/dev/null 2>&1 && snap list firefox >/dev/null 2>&1; then
+      # Ubuntu ships Firefox as a confined Snap; its profile must live in Snap's writable area.
+      FIREFOX_PROFILE="$HOME/snap/firefox/common/.mozilla/firefox/car-dashboard-kiosk"
+    else
+      FIREFOX_PROFILE="$HOME/.mozilla/firefox/car-dashboard-kiosk"
+    fi
+    mkdir -p "$FIREFOX_PROFILE"
+    "$BROWSER" --no-remote --profile "$FIREFOX_PROFILE" --kiosk --private-window "$URL" || true
   else
     "$BROWSER" --kiosk --incognito --no-first-run --no-default-browser-check \
       --disable-session-crashed-bubble --user-data-dir="$HOME/.config/car-dashboard-kiosk-chromium" "$URL" || true
