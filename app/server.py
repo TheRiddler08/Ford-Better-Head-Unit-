@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sqlite3
+import subprocess
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -181,6 +182,16 @@ class Handler(BaseHTTPRequestHandler):
             filename, mime = STATIC[url.path]
             self.send_bytes((WEB_DIR / filename).read_bytes(), mime=mime, cache="public, max-age=120")
             return
+        if url.path == "/api/build":
+            # Read installed Git revision, so an already-open kiosk reloads after a dashboard update.
+            try:
+                sha = subprocess.check_output(
+                    ["git", "-C", str(WEB_DIR.parent.parent), "rev-parse", "HEAD"],
+                    stderr=subprocess.DEVNULL, timeout=2
+                ).decode("ascii").strip()
+            except (OSError, subprocess.SubprocessError, UnicodeError):
+                sha = "not-a-git-checkout"
+            return self.send_json({"revision": sha})
         if url.path == "/api/health":
             return self.send_json({"ok": True, "databaseExists": DB_PATH.is_file(), "readOnly": True})
         if url.path not in ROUTES and url.path != "/api/history":
