@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#07111a" />
+  <meta name="description" content="Local, read-only vehicle diagnostics and driving history" />
+  <title>CAR / Telemetry</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script defer src="/app.js"></script>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-icon">C<span>↗</span></div><div><strong>CAR CONSOLE</strong><small>TELEMETRY SYSTEM / 01</small></div></div>
+    <div class="side-label">WORKSPACE</div>
+    <nav class="nav" aria-label="Main navigation">
+      <button class="nav-btn selected" data-page="overview"><span class="nav-icon">◫</span>Overview</button>
+      <button class="nav-btn" data-page="sensors"><span class="nav-icon">≋</span>All sensors</button>
+      <button class="nav-btn" data-page="trips"><span class="nav-icon">⌁</span>Driving sessions</button>
+      <button class="nav-btn" data-page="diagnostics"><span class="nav-icon">⊞</span>Diagnostics</button>
+    </nav>
+    <div class="sidebar-bottom"><span class="circle circle-teal"></span> READ-ONLY CONNECTION <p>Vehicle data is collected separately by the OBD recorder. This dashboard cannot send OBD commands.</p><small>CAR DASHBOARD v1.0.0</small></div>
+  </aside>
+  <main class="main">
+    <header class="topbar">
+      <div class="breadcrumb">VEHICLE <span>/</span> <strong id="pageBreadcrumb">OVERVIEW</strong></div>
+      <div class="top-actions"><span id="lastSync" class="small-muted">Checking data…</span><span class="pill" id="statusPill"><i></i> CONNECTING</span></div>
+    </header>
+    <div class="content">
+      <div class="page active" id="page-overview">
+        <div class="page-head"><div><div class="eyebrow">SYSTEM OVERVIEW</div><h1>Vehicle telemetry<span class="accent">.</span></h1><p>Your vehicle, at a glance. Real readings from your local OBD database.</p></div><button class="outline-btn" id="refreshBtn">↻ Refresh now</button></div>
+        <div class="error-msg" id="connectionError" hidden></div>
+        <section class="metrics" aria-label="Live dashboard gauges">
+          <article class="metric-panel metric-speed"><div class="panel-label">VEHICLE SPEED <span>◉</span></div><div class="big-number"><span id="speedValue">—</span><small id="speedUnit">MPH</small></div><div class="gauge-track"><span id="speedBar"></span></div><div class="metric-foot">LATEST OBD READING <span id="speedAge">—</span></div></article>
+          <article class="metric-panel"><div class="panel-label">ENGINE RPM <span>↗</span></div><div class="big-number"><span id="rpmValue">—</span><small>RPM</small></div><div class="gauge-track violet"><span id="rpmBar"></span></div><div class="metric-foot">ENGINE ROTATION <span id="rpmAge">—</span></div></article>
+          <article class="metric-panel"><div class="panel-label">COOLANT TEMP <span>◇</span></div><div class="big-number"><span id="coolantValue">—</span><small id="tempUnit">°F</small></div><div class="gauge-track orange"><span id="coolantBar"></span></div><div class="metric-foot">THERMAL STATUS <span id="coolantAge">—</span></div></article>
+          <article class="metric-panel"><div class="panel-label">ECU VOLTAGE <span>⌁</span></div><div class="big-number"><span id="voltageValue">—</span><small>V</small></div><div class="gauge-track blue"><span id="voltageBar"></span></div><div class="metric-foot">ELECTRICAL SYSTEM <span id="voltageAge">—</span></div></article>
+        </section>
+        <div class="two-col">
+          <section class="panel chart-panel"><div class="panel-top"><div><div class="eyebrow">SENSOR HISTORY</div><h2>Performance trend</h2></div><div class="selects"><select aria-label="Sensor" id="chartSensor"><option value="SPEED">Vehicle speed</option><option value="RPM">Engine RPM</option><option value="COOLANT_TEMP">Coolant temperature</option><option value="CONTROL_MODULE_VOLTAGE">ECU voltage</option><option value="ENGINE_LOAD">Engine load</option><option value="FUEL_LEVEL">Fuel level</option></select><select aria-label="Time range" id="chartPeriod"><option value="1h">1H</option><option value="6h">6H</option><option selected value="24h">24H</option><option value="7d">7D</option><option value="30d">30D</option></select></div></div><div id="chartMessage" class="chart-message">Loading chart…</div><svg id="historyChart" class="history-chart" viewBox="0 0 660 260" role="img" aria-label="Telemetry historical line chart"></svg><div class="chart-foot"><span id="chartLeft">—</span><span id="chartRight">—</span></div></section>
+          <section class="panel summary-panel"><div class="panel-top"><div><div class="eyebrow">DATABASE HEALTH</div><h2>Recording summary</h2></div><span class="small-dot"></span></div><div class="summary-item"><div class="summary-icon">≋</div><div>Readings stored<small>Lifetime OBD measurements</small></div><strong id="totalReadings">—</strong></div><div class="summary-item"><div class="summary-icon">◈</div><div>Unique sensors<small>Recorded signal types</small></div><strong id="uniqueSensors">—</strong></div><div class="summary-item"><div class="summary-icon">⊞</div><div>Diagnostic snapshots<small>Deep vehicle scans</small></div><strong id="totalSnapshots">—</strong></div><div class="summary-item"><div class="summary-icon">⌚</div><div>Most recent record<small>Last database update</small></div><strong id="lastRecorded">—</strong></div></section>
+        </div>
+        <section class="panel alerts-panel"><div class="panel-top"><div><div class="eyebrow">DATA QUALITY</div><h2>Sensor notices</h2></div></div><div id="alertsContainer"><div class="empty-text">Checking sensor history…</div></div></section>
+      </div>
+      <div class="page" id="page-sensors"><div class="page-head"><div><div class="eyebrow">READ-ONLY OBD DATABASE</div><h1>Sensor explorer<span class="accent">.</span></h1><p>Every data type your recorder has successfully saved.</p></div><input id="sensorSearch" type="search" placeholder="Search sensors…" aria-label="Search sensors" /></div><div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>SENSOR</th><th>SAMPLES</th><th>MIN</th><th>MAX</th><th>AVERAGE</th><th>LAST SEEN</th></tr></thead><tbody id="sensorTable"><tr><td colspan="6">Loading…</td></tr></tbody></table></div></div></div>
+      <div class="page" id="page-trips"><div class="page-head"><div><div class="eyebrow">HISTORICAL PERFORMANCE</div><h1>Driving sessions<span class="accent">.</span></h1><p>Sessions inferred from gaps in speed/RPM logging. Distance is an estimate—not an odometer reading.</p></div></div><div class="session-list" id="tripsList"><div class="panel loading-panel">Loading sessions…</div></div></div>
+      <div class="page" id="page-diagnostics"><div class="page-head"><div><div class="eyebrow">SYSTEM DIAGNOSTICS</div><h1>OBD snapshots<span class="accent">.</span></h1><p>Deep scan records and recent recorder events. No changes are sent to the vehicle.</p></div></div><div class="two-col diagnostics-col"><section class="panel"><div class="panel-top"><h2>Diagnostic snapshots</h2></div><div id="snapshotsList" class="event-list">Loading…</div></section><section class="panel"><div class="panel-top"><h2>Recorder events</h2></div><div id="eventsList" class="event-list">Loading…</div></section></div></div>
+      <footer class="footer"><span>CAR / LOCAL TELEMETRY</span><span>NO CLOUD · NO OBD WRITE ACCESS · LOCAL SQLITE</span><label>UNITS <select id="unitSelect"><option value="us">US (MPH / °F)</option><option value="metric">METRIC (KM/H / °C)</option></select></label></footer>
+    </div>
+  </main>
+</div>
+</body>
+</html>

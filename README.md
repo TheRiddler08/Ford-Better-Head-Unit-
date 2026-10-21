@@ -1,102 +1,164 @@
-# Ford Better Head Unit
+# Car Console / Telemetry Dashboard
 
-An evolving **Ubuntu-based custom vehicle head unit** for the Lenovo ThinkCentre M910q Tiny. This repository currently ships the **read-only OBD2 telemetry dashboard**, which works with the user's existing SQLite recorder; navigation, GPS, CarPlay, dashcam, and FORScan expansion are planned separately.
+An offline-capable, read-only web interface for the existing Ubuntu/Python OBD2 recorder. Designed for a Lenovo ThinkCentre M910q with a 2016 Ford and a CH340 USB ELM327 adapter, but it only reads SQLite and can also run without an adapter attached.
 
-## What works today
+![Version](https://img.shields.io/badge/version-1.0.0-55e6c1) ![Dependencies](https://img.shields.io/badge/python-stdlib_only-blue) ![Privacy](https://img.shields.io/badge/data-local_only-lightgrey)
 
-- Browser dashboard: current speed, RPM, coolant temperature, electrical voltage and historical trends
-- All recorded sensor readings, diagnostic snapshots, recorder events, estimated trip sessions and fuel-level anomaly notices
-- Python-standard-library HTTP server, responsive offline-first frontend; no npm/Python packages or cloud dependencies
-- Read-only access to the existing SQLite database — never opens or controls the USB OBD2 adapter
-- systemd auto-start at boot and **optional GitHub auto-updates** with fast-forward-only changes, automated tests, health checks and rollback
-- GitHub Actions CI
+## Features
 
-**Not implemented yet:** GPS navigation, offline maps, iPhone CarPlay, FORScan-specific Ford modules, dashcam integration, OBD recorder installation or modification. The existing recorder must be installed separately.
+- Responsive dark dashboard with MPH/km/h, RPM, engine coolant temperature, electrical system voltage
+- Sensor timeline charts from the local database (1 hour to 30 days), no cloud services or chart CDN
+- Searchable inventory of recorded sensors with sample counts and min/max/average
+- Inferred driving sessions grouped by > 5 minute telemetry gaps, peak speed, RPM, sampled-speed-based distance estimates
+- Deep diagnostic snapshots, recorder events and possible anomalous fuel-zero readings
+- Read-only SQLite `mode=ro` with `PRAGMA query_only=ON`; **no** ELM327 serial access, writes, code clearing, Ford module control, VIN uploads or vehicle configuration changes
+- Native Linux systemd service and opt-in daily GitHub fast-forward auto-updates
 
-## Install on the car computer (Ubuntu)
+### Does not yet do
 
-On the **Lenovo Ubuntu terminal**, logged in as `cayden` (not root):
+- GPS route mapping, CarPlay, driving scoring, reliable fuel economy or module-specific FORScan PID collection
+- Guaranteed exact trip start/end, exact odometer distance or collision alerts
+- User login/authentication (localhost-only by default)
+- Modify, supervise or start the existing `car-obd-monitor.service`
+
+## Existing database schema
+
+Designed for the existing recorder file:
+
+`/home/cayden/car-console/obd-data/vehicle.sqlite3`
+
+Tables/columns from the actual command output:
+
+- `readings`: `ts`, `name`, `value`, `number`, `unit`
+- `snapshots`: `id`, `stage`, `started`, `total`, `successes`
+- `events`: `ts`, `name`, `detail`
+
+A missing optional table is tolerated. The `readings` table must be present. SQLite schema changes to this system may require adapting the SQL queries.
+
+**Important:** The dashboard has not been tested against the user's actual database yet; use `/api/health` and the status page to validate it on the car PC.
+
+## Setup on Ubuntu
+
+Install on the Linux computer as `cayden` (never use `sudo git clone`):
 
 ```bash
-sudo apt update
-sudo apt install -y git python3 curl
-git clone https://github.com/TheRiddler08/Ford-Better-Head-Unit-.git ~/car-dashboard
+sudo apt update && sudo apt install -y git python3
+# After creating your GitHub repository and pushing this folder:
+git clone https://github.com/YOUR-ACCOUNT/YOUR-REPO.git ~/car-dashboard
 cd ~/car-dashboard
-python3 -m unittest discover -s tests -v
 bash deploy/install.sh
 ```
 
-Open **http://127.0.0.1:8787/** in a browser running on the Lenovo.
+Before you have a GitHub repository, extract this project into `~/car-dashboard` and run `bash deploy/install.sh` from that directory. Installer uses `sudo` only to create systemd units and `/etc/car-dashboard/dashboard.env`. It **does not** stop or change your recorder.
 
-The installer enables `car-dashboard.service`; it does not modify `car-obd-monitor.service`, the car, or the recorder database.
+Visit **http://127.0.0.1:8787/** through a browser *running on the Lenovo PC*.
+
+If your GUI/physical display is unavailable, test the API through MeshCentral's terminal:
 
 ```bash
+curl -s http://127.0.0.1:8787/api/health
+curl -s http://127.0.0.1:8787/api/summary
 sudo systemctl status car-dashboard --no-pager
-sudo journalctl -u car-dashboard -n 50 --no-pager
-curl -fsS http://127.0.0.1:8787/api/health
-curl -fsS http://127.0.0.1:8787/api/summary
+sudo journalctl -u car-dashboard -n 100 --no-pager
 ```
 
-The default database is `/home/cayden/car-console/obd-data/vehicle.sqlite3`. Change it in `/etc/car-dashboard/dashboard.env` if needed, then restart:
+For SSH access from your laptop without opening a public port:
 
 ```bash
-sudo nano /etc/car-dashboard/dashboard.env
-sudo systemctl restart car-dashboard
+ssh -L 8787:127.0.0.1:8787 cayden@YOUR-M910Q-TAILSCALE-IP
 ```
 
-The config has three keys: `CAR_DB`, `CAR_BIND` (default `127.0.0.1`), and `CAR_PORT` (default `8787`).
+Then open `http://127.0.0.1:8787/` on **your laptop**. The SSH session stays open while browsing. Keep the app bound to loopback unless you've added separate access controls. Do not port-forward the unauthenticated dashboard to the public internet.
 
-## GitHub auto-updates (opt in once)
+## Systemd service configuration
 
-After installing from the clone, run as `cayden`:
+The installer creates `/etc/car-dashboard/dashboard.env` only when absent:
+
+```ini
+CAR_DB=/home/cayden/car-console/obd-data/vehicle.sqlite3
+CAR_BIND=127.0.0.1
+CAR_PORT=8787
+```
+
+After editing it, apply with `sudo systemctl restart car-dashboard`.
+
+## Opt-in GitHub updates
+
+This is deliberately **disabled by default**. After you upload this project to your own GitHub repository and install from a real `git clone`:
 
 ```bash
 cd ~/car-dashboard
 bash deploy/enable-updates.sh
 ```
 
-The installer will ask for confirmation. When enabled, a systemd timer periodically fetches the selected **origin branch** and deploys a fast-forward update only if the working tree is clean and the automated tests pass. On a failed health check, the updater rolls back the dashboard code. It only restarts the **dashboard**, never the OBD recorder.
+On explicit `yes` confirmation, this installs:
+
+- `car-dashboard-update.timer`: daily 03:30 system local time, up to ten-minute randomized delay, catch-up after power off
+- `car-dashboard-update.service`: network-dependent one-shot update
+- `/usr/local/sbin/car-dashboard-update`: a root-owned stable helper that updates the checked-out branch **as your ordinary Linux user** and restarts only `car-dashboard.service`
+
+Updates use `git fetch` and `git merge --ff-only`, refusing rewritten history or local tracked file modifications. Credentials, if any, are read from your user's existing git setup; do not embed personal access tokens in files. Updates run new committed Python dashboard code as your unprivileged user. **Anyone with push permissions to that selected branch can modify the software running in your car. Protect branch access and preferably require reviewed pull requests.**
+
+To disable:
 
 ```bash
-systemctl list-timers car-dashboard-update.timer
-sudo journalctl -u car-dashboard-update.service -n 60 --no-pager
-sudo systemctl start car-dashboard-update.service    # check manually now
-bash deploy/disable-updates.sh
+sudo systemctl disable --now car-dashboard-update.timer
 ```
 
-Auto-update code changes on the configured branch run on your car PC. **Require reviewed pull requests and protect that branch; never store vehicle data, passwords, SSH keys, tokens, or `*.sqlite3` files in Git.** On-device software is not a substitute for the factory gauges.
-
-## Access remotely
-
-The dashboard binds to localhost and has **no login system**. Avoid exposing it on the public Internet. You can tunnel access over SSH/Tailscale:
-
-```bash
-ssh -L 8787:127.0.0.1:8787 cayden@YOUR_CAR_TAILSCALE_ADDRESS
-```
-
-Then open http://127.0.0.1:8787 on the machine running that SSH command.
-
-## Existing recorder database
-
-Expected columns:
-
-- `readings(ts, name, number, value, unit)`
-- `snapshots(id, stage, started, total, successes)`
-- `events(ts, name, detail)`
-
-The last two tables are optional. Telemetry timestamps are Unix seconds. The dashboard opens SQLite with `mode=ro` and `PRAGMA query_only=ON` and does not open `/dev/ttyUSB0` or modify the recorder service. The live gauges show **last recorded values** with a freshness indicator, not guaranteed current vehicle conditions. Speed-history-derived mileage and trip boundaries are estimates.
-
-### API
-
-`/api/health`, `/api/live`, `/api/summary`, `/api/sensors`, `/api/history?name=SPEED&period=24h`, `/api/trips`, `/api/snapshots`, `/api/events`, `/api/alerts`.
+To inspect a check without changing your repo, use `git -C ~/car-dashboard fetch origin` followed by `git -C ~/car-dashboard log HEAD..FETCH_HEAD --oneline`. To manually run the configured update: `sudo systemctl start car-dashboard-update.service`.
 
 ## Development
 
+Zero Python dependencies. Start against any correctly structured SQLite database:
+
 ```bash
+CAR_DB=/path/to/sample.sqlite3 CAR_BIND=127.0.0.1 CAR_PORT=8787 python3 app/server.py
 python3 -m unittest discover -s tests -v
-CAR_DB=/path/to/sample.sqlite3 python3 app/server.py
 ```
 
-No third-party dependencies are required for the dashboard. The update timer needs Git and standard Ubuntu systemd utilities.
+Architecture: `app/server.py` hosts static `app/web/` and JSON read-only endpoints:
 
-See [SECURITY.md](SECURITY.md) for operational cautions.
+| Endpoint | Description |
+|---|---|
+| `/api/health` | Dashboard process and database presence |
+| `/api/live` | Most recent sensor values and freshness |
+| `/api/summary` | Readings, sensor and snapshot totals |
+| `/api/sensors` | Sensor sample counts and numerical aggregates |
+| `/api/history?name=SPEED&period=24h` | 300-ish time-bucketed historical values |
+| `/api/trips` | Grouped RPM/speed observation clusters |
+| `/api/snapshots` | Last 60 diagnostic snapshot summaries |
+| `/api/events` | Last 80 recorder events |
+| `/api/alerts` | Fuel zero readings near conflicting non-zero measurements |
+
+For large databases, the `trips` query and sensor grouping may become slow. Later versions can add an optimized recorder-maintained trip summary and indices after reviewing the real schema and write load. The dashboard itself will never add indices to the database.
+
+### Security and data accuracy
+
+- Read-only SQLite prevents this application's SQL connection from modifying your logger database, while other applications such as the existing recorder remain able to update it. It may create SQLite shared-memory/WAL support files when required; that's SQLite's concurrency behavior, not an application-initiated data write.
+- The UI never communicates with the vehicle. It should not be used for safety-critical driving decisions or as a replacement for the factory gauges.
+- GPS, driving direction, true odometer, and ignition boundaries are **not** in the present database. Sessions and distance are estimates; no route map is presented as if it were known.
+- Fuel warning is a heuristic; 0% may be genuine and the warning cannot diagnose an electrical or fuel system fault.
+- Localhost by default. Only expose to another device through an authenticated private tunnel such as SSH port forwarding or a controlled Tailscale Serve setup.
+
+## License
+
+MIT (`LICENSE`).
+
+## Personal repository install / GitHub updater
+
+This project lives at <https://github.com/TheRiddler08/Ford-Better-Head-Unit->. Install from that clone as **cayden**:
+
+```bash
+sudo apt update && sudo apt install -y git python3 curl
+cd ~
+git clone https://github.com/TheRiddler08/Ford-Better-Head-Unit-.git car-dashboard
+cd car-dashboard
+bash deploy/install.sh
+bash deploy/enable-updates.sh
+```
+
+The updater asks for the explicit word `yes`, then checks the trusted GitHub `main` branch every 15 minutes, performs only fast-forward updates, runs tests, restarts the dashboard and checks `/api/health` plus `/api/summary`; failed updates roll back code. It **does not restart or change the OBD recorder**.
+
+To disable updates: `bash deploy/disable-updates.sh`. Check: `systemctl list-timers car-dashboard-update.timer` or `sudo journalctl -u car-dashboard-update.service -n 60 --no-pager`.
+
+See [SECURITY.md](SECURITY.md) for important limitations. This is the **OBD telemetry dashboard** milestone, not the finished navigation/CarPlay head unit.
