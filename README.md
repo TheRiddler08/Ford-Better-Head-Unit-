@@ -61,7 +61,7 @@ cd ~/car-dashboard
 bash deploy/install.sh
 ```
 
-Installer uses `sudo` only to configure systemd units and `/etc/car-dashboard/dashboard.env`. It **does not** stop or change your recorder.
+Installer configures both `car-dashboard.service` and `car-obd-monitor.service` and installs the recorder's Python OBD dependency. The recorder automatically creates a new database when needed and preserves existing vehicle history. An existing recorder service is backed up before replacement. **Close FORScan and ensure the USB OBD adapter is free before installation.**
 
 At the next reboot, a regular install also opens the dashboard full-screen without showing the Ubuntu login screen. See [Boot-to-dashboard kiosk instructions](docs/KIOSK.md) for how it works, security considerations, disabling it, and manual setup. For backend-only installs, use `CAR_KIOSK=0 bash deploy/install.sh`.
 
@@ -95,6 +95,17 @@ CAR_PORT=8787
 ```
 
 After editing it, apply with `sudo systemctl restart car-dashboard`.
+
+## Manual update (without enabling automatic updates)
+
+Run from the existing Git clone as your normal Ubuntu login user:
+
+```bash
+cd ~/car-dashboard
+bash deploy/manual-update.sh
+```
+
+This updates the dashboard and the repository-managed recorder together, performs the repository tests, and rolls back the source if a health check fails. It only restarts the recorder when its code changes and the recorder was already running. The SQLite history is preserved. For a new installation, use `bash deploy/install.sh` instead.
 
 ## Opt-in GitHub updates
 
