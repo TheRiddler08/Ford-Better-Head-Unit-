@@ -3,12 +3,9 @@ set -euo pipefail
 [[ "$EUID" != 0 ]] || { echo "Run as normal user" >&2; exit 1; }
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 USER_NAME="$(id -un)"
-DB="$HOME/car-console/obd-data/vehicle.sqlite3"
-[[ -f "$DB" ]] || { echo "Existing database missing: $DB" >&2; exit 1; }
-echo "This will replace the existing recorder service while retaining the database."
-echo "Close FORScan first. A copy of the existing systemd unit will be kept."
-read -r -p "Type yes to adopt GitHub recorder: " reply
-[[ "$reply" == "yes" ]] || exit 0
+DB="${CAR_DB:-$HOME/car-console/obd-data/vehicle.sqlite3}"
+mkdir -p "$(dirname "$DB")"
+echo "Installing the managed OBD recorder, preserving existing SQLite history."
 sudo apt-get update
 sudo apt-get install -y python3-venv python3-pip
 [[ -x "$ROOT/.venv/bin/python" ]] || python3 -m venv "$ROOT/.venv"
@@ -32,7 +29,7 @@ SupplementaryGroups=dialout
 WorkingDirectory=$ROOT
 Environment=PYTHONUNBUFFERED=1
 Environment=CAR_DB=$DB
-Environment=OBD_PORT=/dev/ttyUSB0
+Environment=OBD_PORT=${OBD_PORT:-/dev/ttyUSB0}
 ExecStart=$ROOT/.venv/bin/python -u $ROOT/recorder/obd_full_recorder.py
 Restart=on-failure
 RestartSec=10
