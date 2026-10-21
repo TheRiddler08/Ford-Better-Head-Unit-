@@ -12,7 +12,7 @@ An offline-capable, read-only web interface for the existing Ubuntu/Python OBD2 
 - Inferred driving sessions grouped by > 5 minute telemetry gaps, peak speed, RPM, sampled-speed-based distance estimates
 - Deep diagnostic snapshots, recorder events and possible anomalous fuel-zero readings
 - Read-only SQLite `mode=ro` with `PRAGMA query_only=ON`; **no** ELM327 serial access, writes, code clearing, Ford module control, VIN uploads or vehicle configuration changes
-- Native Linux systemd service and opt-in daily GitHub fast-forward auto-updates
+- Native Linux systemd service and opt-in 15-minute GitHub fast-forward auto-updates with tests, health checks and rollback
 
 ### Does not yet do
 
@@ -43,13 +43,12 @@ Install on the Linux computer as `cayden` (never use `sudo git clone`):
 
 ```bash
 sudo apt update && sudo apt install -y git python3
-# After creating your GitHub repository and pushing this folder:
-git clone https://github.com/YOUR-ACCOUNT/YOUR-REPO.git ~/car-dashboard
+git clone https://github.com/TheRiddler08/Ford-Better-Head-Unit-.git ~/car-dashboard
 cd ~/car-dashboard
 bash deploy/install.sh
 ```
 
-Before you have a GitHub repository, extract this project into `~/car-dashboard` and run `bash deploy/install.sh` from that directory. Installer uses `sudo` only to create systemd units and `/etc/car-dashboard/dashboard.env`. It **does not** stop or change your recorder.
+Installer uses `sudo` only to configure systemd units and `/etc/car-dashboard/dashboard.env`. It **does not** stop or change your recorder.
 
 Visit **http://127.0.0.1:8787/** through a browser *running on the Lenovo PC*.
 
@@ -84,7 +83,7 @@ After editing it, apply with `sudo systemctl restart car-dashboard`.
 
 ## Opt-in GitHub updates
 
-This is deliberately **disabled by default**. After you upload this project to your own GitHub repository and install from a real `git clone`:
+This is deliberately **disabled by default**. After installing from this GitHub repository using a real `git clone`:
 
 ```bash
 cd ~/car-dashboard
@@ -93,16 +92,16 @@ bash deploy/enable-updates.sh
 
 On explicit `yes` confirmation, this installs:
 
-- `car-dashboard-update.timer`: daily 03:30 system local time, up to ten-minute randomized delay, catch-up after power off
+- `car-dashboard-update.timer`: every 15 minutes, up to one-minute randomized delay, catch-up after power off
 - `car-dashboard-update.service`: network-dependent one-shot update
 - `/usr/local/sbin/car-dashboard-update`: a root-owned stable helper that updates the checked-out branch **as your ordinary Linux user** and restarts only `car-dashboard.service`
 
-Updates use `git fetch` and `git merge --ff-only`, refusing rewritten history or local tracked file modifications. Credentials, if any, are read from your user's existing git setup; do not embed personal access tokens in files. Updates run new committed Python dashboard code as your unprivileged user. **Anyone with push permissions to that selected branch can modify the software running in your car. Protect branch access and preferably require reviewed pull requests.**
+Updates use `git fetch` and `git merge --ff-only`, refusing rewritten history or local tracked file modifications. The updater runs Python unit tests and checks the HTTP/database health; failures roll the dashboard code back to its prior commit. Credentials, if any, are read from your user's existing git setup; do not embed personal access tokens in files. Updates run new committed Python dashboard code as your unprivileged user. **Anyone with push permissions to that selected branch can modify the software running in your car. Protect branch access and preferably require reviewed pull requests.**
 
 To disable:
 
 ```bash
-sudo systemctl disable --now car-dashboard-update.timer
+bash deploy/disable-updates.sh
 ```
 
 To inspect a check without changing your repo, use `git -C ~/car-dashboard fetch origin` followed by `git -C ~/car-dashboard log HEAD..FETCH_HEAD --oneline`. To manually run the configured update: `sudo systemctl start car-dashboard-update.service`.
@@ -143,22 +142,3 @@ For large databases, the `trips` query and sensor grouping may become slow. Late
 ## License
 
 MIT (`LICENSE`).
-
-## Personal repository install / GitHub updater
-
-This project lives at <https://github.com/TheRiddler08/Ford-Better-Head-Unit->. Install from that clone as **cayden**:
-
-```bash
-sudo apt update && sudo apt install -y git python3 curl
-cd ~
-git clone https://github.com/TheRiddler08/Ford-Better-Head-Unit-.git car-dashboard
-cd car-dashboard
-bash deploy/install.sh
-bash deploy/enable-updates.sh
-```
-
-The updater asks for the explicit word `yes`, then checks the trusted GitHub `main` branch every 15 minutes, performs only fast-forward updates, runs tests, restarts the dashboard and checks `/api/health` plus `/api/summary`; failed updates roll back code. It **does not restart or change the OBD recorder**.
-
-To disable updates: `bash deploy/disable-updates.sh`. Check: `systemctl list-timers car-dashboard-update.timer` or `sudo journalctl -u car-dashboard-update.service -n 60 --no-pager`.
-
-See [SECURITY.md](SECURITY.md) for important limitations. This is the **OBD telemetry dashboard** milestone, not the finished navigation/CarPlay head unit.
