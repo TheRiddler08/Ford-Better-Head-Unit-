@@ -47,6 +47,15 @@ The GDM helper edits only automatic-login keys in `/etc/gdm3/custom.conf` and pr
 
 **A no-login desktop is not a secure kiosk.** The desktop account (usually `cayden`) is logged in at power-on. Anyone with physical keyboard/mouse access may be able to leave the fullscreen browser and read that account's files. The installer does not configure a dedicated restricted kiosk account. For unattended permanent deployments, that is a recommended later hardening step.
 
-The computer still requires a working physical or virtual X11/Wayland display; no software can make an unrecognized physical screen appear automatically. If the real touchscreen isn't attached and remote Desktop fails, MeshCentral Terminal/SSH remain usable. No vehicle control, OBD2 serial interaction, or recorder modifications are made by this kiosk feature.
+The computer still requires a working physical or virtual X11/Wayland display; no software can make an unrecognized physical screen appear automatically.
+
+**If you configured the earlier software-only Xorg display:** it may override the actual DisplayPort touchscreen once connected. Only after physically connecting the touchscreen and confirming you can access MeshCentral Terminal or SSH, disable the legacy dummy-display file:
+
+```bash
+sudo mv /etc/X11/xorg.conf.d/90-car-headless.conf /etc/X11/xorg.conf.d/90-car-headless.conf.disabled
+sudo reboot
+```
+
+This is a one-time switch from the remote-testing virtual monitor to the real hardware display. Do **not** make the change while completely headless unless you have reliable recovery access. If the real touchscreen isn't attached and remote Desktop fails, MeshCentral Terminal/SSH remain usable. No vehicle control, OBD2 serial interaction, or recorder modifications are made by this kiosk feature.
 
 Auto-updates: GitHub updates will pull future changes to the kiosk launcher automatically, but will **not** modify the GDM automatic-login configuration without explicitly running the kiosk enable/disable command. An installation performed before kiosk support was added requires `bash deploy/enable-kiosk.sh` once.
