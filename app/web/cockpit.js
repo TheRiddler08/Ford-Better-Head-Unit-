@@ -384,11 +384,11 @@ function attach(){
   $("updateRefresh").addEventListener("click",refreshUpdates);
   bindPreferences();
   $("backButton").addEventListener("click",()=>show(state.priorView||"home"));
-  $("quickTheme").addEventListener("click",()=>setTheme(state.theme==="night"?"day":"night"));
-  $("setNight").addEventListener("click",()=>setTheme("night"));
-  $("setDay").addEventListener("click",()=>setTheme("day"));
-  $("setUS").addEventListener("click",()=>setUnits("us"));
-  $("setMetric").addEventListener("click",()=>setUnits("metric"));
+  $("quickTheme").addEventListener("click",async()=>{setTheme(state.theme==="night"?"day":"night");if(state.prefs)await savePreferences();});
+  $("setNight").addEventListener("click",async()=>{setTheme("night");if(state.prefs)await savePreferences();});
+  $("setDay").addEventListener("click",async()=>{setTheme("day");if(state.prefs)await savePreferences();});
+  $("setUS").addEventListener("click",async()=>{setUnits("us");if(state.prefs)await savePreferences();});
+  $("setMetric").addEventListener("click",async()=>{setUnits("metric");if(state.prefs)await savePreferences();});
   $("fullscreenButton").addEventListener("click",async()=>{
     try{if(document.fullscreenElement)await document.exitFullscreen();
     else await document.documentElement.requestFullscreen();}catch(_){notice("Fullscreen is controlled by the kiosk browser.");}
