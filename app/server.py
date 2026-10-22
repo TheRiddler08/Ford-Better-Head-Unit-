@@ -339,6 +339,11 @@ class Handler(BaseHTTPRequestHandler):
         # Local kiosk settings only; never send commands to the vehicle.
         if self.client_address[0] not in ("127.0.0.1", "::1"):
             return self.send_json({"error": "Localhost required"}, 403)
+        if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+            return self.send_json({"error": "JSON content type required"}, 415)
+        origin = self.headers.get("Origin")
+        if origin and origin != "http://" + HOST + ":" + str(PORT):
+            return self.send_json({"error": "Untrusted origin"}, 403)
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if size < 1 or size > 12000:
