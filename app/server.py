@@ -27,8 +27,10 @@ TILE_ROUTE = re.compile(r"^/tiles/([0-9]{1,2})/([0-9]{1,8})/([0-9]{1,8})\.png$")
 
 sys.path.insert(0, str(WEB_DIR.parent.parent))
 from control.config_core import read_config
+from app.headunit_prefs import read as read_prefs, update as update_prefs
 
 CONFIG_FILE = Path(os.environ.get("CAR_UI_CONFIG", "/etc/car-dashboard/ui-config.json"))
+PREFS_FILE = Path(os.environ.get("CAR_HEADUNIT_PREFS", str(Path.home() / ".config/car-dashboard/preferences.json")))
 OVERRIDE_DIR = Path(os.environ.get("CAR_OVERRIDE_DIR", "/var/lib/car-dashboard/overrides"))
 
 def connect():
@@ -259,6 +261,11 @@ class Handler(BaseHTTPRequestHandler):
             path = override if filename in allowed and override.is_file() else original
             self.send_bytes(path.read_bytes(), mime=mime, cache="no-store")
             return
+        if url.path == "/api/headunit-prefs":
+            try:
+                return self.send_json(read_prefs(PREFS_FILE))
+            except (OSError, ValueError, TypeError) as exc:
+                return self.send_json({"error": str(exc)}, 503)
         if url.path == "/api/ui-config":
             try:
                 return self.send_json(read_config(CONFIG_FILE))
@@ -325,6 +332,22 @@ class Handler(BaseHTTPRequestHandler):
         except (FileNotFoundError, sqlite3.Error, ValueError, TypeError) as exc:
             LOG.warning("Request %s failed: %s", url.path, exc)
             self.send_json({"error": str(exc)}, 503)
+
+    def do_POST(self):
+        if urlsplit(self.path).path != "/api/headunit-prefs":
+            return self.send_json({"error": "Not found"}, 404)
+        # Local kiosk settings only; never send commands to the vehicle.
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
+            return self.send_json({"error": "Localhost required"}, 403)
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if size < 1 or size > 12000:
+                return self.send_json({"error": "Invalid request size"}, 413)
+            incoming = json.loads(self.rfile.read(size))
+            saved = update_prefs(PREFS_FILE, incoming)
+            return self.send_json(saved)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            return self.send_json({"error": str(exc)}, 400)
 
     def log_message(self, fmt, *args):
         if not self.path.startswith("/api/live"):
