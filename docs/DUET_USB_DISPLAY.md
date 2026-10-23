@@ -7,6 +7,124 @@ This optional deployment splits the head unit into two computers:
 - **Lenovo Duet 3 11Q727 (postmarketOS / Linux, ARM64)** is a touchscreen client
   running a browser. It has no direct OBD access or vehicle ECU controls.
 
+
+## From ChromeOS to postmarketOS (Duet 3 11Q727 / google-wormdingler)
+
+**Back up all ChromeOS files first.** Developer Mode wipes the ChromeOS user
+partition, and writing Linux to internal eMMC replaces ChromeOS. This procedure
+is specific to the Snapdragon-based 11Q727 / `google-wormdingler`, using the
+**Google Trogdor** ARM64 image. Other Duet 3 generations, including MediaTek
+models, require other images and may not be supported.
+
+Authoritative references:
+
+- https://postmarketos.org/download/ (select Google Trogdor)
+- https://wiki.postmarketos.org/wiki/Lenovo_IdeaPad_Duet_3_%28google-wormdingler%29
+- https://wiki.postmarketos.org/wiki/Category%3AChromeOS
+
+### A. Prepare the external USB image
+
+Download a Google Trogdor desktop-flavor `.img.xz` release image and
+verify its published checksum. Flash it to a removable USB stick using
+balenaEtcher or an equivalent image writer. The USB stick is erased; **do not
+target the Chromebook's internal drive**.
+
+Use the Chromebook's keyboard and USB-C flash-drive adapter during initial
+boot. Confirm the specific postmarketOS build supports its touchscreen and
+Wi-Fi; these are community-maintained and can regress.
+
+### B. Enable Developer Mode and external boot
+
+With the tablet off, press **Volume Up + Volume Down + Power** to reach recovery.
+On the recovery UI, press Volume Up to open the menu, then press Volume Up and
+Volume Down together to expose **Confirm Disabling OS Verification**. Select
+and confirm with volume/power keys. Developer Mode wipes local user data.
+
+Boot ChromeOS in Developer Mode, open Crosh via Ctrl+Alt+T, type `shell`,
+and run:
+
+```sh
+sudo crossystem dev_boot_usb=1 dev_boot_signed_only=0
+```
+
+If the Crosh shell disallows sudo with a no-new-privileges error, use the
+developer virtual terminal and log in as chronos, as described in the upstream
+ChromeOS installation page. **Don't** execute this from Crostini or a Linux
+container.
+
+Boot again with the prepared USB image inserted. At the Developer Mode prompt,
+press **Ctrl+U**, not Ctrl+D, to boot the external image. The prebuilt images
+historically use username `user`, password `147147`; change the default
+password immediately if applicable.
+
+### C. Test before installing to internal eMMC
+
+In the external Linux session test touchscreen taps, 2000x1200 landscape
+orientation, keyboard, Wi-Fi, audio output, charging and battery reporting,
+USB gadget networking, and suspend/resume. The device wiki reports camera
+support broken and a possible ±90 degree accelerometer orientation error.
+These are *not* caused by the head-unit code.
+
+### D. Optional internal installation (destructive)
+
+**Only after a successful external test and backup.** In the booted
+postmarketOS environment, with working internet for package downloads:
+
+```sh
+sudo apk update
+sudo apk add pmbootstrap util-linux
+lsblk -o NAME,SIZE,TYPE,MODEL,MOUNTPOINTS
+```
+
+Identify the Duet's **internal eMMC** from its size and device tree; examples
+on various Chromebooks include `/dev/mmcblk0` or `/dev/mmcblk1`.
+**These are examples, not safe defaults**. Never install to the USB image or
+a device path you have not conclusively identified.
+
+```sh
+pmbootstrap init
+# Select the google-trogdor device family, your preferred desktop, and
+# other settings as prompted. Consult upstream pmbootstrap help for version.
+pmbootstrap install --disk=/dev/YOUR_VERIFIED_INTERNAL_EMMC
+```
+
+Do not run the final command until the block device has been verified. It
+repartitions the selected disk and can make ChromeOS unbootable. Remove
+the external installer and boot the internal system using Ctrl+D at the
+Developer Mode screen.
+
+On recent postmarketOS images, `sudo` is provided by sudo-rs; older images
+may use `doas`. Use whichever is available rather than changing privilege
+systems mid-install.
+
+### E. Recommended post-install checklist
+
+On the Duet:
+
+```sh
+uname -m                   # expect aarch64
+cat /etc/os-release
+ip -br addr                # confirm Wi-Fi and USB gadget interfaces
+command -v sudo || command -v doas
+```
+
+Set a unique user password and update packages while temporarily online.
+In the GNOME display settings choose landscape orientation and practical
+scaling. If the display rotates incorrectly, see the wormdingler device wiki's
+`ACCEL_MOUNT_MATRIX` adjustment; apply it only if needed.
+
+Temporarily connect the Duet to the internet, install
+`bash python3 openssh-client firefox git curl` and clone the repository.
+Once USB is configured and the restricted SSH key is authorized, Wi-Fi can be
+left disconnected for day-to-day operation. The Tiny stays responsible for
+OBD, GPS, maps, configuration and data storage.
+
+**Install order:** Linux boot -> USB link appears -> Tiny network profile ->
+Duet software installation -> SSH key authorization -> verify host fingerprint
+-> start fullscreen kiosk -> test auto-reconnect. Only afterward disable the
+Tiny's original local kiosk if you choose.
+
+
 ## What the USB cable does
 
 The Duet's USB-C gadget/device controller presents an Ethernet interface to
