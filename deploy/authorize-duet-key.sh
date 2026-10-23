@@ -17,7 +17,7 @@ if grep -Fq " $KEY" "$HOME/.ssh/authorized_keys"; then
   echo 'Duet public key already authorized; no changes needed.'
   exit 0
 fi
-printf 'restrict,port-forwarding,permitopen="127.0.0.1:8787" %s %s drive-console-duet\n' \
+printf 'command="/bin/false",restrict,port-forwarding,permitopen="127.0.0.1:8787" %s %s drive-console-duet\n' \
   "$TYPE" "$KEY" >> "$HOME/.ssh/authorized_keys"
 echo 'Duet display key authorized for local dashboard forwarding.'
 echo 'SSH on Tiny must be enabled; dashboard stays localhost-only.'
