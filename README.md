@@ -50,6 +50,19 @@ A missing optional table is tolerated. The `readings` table must be present. SQL
 
 **Important:** The dashboard has not been tested against the user's actual database yet; use `/api/health` and the status page to validate it on the car PC.
 
+## Optional wired Duet 3 touchscreen client
+
+The Lenovo Chromebook Duet 3 (11Q727 / `google-wormdingler`, when running a
+compatible Linux build) can display the Tiny's cockpit using **USB gadget
+Ethernet**, not Wi-Fi or an HDMI cable. The Tiny remains the source of OBD,
+GPS, navigation, maps, and updates. The Duet is a touchscreen/browser client
+with a secure SSH tunnel over USB and an offline/reconnect screen.
+
+See **[Wired Duet 3 setup](docs/DUET_USB_DISPLAY.md)** for prerequisites, USB
+interface detection, host key verification, installation scripts and recovery.
+Setup is opt-in and preserves the Tiny's existing dashboard and OBD services.
+Do not change the dashboard's `CAR_BIND=127.0.0.1` setting.
+
 ## Setup on Ubuntu
 
 Install on the Linux computer as `cayden` (never use `sudo git clone`):
