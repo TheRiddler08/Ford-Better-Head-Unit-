@@ -5,7 +5,7 @@ const state = {
   view: "home", priorView: "home", units: "us", theme: "night",
   live: {}, freshness: null, sensors: [], summary: null, gps: null,
   tilesZoom: 13, currentTrack: -1, tracks: [], currentUrl: null,
-  build: null, mapTicket: 0, toastTimer: null, uiConfigRevision: -1, obdPoller: null
+  build: null, mapTicket: 0, toastTimer: null, uiConfigRevision: -1, obdPoller: null, prefs: null
 };
 const nf = (v, digits=0) => v === null || v === undefined || !Number.isFinite(Number(v)) ?
   "—" : Number(v).toLocaleString(undefined,{maximumFractionDigits:digits});
@@ -63,12 +63,14 @@ function setTheme(theme){
   $("quickTheme").textContent=state.theme==="day"?"☀":"☾";
   ["Night","Day"].forEach(label=>$("set"+label).classList.toggle("chosen",state.theme===label.toLowerCase()));
   try{localStorage.setItem("driveconsole-theme",state.theme);}catch(_){}
+  if(state.prefs)state.prefs.display.theme=state.theme;
 }
 function setUnits(units){
   state.units=units==="metric"?"metric":"us";
   $("setUS").classList.toggle("chosen",state.units==="us");
   $("setMetric").classList.toggle("chosen",state.units==="metric");
   try{localStorage.setItem("driveconsole-units",state.units);}catch(_){}
+  if(state.prefs)state.prefs.display.units=state.units;
   renderGauges();
 }
 function paintRing(id,actual,max){
@@ -271,16 +273,122 @@ async function refreshRemoteConfiguration(){
   if(state.obdPoller)clearInterval(state.obdPoller);
   state.obdPoller=setInterval(pollOBD,Math.max(2,Math.min(60,interval))*1000);
 }
+
+async function loadPreferences(){
+  try{
+    state.prefs=await api("/api/headunit-prefs");
+    const p=state.prefs;
+    $("profileNickname").value=p.vehicle.nickname;
+    $("profileModel").value=p.vehicle.model;
+    $("profileYear").value=p.vehicle.year;
+    if(p.display.theme)setTheme(p.display.theme);
+    if(p.display.units)setUnits(p.display.units);
+    renderRoutines();
+  }catch(error){notice("Vehicle settings unavailable: "+error.message);}
+}
+async function savePreferences(){
+  if(!state.prefs){notice("Settings not loaded");return;}
+  try{
+    const next=JSON.parse(JSON.stringify(state.prefs));
+    next.revision++;
+    state.prefs=await (async()=>{
+      const response=await fetch("/api/headunit-prefs",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(next)});
+      const payload=await response.json();
+      if(!response.ok)throw new Error(payload.error||"Save failed");
+      return payload;
+    })();
+    renderRoutines();
+    notice("Head-unit settings saved");
+  }catch(error){notice("Could not save preferences: "+error.message);await loadPreferences();}
+}
+function formatETA(date){
+  return date.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"});
+}
+function renderRoutines(){
+  if(!state.prefs)return;
+  const prefs=state.prefs,places=prefs.destinations;
+  const optionHTML=places.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join("");
+  $("routineDestination").innerHTML=optionHTML;
+  $("routineOrigin").innerHTML='<option value="">Any starting point</option>'+optionHTML;
+  const now=new Date(),day=(now.getDay()+6)%7;
+  const startOfDay=new Date(now);startOfDay.setHours(0,0,0,0);
+  const today=day;
+  const schedules=prefs.routines.flatMap(r=>{
+    return Array.from({length:8},(_,offset)=>{
+      const d=new Date(startOfDay);d.setDate(d.getDate()+offset);
+      const weekday=(today+offset)%7;
+      if(!r.days.includes(weekday))return null;
+      const [hour,minute]=r.time.split(":").map(Number);
+      d.setHours(hour,minute,0,0);
+      return {routine:r,at:d};
+    }).filter(x=>x&&x.at.getTime()>=now.getTime()-30*60000);
+  }).sort((a,b)=>a.at-b.at);
+  const next=schedules[0];
+  if(!next){
+    $("routineSuggestion").textContent="No upcoming routine. Add a scheduled trip to see departure suggestions.";
+  }else{
+    const dest=places.find(p=>p.id===next.routine.destinationId);
+    const duration=dest?.usualMinutes;
+    const when=next.at.toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric"})+" at "+formatETA(next.at);
+    const eta=duration?" · Estimated arrival "+formatETA(new Date(next.at.getTime()+duration*60000)):" · Arrival time unavailable (enter usual drive minutes)";
+    $("routineSuggestion").textContent=next.routine.name+" → "+dest.name+" · Depart "+when+eta;
+  }
+  $("routineList").innerHTML=prefs.routines.map(r=>{
+    const dest=places.find(p=>p.id===r.destinationId);
+    return '<div class="log-row"><div><strong>'+esc(r.name)+'</strong><span>'+esc(dest?.name||"Unknown")+
+      ' · '+esc(r.time)+' · '+r.days.length+' day(s)/week</span></div><button type="button" data-delete-routine="'+esc(r.id)+'">Remove</button></div>';
+  }).join("")||"No recurring trips saved.";
+}
+function identifier(){return "id"+Date.now().toString(36)+Math.floor(Math.random()*100000).toString(36);}
+function bindPreferences(){
+  $("vehicleProfileForm").addEventListener("submit",async event=>{
+    event.preventDefault();if(!state.prefs)return;
+    state.prefs.vehicle={nickname:$("profileNickname").value.trim(),model:$("profileModel").value.trim(),
+      year:Number($("profileYear").value)};
+    await savePreferences();
+  });
+  $("destinationForm").addEventListener("submit",async event=>{
+    event.preventDefault();if(!state.prefs)return;
+    const data=new FormData(event.currentTarget);
+    state.prefs.destinations.push({
+      id:identifier(),name:String(data.get("name")).trim(),
+      lat:Number(data.get("lat")),lon:Number(data.get("lon")),
+      usualMinutes:data.get("minutes")?Number(data.get("minutes")):null
+    });
+    await savePreferences();event.currentTarget.reset();
+  });
+  $("routineForm").addEventListener("submit",async event=>{
+    event.preventDefault();if(!state.prefs)return;
+    const data=new FormData(event.currentTarget),days=data.get("days");
+    state.prefs.routines.push({
+      id:identifier(),name:String(data.get("name")).trim(),
+      destinationId:String(data.get("destinationId")),
+      originId:data.get("originId")||null,
+      time:String(data.get("time")),
+      days:days==="weekdays"?[0,1,2,3,4]:days==="weekends"?[5,6]:[0,1,2,3,4,5,6]
+    });
+    await savePreferences();event.currentTarget.reset();
+  });
+  $("routineList").addEventListener("click",async event=>{
+    const btn=event.target.closest("[data-delete-routine]");
+    if(!btn||!state.prefs)return;
+    state.prefs.routines=state.prefs.routines.filter(r=>r.id!==btn.dataset.deleteRoutine);
+    await savePreferences();
+  });
+}
 function attach(){
   document.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>show(button.dataset.view)));
   document.querySelectorAll("[data-unavailable]").forEach(button=>button.addEventListener("click",()=>notice(button.dataset.unavailable)));
   $("updateRefresh").addEventListener("click",refreshUpdates);
+  bindPreferences();
   $("backButton").addEventListener("click",()=>show(state.priorView||"home"));
-  $("quickTheme").addEventListener("click",()=>setTheme(state.theme==="night"?"day":"night"));
-  $("setNight").addEventListener("click",()=>setTheme("night"));
-  $("setDay").addEventListener("click",()=>setTheme("day"));
-  $("setUS").addEventListener("click",()=>setUnits("us"));
-  $("setMetric").addEventListener("click",()=>setUnits("metric"));
+  $("quickTheme").addEventListener("click",async()=>{setTheme(state.theme==="night"?"day":"night");if(state.prefs)await savePreferences();});
+  $("setNight").addEventListener("click",async()=>{setTheme("night");if(state.prefs)await savePreferences();});
+  $("setDay").addEventListener("click",async()=>{setTheme("day");if(state.prefs)await savePreferences();});
+  $("setUS").addEventListener("click",async()=>{setUnits("us");if(state.prefs)await savePreferences();});
+  $("setMetric").addEventListener("click",async()=>{setUnits("metric");if(state.prefs)await savePreferences();});
   $("fullscreenButton").addEventListener("click",async()=>{
     try{if(document.fullscreenElement)await document.exitFullscreen();
     else await document.documentElement.requestFullscreen();}catch(_){notice("Fullscreen is controlled by the kiosk browser.");}
@@ -319,8 +427,9 @@ function main(){
   attach();
   try{setTheme(localStorage.getItem("driveconsole-theme")||"night");setUnits(localStorage.getItem("driveconsole-units")||"us");}
   catch(_){setTheme("night");setUnits("us");}
-  clock();pollOBD();pollGPS();watchBuild();
+  clock();pollOBD();pollGPS();watchBuild();loadPreferences();
   setInterval(clock,15000);
+  setInterval(renderRoutines,60000);
   state.obdPoller=setInterval(pollOBD,3000);
   refreshRemoteConfiguration();
   setInterval(refreshRemoteConfiguration,45000);

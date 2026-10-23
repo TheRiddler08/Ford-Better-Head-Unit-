@@ -126,6 +126,28 @@
       <div class="panel-heading"><div><span class="eyebrow">NAVIGATION</span><h1 id="navigationTitle">Offline maps</h1><p>GPS position and locally stored map tiles. No cloud mapping required.</p></div></div>
       <div class="feature-grid">
         <div class="glass feature-large"><div class="feature-icon">➤</div><h2 id="navFixTitle">Waiting for GPS</h2><p id="navFixDescription">Your NaviSys USB GNSS receiver can provide live position through gpsd once installed.</p><div class="coordinate-card" id="navCoords">No coordinates received</div><button class="primary-button" data-view="home">Open map on home screen</button></div>
+        <div class="glass feature-info"><h2>Saved destinations &amp; routines</h2>
+          <p>Plan regular trips using your local clock. Times are suggestions, not live routing.</p>
+          <div id="routineSuggestion" class="notice">Loading daily destinations…</div>
+          <div id="routineList" class="log-list"></div>
+          <h3>Add destination</h3>
+          <form id="destinationForm" class="car-form">
+            <input name="name" placeholder="Name (e.g. Work)" maxlength="40" required>
+            <input name="lat" type="number" step="any" min="-90" max="90" placeholder="Latitude" required>
+            <input name="lon" type="number" step="any" min="-180" max="180" placeholder="Longitude" required>
+            <input name="minutes" type="number" min="1" max="720" placeholder="Usual drive (minutes, optional)">
+            <button class="primary-button" type="submit">Save destination</button>
+          </form>
+          <h3>Recurring trip</h3>
+          <form id="routineForm" class="car-form">
+            <input name="name" placeholder="Morning commute" maxlength="40" required>
+            <select name="destinationId" id="routineDestination" required></select>
+            <select name="originId" id="routineOrigin"><option value="">Any starting point</option></select>
+            <input name="time" type="time" value="07:30" required>
+            <select name="days"><option value="weekdays">Monday–Friday</option><option value="weekends">Saturday–Sunday</option><option value="everyday">Every day</option></select>
+            <button class="primary-button" type="submit">Save routine</button>
+          </form>
+        </div>
         <div class="glass feature-info"><h2>Local tile folder</h2><code>/var/lib/car-dashboard/tiles/{z}/{x}/{y}.png</code><p>Tiles must be downloaded separately using a source that permits offline storage. The interface will show them automatically once installed and your GPS has a fix.</p><p class="warning-note">Live routing and turn-by-turn directions are not yet implemented. The map never invents a road route or ETA.</p></div>
       </div>
     </section>
@@ -165,11 +187,14 @@
       </div>
     </section>
     <section class="view view-panel" id="view-settings" aria-labelledby="settingsTitle">
-      <div class="panel-heading"><div><span class="eyebrow">PREFERENCES</span><h1 id="settingsTitle">Display settings</h1><p>Settings stay in the local browser on this head unit.</p></div></div>
+      <div class="panel-heading"><div><span class="eyebrow">VEHICLE &amp; HEAD UNIT</span><h1 id="settingsTitle">Vehicle settings</h1><p>Personalize your dashboard and scheduled trips. Ford factory controls are not connected.</p></div></div>
       <div class="settings-grid">
+        <div class="glass setting-box"><h2>Your vehicle</h2><p>Local identification, not changes to the Ford ECU.</p><form id="vehicleProfileForm" class="car-form"><input id="profileNickname" maxlength="40" placeholder="Vehicle nickname"><input id="profileModel" maxlength="40" placeholder="Vehicle model"><input id="profileYear" type="number" min="1980" max="2100" placeholder="Model year"><button class="primary-button" type="submit">Save vehicle</button></form></div>
+        <div class="glass setting-box"><h2>Frequent trips</h2><p>Set up work, home, or school departure routines in Navigation.</p><button class="subtle-button" data-view="navigation">Manage scheduled routes →</button></div>
         <div class="glass setting-box"><h2>Appearance</h2><p>Adjust the display for day or night use.</p><div class="choice-row"><button id="setNight" class="choice">Night</button><button id="setDay" class="choice">Day</button></div></div>
         <div class="glass setting-box"><h2>Vehicle units</h2><p>Choose speed and temperature conversion.</p><div class="choice-row"><button id="setUS" class="choice">MPH · °F</button><button id="setMetric" class="choice">KM/H · °C</button></div></div>
         <div class="glass setting-box"><h2>Display</h2><p>The launcher starts fullscreen at boot. You can also switch fullscreen manually.</p><button id="fullscreenButton" class="subtle-button">Toggle fullscreen</button></div>
+        <div class="glass setting-box"><h2>Ford factory settings</h2><p>Door locks, lighting, vehicle climate, and factory display configuration are not linked to this system. No ECU-writing controls are enabled.</p></div>
         <div class="glass setting-box"><h2>External integrations</h2><p>Apple CarPlay, calls, messaging, climate controls and steering wheel buttons have not been connected yet.</p><a href="/classic.html" class="subtle-button">Original telemetry dashboard ↗</a></div>
       </div>
     </section>
@@ -180,7 +205,6 @@
         <button class="app-tile" data-view="media" aria-label="Music"><span class="app-icon music">♫</span><span>Music</span></button>
         <button class="app-tile" data-view="navigation" aria-label="Maps"><span class="app-icon maps">➤</span><span>Maps</span></button>
         <button class="app-tile" data-unavailable="Messaging is not connected yet." aria-label="Messages (not connected)"><span class="app-icon messages">☏</span><span>Messages</span></button>
-        <button class="app-tile" data-unavailable="Podcasts integration is not connected yet. You can play downloaded audio files in Music." aria-label="Podcasts (not connected)"><span class="app-icon podcasts">◉</span><span>Podcasts</span></button>
         <button class="app-tile" data-view="vehicle" aria-label="Vehicle"><span class="app-icon vehicle">▰</span><span>Vehicle</span></button>
         <button class="app-tile" data-view="diagnostics" aria-label="Diagnostics"><span class="app-icon diag">✚</span><span>Health</span></button>
         <button class="app-tile" data-view="updates" aria-label="Updates"><span class="app-icon more">↻</span><span>Updates</span></button>
