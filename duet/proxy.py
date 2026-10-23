@@ -37,6 +37,7 @@ def fetch_upstream(host, port, path, method="GET", body=None, content_type=None)
         headers = {"Accept": "*/*", "Cache-Control": "no-store"}
         if body is not None:
             headers["Content-Type"] = content_type or "application/json"
+            headers["Origin"] = f"http://{host}:{port}"
         conn.request(method, path, body=body, headers=headers)
         response = conn.getresponse()
         data = response.read(MAX_RESPONSE + 1)
