@@ -223,3 +223,40 @@ sudo rm -f /etc/car-dashboard/headless-mode
 Setting `graphical.target` restores the boot target but does not automatically
 reinstate GDM auto-login or the dashboard kiosk. This is intentionally
 reversible without needing a monitor to restore SSH-based administration.
+
+## Recovery after Tiny reboot (existing wired profile)
+
+A link can briefly lose carrier when the Tiny reboots. The setup timer now
+checks **activation** of the existing `car-duet-wired-*` profile by UUID rather
+than exiting merely because the profile exists. It never recreates existing
+profiles, replaces an unrelated active connection, or changes a device's
+address. It retries after the physical link returns.
+
+On the **Duet** (currently installed timer may have been disabled while
+troubleshooting earlier duplicate profiles), verify the intended profile and
+interface first:
+
+```sh
+nmcli -f NAME,UUID,DEVICE connection show
+ip -4 addr show eth0
+```
+
+Once the latest script is checked out, refresh the timer **only for the Duet**:
+
+```sh
+sudo bash deploy/setup-ethernet.sh duet --install --interface eth0
+sudo systemctl start car-duet-ethernet-duet.service
+sudo journalctl -u car-duet-ethernet-duet.service -n 30 --no-pager
+```
+
+On the **Tiny**, the dedicated adapter is `enx9c69d39dd0ba` in the tested
+setup. Refresh its timer only if its profile is bound to that interface:
+
+```sh
+sudo bash deploy/setup-ethernet.sh tiny --install --interface enx9c69d39dd0ba
+```
+
+Do not invoke the setup on the Tiny's internet-facing NIC (`enp0s31f6`).
+If both interfaces and pings recover but the kiosk still shows offline,
+check `curl -i http://127.0.0.1:8877/__link` and SSH/proxy logs instead of
+modifying Ethernet.

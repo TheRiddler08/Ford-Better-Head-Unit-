@@ -101,15 +101,72 @@ if [[ "$MODE" == --install ]]; then
   install_timer
 fi
 
-# Listing by NAME rather than resolving the name avoids NetworkManager's
-# ambiguous-ID error when prior runs left two identically named profiles.
-# Never create a third profile; leave deduplication to an operator using UUIDs.
-PROFILE_COUNT="$(nmcli -t -f NAME connection show | grep -Fxc -- "$PROFILE" || true)"
-if (( PROFILE_COUNT > 0 )); then
-  if (( PROFILE_COUNT > 1 )); then
-    echo "WARNING: Found $PROFILE_COUNT profiles named '$PROFILE'. Resolve duplicates by UUID before continuing." >&2
-  else
-    echo "Profile '$PROFILE' already exists; leaving its configuration untouched."
+# Existing profiles must be checked for activation, not merely existence:
+# the peer going offline can leave an Ethernet device disconnected. Resolve the
+# UUID explicitly, to avoid activating an ambiguous/duplicated connection.
+PROFILE_UUIDS=()
+while IFS=: read -r conn_name conn_uuid unused; do
+  if [[ "$conn_name" == "$PROFILE" && -n "$conn_uuid" ]]; then
+    PROFILE_UUIDS+=("$conn_uuid")
+  fi
+done < <(nmcli -t -f NAME,UUID connection show)
+if (( ${#PROFILE_UUIDS[@]} > 1 )); then
+  echo "WARNING: Multiple '$PROFILE' profiles exist. Refusing ambiguous activation; resolve by UUID." >&2
+  exit 1
+fi
+if (( ${#PROFILE_UUIDS[@]} == 1 )); then
+  uuid="${PROFILE_UUIDS[0]}"
+  nic="$(nmcli -g connection.interface-name connection show uuid "$uuid" 2>/dev/null || true)"
+  if [[ -z "$nic" || "$nic" == "--" ]]; then
+    echo "Existing '$PROFILE' has no pinned interface; refusing to guess a NIC." >&2
+    exit 1
+  fi
+  if [[ -n "$EXPLICIT_IFACE" && "$EXPLICIT_IFACE" != "$nic" ]]; then
+    echo "Profile '$PROFILE' is bound to $nic, not requested $EXPLICIT_IFACE. No changes." >&2
+    exit 1
+  fi
+  if [[ ! -d "/sys/class/net/$nic" ]]; then
+    echo "Waiting for $nic to reappear; leaving profile and other networks untouched."
+    exit 0
+  fi
+  if [[ "$(nmcli -g GENERAL.TYPE device show "$nic" 2>/dev/null || true)" != ethernet ]]; then
+    echo "Expected Ethernet at $nic; refusing activation." >&2
+    exit 1
+  fi
+  if [[ "$ROLE" == duet ]]; then
+    nic_path="$(readlink -f "/sys/class/net/$nic/device" 2>/dev/null || true)"
+    if [[ ! "$nic_path" =~ /usb[0-9]+/ ]]; then
+      echo "Refusing non-USB Duet device $nic." >&2
+      exit 1
+    fi
+  fi
+  # Never bring up a similarly named, manually modified profile with a
+  # different IP. That could otherwise steal a remote-management interface.
+  if [[ "$(nmcli -g ipv4.method connection show uuid "$uuid" 2>/dev/null || true)" != manual ||
+        "$(nmcli -g ipv4.addresses connection show uuid "$uuid" 2>/dev/null || true)" != "$ADDRESS" ]]; then
+    echo "Existing '$PROFILE' does not have expected IPv4 $ADDRESS; refusing activation." >&2
+    exit 1
+  fi
+  active="$(nmcli -g GENERAL.CONNECTION device show "$nic" 2>/dev/null || true)"
+  if [[ "$active" == "$PROFILE" ]]; then
+    echo "Already connected: $nic -> $PROFILE."
+    exit 0
+  fi
+  if [[ -n "$active" && "$active" != "--" ]]; then
+    echo "Device $nic already uses '$active'. Not replacing another connection."
+    exit 0
+  fi
+  # During a Tiny reboot, link carrier is usually absent. A failed nmcli up
+  # must not block later retries or trigger profile recreation.
+  if [[ ! -r "/sys/class/net/$nic/carrier" ||
+        "$(cat "/sys/class/net/$nic/carrier" 2>/dev/null || true)" != 1 ]]; then
+    echo "Ethernet link $nic has no carrier yet; retrying on the next timer run."
+    exit 0
+  fi
+  echo "Restoring existing wired connection '$PROFILE' on $nic using UUID $uuid."
+  if ! nmcli --wait 12 connection up uuid "$uuid" ifname "$nic"; then
+    echo "Activation unsuccessful; will retry, without changing other networks." >&2
+    exit 1
   fi
   exit 0
 fi
@@ -142,6 +199,7 @@ NIC="${CANDIDATES[0]}"
 echo "Configuring $ROLE Ethernet $NIC at $ADDRESS (no gateway or DNS)."
 nmcli connection add type ethernet con-name "$PROFILE" ifname "$NIC" \
   connection.autoconnect yes connection.autoconnect-priority 100 \
+  connection.autoconnect-retries 0 \
   ipv4.method manual ipv4.addresses "$ADDRESS" ipv4.never-default yes \
   ipv4.ignore-auto-dns yes ipv6.method disabled \
   802-3-ethernet.cloned-mac-address permanent
