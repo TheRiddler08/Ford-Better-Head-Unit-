@@ -28,15 +28,21 @@ PROXY_PID=$!
 (
   while :; do
     echo "$(date -Is) Opening USB SSH tunnel to $TINY_HOST"
-    ssh -F /dev/null -N -T \
+    # SSH exits nonzero while the Tiny reboots or its interface has no carrier.
+    # Keep retrying even with errexit enabled for the rest of this launcher.
+    if ssh -F /dev/null -N -T \
       -o BatchMode=yes -o StrictHostKeyChecking=yes \
       -o ExitOnForwardFailure=yes -o ConnectTimeout=5 \
       -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
       -o ConnectionAttempts=1 \
       -i "$KEY" \
       -L 127.0.0.1:8788:127.0.0.1:8787 \
-      "$TINY_USER@$TINY_HOST"
-    echo "$(date -Is) USB tunnel disconnected; reconnecting."
+      "$TINY_USER@$TINY_HOST"; then
+      echo "$(date -Is) SSH tunnel closed; reconnecting."
+    else
+      rc=$?
+      echo "$(date -Is) SSH tunnel failed (exit $rc); retrying in 3 seconds."
+    fi
     sleep 3
   done
 ) &
