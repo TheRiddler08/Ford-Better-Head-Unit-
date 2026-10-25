@@ -69,6 +69,7 @@ is_available() {
 install_timer() {
   local script="/usr/local/libexec/car-duet-ethernet" unit="car-duet-ethernet-$ROLE"
   command -v systemctl >/dev/null || { echo "systemd is required." >&2; exit 1; }
+  install -d -m 0755 /usr/local/libexec
   install -m 0755 "$0" "$script"
   local args="$ROLE --once"
   [[ -z "$EXPLICIT_IFACE" ]] || args="$args --interface $EXPLICIT_IFACE"
