@@ -26,6 +26,8 @@ TOKEN = os.getenv("CAR_PANEL_TOKEN", "")
 KEY_HEX = os.getenv("CAR_LINK_KEY", "")
 HOST = os.getenv("CAR_PANEL_BIND", "127.0.0.1")
 PORT = int(os.getenv("CAR_PANEL_PORT","8790"))
+DEVICE_TOKEN = os.getenv("CAR_DEVICE_TOKEN", "")
+DEVICE_NAME = os.getenv("CAR_DEVICE_NAME", "car-1")
 
 def radio_key():
     try:
@@ -92,7 +94,7 @@ def queue_change(name, old_rev, changes):
         if not compact:return {"revision":current["revision"],"frames":0}
         sequence=next_sequence(name)
         frames=split_message("configuration",sequence,
-                             {"revision":next_config["revision"],"changes":compact},radio_key())
+                             {"revision":next_config["revision"],"changes":compact},radio_key()) if KEY_HEX else []
         existing=read_outbox(queue_file)
         item={"revision":sequence,"configRevision":next_config["revision"],"created":int(time.time()),
               "kind":"configuration","frames":[b.hex() for b in frames],
@@ -206,8 +208,20 @@ class Handler(BaseHTTPRequestHandler):
         if length<=0 or length>8192:raise ValueError("Invalid request length")
         return json.loads(self.rfile.read(length))
 
+    def device_access(self):
+        if not DEVICE_TOKEN or not hmac.compare_digest(
+                self.headers.get("Authorization", ""), "Bearer "+DEVICE_TOKEN):
+            self.fail("Unauthorized",401)
+            return False
+        return True
+
     def do_GET(self):
         req=urlsplit(self.path)
+        if req.path=="/api/device/config":
+            if not self.device_access():return
+            with LOCK:
+                cfg_file,_=paths(DEVICE_NAME)
+                return self.response({"device":DEVICE_NAME,"config":read_config(cfg_file)})
         if req.path in ("/","/panel.js","/panel.css"):
             name,mime={"/":("index.html","text/html; charset=utf-8"),
                        "/panel.js":("panel.js","text/javascript; charset=utf-8"),
@@ -230,6 +244,25 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(exc)
 
     def do_POST(self):
+        if self.path=="/api/device/ack":
+            if not self.device_access():return
+            try:
+                data=self.request_json()
+                if not isinstance(data,dict) or set(data)!={"revision"} or type(data["revision"]) is not int:
+                    raise ValueError("Invalid acknowledgment")
+                with LOCK:
+                    cfg_file,queue_file=paths(DEVICE_NAME)
+                    if not 0<=data["revision"]<=read_config(cfg_file)["revision"]:
+                        raise ValueError("Invalid acknowledgment revision")
+                    queue=read_outbox(queue_file)
+                    # Configuration snapshots supersede older config deltas only.
+                    queue=[item for item in queue if not (
+                        item.get("kind")=="configuration" and
+                        item.get("configRevision",float("inf"))<=data["revision"])]
+                    save_outbox(queue_file,queue)
+                return self.response({"ok":True})
+            except (TypeError,ValueError,OSError) as exc:
+                return self.fail(exc)
         if not self.access():return
         try:
             data=self.request_json()
@@ -256,7 +289,10 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     if not TOKEN or len(TOKEN)<24:
         raise SystemExit("Set CAR_PANEL_TOKEN (random >=24 characters) in environment.")
-    radio_key()
+    safe_device(DEVICE_NAME)
+    if KEY_HEX:radio_key()
+    if DEVICE_TOKEN and (len(DEVICE_TOKEN)<32 or DEVICE_TOKEN==TOKEN):
+        raise SystemExit("CAR_DEVICE_TOKEN must be a separate random token of at least 32 characters")
     if HOST not in ("127.0.0.1","::1","localhost"):
         raise SystemExit("Home panel must bind to loopback; access via SSH tunnel or authenticated proxy.")
     ROOT.mkdir(parents=True,exist_ok=True)

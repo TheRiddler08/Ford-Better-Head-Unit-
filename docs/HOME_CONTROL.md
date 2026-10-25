@@ -13,6 +13,10 @@ The car boots into an offline-first, responsive infotainment screen at http://12
 
 Optional GPS position uses an installed gpsd daemon on TCP 127.0.0.1:2947. Map files are offline XYZ tiles at /var/lib/car-dashboard/tiles/Z/X/Y.png; route guidance is not yet implemented. Do not download tiles from a service without permission to store them offline.
 
+## Tailscale delivery (no radio required)
+
+For home-to-car settings delivery, follow [Tailscale home control](TAILSCALE_HOME_CONTROL.md). It includes separate admin/device credentials, persistent Linux services, SSH forwarding, and car polling with save-before-ack retries. Software updates remain on the existing GitHub updater.
+
 ## Home control server
 
 Run on your **home server**, not on the car:
@@ -21,9 +25,10 @@ Run on your **home server**, not on the car:
 cd Ford-Better-Head-Unit-
 python3 -m venv .venv
 . .venv/bin/activate
-python3 -m pip install 'cryptography>=41' 'paho-mqtt>=2,<3'
+# No third-party packages are needed for the panel or Tailscale settings sync.
+# Install cryptography/paho-mqtt only if using the optional code/radio adapters.
 export CAR_PANEL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
-export CAR_LINK_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+# CAR_LINK_KEY is optional; configure it only for the radio transport.
 python3 -m control.home_server
 ```
 

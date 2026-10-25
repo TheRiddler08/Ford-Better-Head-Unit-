@@ -193,3 +193,7 @@ bash deploy/install-recorder.sh
 ```
 
 After adoption, the GitHub updater will check both pieces of software. Updates always restart the dashboard; when recorder code changes, the updater restarts the recorder only if it was already running. If you've stopped it to use FORScan, the updater leaves it stopped. Both have separate systemd services.
+
+## Home-to-car settings over Tailscale
+
+Use the [home server and car installation guide](docs/TAILSCALE_HOME_CONTROL.md) to deliver layout and settings changes over an authenticated SSH tunnel on your tailnet. LoRaWAN is optional. Software updates continue through the existing GitHub updater.

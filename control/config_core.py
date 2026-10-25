@@ -108,7 +108,7 @@ def read_config(path):
 
 def write_config(path, config):
     """Atomically replace app config, never execute arbitrary code."""
-    from os import replace
+    from os import replace, fsync, open as os_open, close, O_RDONLY
     from tempfile import NamedTemporaryFile
     valid=validate(config)
     path=Path(path)
@@ -116,5 +116,12 @@ def write_config(path, config):
     with NamedTemporaryFile(mode="w",encoding="utf-8",dir=path.parent,prefix=".config-",delete=False) as f:
         json.dump(valid,f,separators=(",",":"),sort_keys=True)
         f.write("\n")
+        f.flush()
+        fsync(f.fileno())
         temp=f.name
     replace(temp,path)
+    directory = os_open(path.parent, O_RDONLY)
+    try:
+        fsync(directory)
+    finally:
+        close(directory)
