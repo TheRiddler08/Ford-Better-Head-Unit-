@@ -17,6 +17,7 @@ fi
 mkdir -p "$HOME/.local/share/drive-console" "$HOME/.config/autostart" "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
 install -m 0644 "$ROOT/proxy.py" "$HOME/.local/share/drive-console/proxy.py"
+install -m 0644 "$ROOT/launcher_lock.py" "$HOME/.local/share/drive-console/launcher_lock.py"
 install -m 0755 "$ROOT/launch.sh" "$HOME/.local/share/drive-console/launch.sh"
 if [[ ! -f "$HOME/.ssh/drive-console-duet" ]]; then
   ssh-keygen -q -t ed25519 -a 64 -N '' -f "$HOME/.ssh/drive-console-duet" -C "drive-console-duet-display"
@@ -29,7 +30,7 @@ cat > "$HOME/.config/autostart/drive-console-duet.desktop" <<EOF
 Type=Application
 Name=Drive Console USB Display
 Comment=Launch reconnecting touchscreen over the Duet's USB network connection
-Exec=/bin/sh -c "$HOME/.local/share/drive-console/launch.sh"
+Exec=/usr/bin/python3 $HOME/.local/share/drive-console/launcher_lock.py $HOME/.local/share/drive-console/launch.sh
 Terminal=false
 X-GNOME-Autostart-enabled=true
 EOF
@@ -44,4 +45,4 @@ echo "On Tiny: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub"
 echo "On Duet: ssh-keyscan -t ed25519 172.16.42.2 | ssh-keygen -lf -"
 echo "After confirming fingerprints match, save: ssh-keyscan -H -t ed25519 172.16.42.2 >> ~/.ssh/known_hosts"
 echo "Kiosk starts automatically at next graphical login; no reboot was triggered."
-echo "Manual launch (from Duet's graphical terminal): ~/.local/share/drive-console/launch.sh"
+echo "Manual launch (from Duet's graphical terminal): python3 ~/.local/share/drive-console/launcher_lock.py ~/.local/share/drive-console/launch.sh"
