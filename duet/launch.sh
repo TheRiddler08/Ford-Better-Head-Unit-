@@ -4,10 +4,16 @@
 # Tiny:   Ubuntu USB Ethernet at 172.16.42.2
 set -euo pipefail
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Direct invocations are also guarded, not just graphical autostart.
+if [[ "${DRIVE_CONSOLE_LAUNCHER_CHILD:-0}" != 1 ]]; then
+  exec python3 "$BASE/launcher_lock.py" "$BASE/launch.sh"
+fi
 TINY_HOST="${DRIVE_TINY_HOST:-172.16.42.2}"
 TINY_USER="${DRIVE_TINY_USER:-cayden}"
 KEY="$HOME/.ssh/drive-console-duet"
 URL="http://127.0.0.1:8877/"
+PROFILE="$HOME/.local/state/drive-console/firefox-profile"
+mkdir -p "$PROFILE"
 if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
   echo "Start the Duet kiosk from its graphical desktop, not SSH." >&2
   exit 1
@@ -43,7 +49,7 @@ trap cleanup EXIT INT TERM
 sleep 2
 while :; do
   if command -v firefox >/dev/null 2>&1; then
-    firefox --kiosk --private-window "$URL" || true
+    firefox --no-remote --profile "$PROFILE" --kiosk "$URL" || true
   elif command -v chromium >/dev/null 2>&1; then
     chromium --kiosk --incognito --no-first-run \
       --user-data-dir="$HOME/.local/state/drive-console/chromium" "$URL" || true
