@@ -23,7 +23,17 @@ mkdir -p "$HOME/.local/state/drive-console"
 LOG="$HOME/.local/state/drive-console/kiosk.log"
 exec >>"$LOG" 2>&1
 echo "$(date -Is) Starting Duet display."
-python3 -u "$BASE/proxy.py" --port 8877 --upstream-port 8788 &
+(
+  while :; do
+    if python3 -u "$BASE/proxy.py" --port 8877 --upstream-port 8788; then
+      echo "$(date -Is) Duet proxy stopped; restarting in 3 seconds."
+    else
+      status=$?
+      echo "$(date -Is) Duet proxy exited $status; restarting in 3 seconds."
+    fi
+    sleep 3
+  done
+) &
 PROXY_PID=$!
 (
   while :; do
