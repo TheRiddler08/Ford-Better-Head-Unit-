@@ -59,6 +59,10 @@ is_available() {
   # Do not steal an existing addressed connection, even when explicitly named.
   [[ -z "$(ip -o -4 addr show dev "$nic" scope global 2>/dev/null)" ]] || return 1
   [[ -z "$(ip -o -6 addr show dev "$nic" scope global 2>/dev/null)" ]] || return 1
+  # Refuse any already established NM connection even if it has no address.
+  local state
+  state="$(nmcli -g GENERAL.STATE device show "$nic" 2>/dev/null || true)"
+  [[ "$state" != 100\ \(connected\) && "$state" != 100* ]] || return 1
   return 0
 }
 
