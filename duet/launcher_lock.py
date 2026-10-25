@@ -38,10 +38,22 @@ def main() -> int:
         )
 
         def forward(signum: int, _frame: object) -> None:
+            # Terminating only the child does not necessarily stop launch.sh:
+            # Firefox can exit and the kiosk's restart loop can reopen it.
+            # Bound shutdown and terminate the whole private process group.
             try:
                 os.killpg(child.pid, signum)
             except ProcessLookupError:
                 pass
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.wait()
+            raise SystemExit(128 + signum)
 
         signal.signal(signal.SIGTERM, forward)
         signal.signal(signal.SIGINT, forward)
