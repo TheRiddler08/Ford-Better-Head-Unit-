@@ -101,9 +101,16 @@ if [[ "$MODE" == --install ]]; then
   install_timer
 fi
 
-# Existing profiles are never overwritten or removed, and will autoconnect.
-if nmcli -g connection.id connection show "$PROFILE" >/dev/null 2>&1; then
-  echo "Profile '$PROFILE' already exists; leaving its configuration untouched."
+# Listing by NAME rather than resolving the name avoids NetworkManager's
+# ambiguous-ID error when prior runs left two identically named profiles.
+# Never create a third profile; leave deduplication to an operator using UUIDs.
+PROFILE_COUNT="$(nmcli -t -f NAME connection show | grep -Fxc -- "$PROFILE" || true)"
+if (( PROFILE_COUNT > 0 )); then
+  if (( PROFILE_COUNT > 1 )); then
+    echo "WARNING: Found $PROFILE_COUNT profiles named '$PROFILE'. Resolve duplicates by UUID before continuing." >&2
+  else
+    echo "Profile '$PROFILE' already exists; leaving its configuration untouched."
+  fi
   exit 0
 fi
 
@@ -136,7 +143,8 @@ echo "Configuring $ROLE Ethernet $NIC at $ADDRESS (no gateway or DNS)."
 nmcli connection add type ethernet con-name "$PROFILE" ifname "$NIC" \
   connection.autoconnect yes connection.autoconnect-priority 100 \
   ipv4.method manual ipv4.addresses "$ADDRESS" ipv4.never-default yes \
-  ipv4.ignore-auto-dns yes ipv6.method disabled
+  ipv4.ignore-auto-dns yes ipv6.method disabled \
+  802-3-ethernet.cloned-mac-address permanent
 # No cable carrier is normal during first setup. The profile remains persistent.
 if [[ -r "/sys/class/net/$NIC/carrier" ]] && [[ "$(cat "/sys/class/net/$NIC/carrier")" == 1 ]]; then
   nmcli connection up "$PROFILE" || echo "Cable present but activation pending; NetworkManager will retry." >&2
