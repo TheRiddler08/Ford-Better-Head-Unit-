@@ -179,3 +179,47 @@ needed, after confirming its name. Never remove active management interfaces.
 
 The old `deploy/configure-tiny-usb.sh` remains for USB *gadget* setups and
 must not be used with physical Ethernet.
+
+## Permanently headless ThinkCentre Tiny
+
+The Tiny is the backend only: no connected monitor, Firefox, Xorg dummy display,
+GDM session, or automatic desktop login is required. Its dashboard HTTP server,
+vehicle recorder, SSH, and Ethernet profiles run as systemd/NetworkManager
+services at boot. The Duet is the only graphical device.
+
+**Once the Duet's page works over wired Ethernet**, run on the Tiny as cayden:
+
+```sh
+cd ~/car-dashboard
+bash deploy/setup-headless-tiny.sh
+```
+
+The helper checks that the dashboard responds at `127.0.0.1:8787/api/health`
+and OpenSSH is active, restores any installer-managed GDM autologin settings,
+removes the Tiny's dashboard desktop-autostart entry, and sets
+`multi-user.target` as the **next boot's default**. It does not terminate the
+current graphical session, stop SSH, change the network, or touch the Duet.
+It places a persistent marker so future `deploy/install.sh` runs will not
+reinstate the Tiny's graphical kiosk.
+
+To confirm headless readiness **before disconnecting its monitor**, run:
+
+```sh
+systemctl get-default
+systemctl is-enabled car-dashboard.service ssh.service
+curl -fsS http://127.0.0.1:8787/api/health
+```
+
+Reboot the Tiny only after verifying that remote SSH/Tailscale access and the
+Duet's wired dashboard connection are stable. Then retest from the Duet with
+Wi-Fi off. If local desktop access is needed again, restore with:
+
+```sh
+sudo systemctl set-default graphical.target
+sudo rm -f /etc/car-dashboard/headless-mode
+# Optional: bash deploy/enable-kiosk.sh
+```
+
+Setting `graphical.target` restores the boot target but does not automatically
+reinstate GDM auto-login or the dashboard kiosk. This is intentionally
+reversible without needing a monitor to restore SSH-based administration.
