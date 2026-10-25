@@ -55,9 +55,12 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now car-dashboard.service
 bash "$ROOT/deploy/install-recorder.sh"
-# Install the dashboard kiosk by default. Opt out with CAR_KIOSK=0.
+# Install the dashboard kiosk by default for legacy installations. A persistent
+# headless marker takes precedence even if the installer is rerun later.
 # Do not reboot or restart GDM: remote MeshCentral sessions stay connected.
-if [[ "${CAR_KIOSK:-1}" == "1" ]]; then
+if [[ -f /etc/car-dashboard/headless-mode ]]; then
+  echo "Headless Tiny detected: skipping local desktop kiosk."
+elif [[ "${CAR_KIOSK:-1}" == "1" ]]; then
   echo 'Configuring automatic desktop login and full-screen dashboard kiosk...'
   bash "$ROOT/deploy/enable-kiosk.sh"
 else
