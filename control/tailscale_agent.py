@@ -9,6 +9,7 @@ from urllib.error import URLError
 from urllib.parse import urlsplit
 
 from control.config_core import read_config, validate, write_config
+from control.layouts import read_delivery, validate_delivery, write_delivery
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -17,7 +18,7 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def sync_once(base_url, token, config_path):
+def sync_once(base_url, token, config_path, layout_path=None):
     url = urlsplit(base_url)
     if (url.scheme != "http" or url.hostname != "127.0.0.1" or
             url.username or url.password or url.path not in ("", "/") or
@@ -34,8 +35,8 @@ def sync_once(base_url, token, config_path):
                           headers={"Authorization": "Bearer "+token,
                                    "Content-Type": "application/json"})
         with client.open(request, timeout=15) as response:
-            raw = response.read(65537)
-            if len(raw) > 65536:
+            raw = response.read(512001)
+            if len(raw) > 512000:
                 raise ValueError("Oversized response")
             return json.loads(raw)
 
@@ -52,6 +53,19 @@ def sync_once(base_url, token, config_path):
         raise ValueError("Configuration changed before acknowledgment")
     if call("/api/device/ack", {"revision": desired["revision"]}).get("ok") is not True:
         raise ValueError("Home did not accept acknowledgment")
+    if layout_path is not None:
+        layout = validate_delivery(call("/api/device/layout"))
+        saved = read_delivery(layout_path)
+        if layout["revision"] < saved["revision"]:
+            raise ValueError("Home layout is behind car")
+        if layout["revision"] == saved["revision"] and layout != saved:
+            raise ValueError("Conflicting layout revision")
+        if layout != saved:
+            write_delivery(layout_path, layout)
+        if read_delivery(layout_path) != layout:
+            raise ValueError("Layout changed before acknowledgment")
+        if call("/api/device/layout-ack", {"revision": layout["revision"]}).get("ok") is not True:
+            raise ValueError("Layout acknowledgment failed")
     return desired["revision"]
 
 
@@ -65,7 +79,7 @@ def main():
         raise SystemExit("CAR_SYNC_SECONDS must be between 2 and 3600")
     while True:
         try:
-            revision = sync_once(base, token, config)
+            revision = sync_once(base, token, config, Path(os.getenv("CAR_LAYOUT_FILE", str(config.with_name("layout.json")))))
             logging.info("Home configuration revision %s saved and acknowledged", revision)
         except (OSError, URLError, ValueError, TypeError, KeyError):
             # Avoid logging request objects, tokens or remote response bodies.

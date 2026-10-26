@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from control.config_core import DEFAULT, apply_changes, read_config, write_config, diff
 from control.lorawan_protocol import split_message
+from control.layouts import LayoutStore, FRAME_HOST, FRAME_POLICY, validate_project
 
 DEVICE_RE = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 LOCK = threading.RLock()
@@ -184,12 +185,12 @@ def ack_revision(name, revision):
         return found
 
 class Handler(BaseHTTPRequestHandler):
-    def response(self, data, status=200, mime="application/json; charset=utf-8"):
+    def response(self, data, status=200, mime="application/json; charset=utf-8", policy=None):
         raw=data if isinstance(data,bytes) else json.dumps(data,separators=(",",":")).encode()
         self.send_response(status)
         for key,val in {"Content-Type":mime,"Content-Length":str(len(raw)),
                         "Cache-Control":"no-store","X-Content-Type-Options":"nosniff",
-                        "Content-Security-Policy":"default-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'"}.items():
+                        "Content-Security-Policy":policy or "default-src 'self'; script-src 'self'; style-src 'self'; frame-src 'self'; base-uri 'none'; frame-ancestors 'none'"}.items():
             self.send_header(key,val)
         self.end_headers()
         self.wfile.write(raw)
@@ -205,7 +206,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def request_json(self):
         length=int(self.headers.get("Content-Length","0"))
-        if length<=0 or length>8192:raise ValueError("Invalid request length")
+        limit=512000 if self.path=="/api/layout" else 8192
+        if length<=0 or length>limit:raise ValueError("Invalid request length")
         return json.loads(self.rfile.read(length))
 
     def device_access(self):
@@ -217,20 +219,34 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         req=urlsplit(self.path)
+        if req.path=="/layout-host":
+            return self.response(FRAME_HOST,mime="text/html; charset=utf-8",policy=FRAME_POLICY)
+        if req.path=="/api/device/layout":
+            if not self.device_access():return
+            return self.response(LayoutStore(ROOT/"layouts.sqlite3").get(DEVICE_NAME)["published"])
         if req.path=="/api/device/config":
             if not self.device_access():return
             with LOCK:
                 cfg_file,_=paths(DEVICE_NAME)
                 return self.response({"device":DEVICE_NAME,"config":read_config(cfg_file)})
-        if req.path in ("/","/panel.js","/panel.css"):
+        if req.path in ("/","/panel.js","/panel.css","/builder.js","/builder.css","/layout-runtime.js"):
             name,mime={"/":("index.html","text/html; charset=utf-8"),
                        "/panel.js":("panel.js","text/javascript; charset=utf-8"),
-                       "/panel.css":("panel.css","text/css; charset=utf-8")}[req.path]
+                       "/panel.css":("panel.css","text/css; charset=utf-8"),
+                       "/builder.js":("builder.js","text/javascript; charset=utf-8"),
+                       "/layout-runtime.js":("layout-runtime.js","text/javascript; charset=utf-8"),
+                       "/builder.css":("builder.css","text/css; charset=utf-8")}[req.path]
             return self.response((UI/name).read_bytes(),mime=mime)
         if not self.access():return
         try:
             name=parse_qs(req.query).get("device",["car-1"])[0]
             cfg_file,queue_file=paths(name)
+            if req.path=="/api/layout-status":
+                state=LayoutStore(ROOT/"layouts.sqlite3").get(name)
+                return self.response({"generation":state["generation"],"revision":state["published"]["revision"],
+                    "enabled":state["published"]["enabled"],"acknowledgedRevision":state["acknowledgedRevision"]})
+            if req.path=="/api/layout":
+                return self.response(LayoutStore(ROOT/"layouts.sqlite3").get(name))
             if req.path=="/api/config":
                 return self.response(read_config(cfg_file))
             if req.path=="/api/pending":
@@ -244,6 +260,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(exc)
 
     def do_POST(self):
+        if self.path=="/api/device/layout-ack":
+            if not self.device_access():return
+            try:
+                data=self.request_json()
+                if not isinstance(data,dict) or set(data)!={"revision"}:
+                    raise ValueError("Invalid layout acknowledgment")
+                LayoutStore(ROOT/"layouts.sqlite3").ack(DEVICE_NAME,data["revision"])
+                return self.response({"ok":True})
+            except (TypeError,ValueError,OSError) as exc:
+                return self.fail(exc)
         if self.path=="/api/device/ack":
             if not self.device_access():return
             try:
@@ -267,6 +293,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data=self.request_json()
             if not isinstance(data,dict):raise ValueError("Invalid object")
+            if self.path=="/api/layout":
+                if data.get("action")=="validate":
+                    return self.response({"project":validate_project(data.get("project"))})
+                name=safe_device(data.get("device","car-1"))
+                return self.response(LayoutStore(ROOT/"layouts.sqlite3").update(
+                    name,data["generation"],data["action"],data.get("project"),data.get("version")))
             if self.path=="/api/package":
                 return self.response(queue_code_patch(data.get("device","car-1"),data["kind"],data["package"]))
             if self.path=="/api/change":

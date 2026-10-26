@@ -415,6 +415,11 @@ function attach(){
   window.addEventListener("resize",()=>{if(validFix(state.gps))renderTileMap();});
   window.addEventListener("beforeunload",()=>{if(state.currentUrl)URL.revokeObjectURL(state.currentUrl);});
 }
+async function watchCustomLayout(){
+  // An explicit recovery URL always stays on the standard dashboard.
+  if(location.pathname!=="/")return;
+  try{if((await api("/api/layout")).enabled)location.replace("/custom");}catch(_){}
+}
 async function watchBuild(){
   try{
     const next=(await api("/api/build")).revision;
@@ -427,7 +432,7 @@ function main(){
   attach();
   try{setTheme(localStorage.getItem("driveconsole-theme")||"night");setUnits(localStorage.getItem("driveconsole-units")||"us");}
   catch(_){setTheme("night");setUnits("us");}
-  clock();pollOBD();pollGPS();watchBuild();loadPreferences();
+  clock();pollOBD();pollGPS();watchBuild();watchCustomLayout();loadPreferences();
   setInterval(clock,15000);
   setInterval(renderRoutines,60000);
   state.obdPoller=setInterval(pollOBD,3000);
@@ -435,6 +440,7 @@ function main(){
   setInterval(refreshRemoteConfiguration,45000);
   setInterval(pollGPS,12000);
   setInterval(watchBuild,30000);
+  setInterval(watchCustomLayout,15000);
   setInterval(()=>{if(state.view==="vehicle")refreshVehicle();else if(state.view==="diagnostics")refreshDiagnostics();},60000);
 }
 main();

@@ -197,3 +197,7 @@ After adoption, the GitHub updater will check both pieces of software. Updates a
 ## Home-to-car settings over Tailscale
 
 Use the [home server and car installation guide](docs/TAILSCALE_HOME_CONTROL.md) to deliver layout and settings changes over an authenticated SSH tunnel on your tailnet. LoRaWAN is optional. Software updates continue through the existing GitHub updater.
+
+## Visual UI builder and source editor
+
+The home panel includes a multi-page drag-and-resize canvas, component inspector, HTML/CSS/JavaScript editors, sandboxed live preview, draft saving, project import/export, and versioned publishing over Tailscale. [Builder usage and upgrade steps](docs/UI_BUILDER.md). The original dashboard remains available for recovery.

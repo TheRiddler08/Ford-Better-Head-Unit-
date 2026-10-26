@@ -84,7 +84,7 @@ async function refresh(){
   if(!queue.items.length){box.append(node("div",null,"No pending changes. The car is up to date as far as acknowledgments are known."));return;}
   for(const item of queue.items){
     const row=node("div","queue-item");
-    row.append(node("span",null,"Revision "+item.revision),node("span",null,item.queued+"/"+item.fragments+" frames queued to network server"),
+    row.append(node("span",null,"Revision "+item.revision),node("span",null,item.fragments?item.queued+"/"+item.fragments+" radio frames queued":"Settings queued for Tailscale sync"),
       node("span",null,item.acked?"ACKNOWLEDGED":"Awaiting car acknowledgment"));
     box.append(row);
   }
@@ -100,10 +100,10 @@ async function save(){
 $("connect").addEventListener("click",async()=>{
   secret=$("adminToken").value.trim();
   if(!secret)return;
-  try{await refresh();$("loginArea").hidden=true;$("editor").hidden=false;$("adminToken").value="";}
+  try{await refresh();$("loginArea").hidden=true;$("editor").hidden=false;$("adminToken").value="";document.dispatchEvent(new Event("panel-connected"));}
   catch(error){$("authMessage").textContent=error.message;secret="";}
 });
 $("save").addEventListener("click",save);
 $("refresh").addEventListener("click",()=>refresh().catch(err=>$("pendingEdits").textContent=err.message));
 $("reset").addEventListener("click",()=>refresh().catch(err=>$("pendingEdits").textContent=err.message));
-$("device").addEventListener("change",()=>refresh().catch(err=>$("pendingEdits").textContent=err.message));
+$("device").addEventListener("change",()=>{document.dispatchEvent(new Event("panel-device"));return refresh().catch(err=>$("pendingEdits").textContent=err.message);});

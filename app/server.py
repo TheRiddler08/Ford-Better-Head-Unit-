@@ -27,9 +27,11 @@ TILE_ROUTE = re.compile(r"^/tiles/([0-9]{1,2})/([0-9]{1,8})/([0-9]{1,8})\.png$")
 
 sys.path.insert(0, str(WEB_DIR.parent.parent))
 from control.config_core import read_config
+from control.layouts import read_delivery, FRAME_HOST, FRAME_POLICY
 from app.headunit_prefs import read as read_prefs, update as update_prefs
 
 CONFIG_FILE = Path(os.environ.get("CAR_UI_CONFIG", "/etc/car-dashboard/ui-config.json"))
+LAYOUT_FILE = Path(os.getenv("CAR_LAYOUT_FILE", str(CONFIG_FILE.with_name("layout.json"))))
 PREFS_FILE = Path(os.environ.get("CAR_HEADUNIT_PREFS", str(Path.home() / ".config/car-dashboard/preferences.json")))
 OVERRIDE_DIR = Path(os.environ.get("CAR_OVERRIDE_DIR", "/var/lib/car-dashboard/overrides"))
 
@@ -227,6 +229,9 @@ ROUTES = {"/api/live": route_live, "/api/summary": route_summary,
 STATIC = {"/": ("cockpit.html", "text/html; charset=utf-8"),
           "/cockpit.html": ("cockpit.html", "text/html; charset=utf-8"),
           "/classic.html": ("index.html", "text/html; charset=utf-8"),
+          "/custom": ("custom.html", "text/html; charset=utf-8"),
+          "/custom.js": ("custom.js", "text/javascript; charset=utf-8"),
+          "/custom.css": ("custom.css", "text/css; charset=utf-8"),
           "/cockpit.css": ("cockpit.css", "text/css; charset=utf-8"),
           "/cockpit.js": ("cockpit.js", "text/javascript; charset=utf-8"),
           "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -237,14 +242,14 @@ STATIC = {"/": ("cockpit.html", "text/html; charset=utf-8"),
 class Handler(BaseHTTPRequestHandler):
     server_version = "CarDashboard/1.0"
 
-    def send_bytes(self, payload, status=200, mime="application/json; charset=utf-8", cache="no-store"):
+    def send_bytes(self, payload, status=200, mime="application/json; charset=utf-8", cache="no-store", policy=None):
         self.send_response(status)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", cache)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", policy or "default-src 'self'; img-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-src 'self'; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(payload)
 
@@ -253,9 +258,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urlsplit(self.path)
+        if url.path=="/layout-host":
+            return self.send_bytes(FRAME_HOST,mime="text/html; charset=utf-8",policy=FRAME_POLICY)
+        if url.path=="/layout-runtime.js":
+            return self.send_bytes((WEB_DIR.parent.parent/"control/web/layout-runtime.js").read_bytes(), mime="text/javascript; charset=utf-8")
+        if url.path=="/api/layout":
+            try:
+                return self.send_json(read_delivery(LAYOUT_FILE))
+            except (OSError,ValueError,TypeError):
+                return self.send_json({"error":"Invalid custom layout"},503)
         if url.path in STATIC:
             filename, mime = STATIC[url.path]
             allowed = {"cockpit.html","cockpit.css","cockpit.js","index.html","styles.css","app.js"}
+            if url.path=="/":
+                try:
+                    if read_delivery(LAYOUT_FILE)["enabled"]:filename="custom.html"
+                except (OSError,ValueError,TypeError):
+                    pass  # Invalid custom layouts fall back to the standard cockpit.
             original = WEB_DIR / filename
             override = OVERRIDE_DIR / "app" / "web" / filename
             path = override if filename in allowed and override.is_file() else original

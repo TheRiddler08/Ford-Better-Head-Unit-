@@ -7,7 +7,8 @@ has saved and read back the configuration. Disconnections retain the car's last
 configuration; a lost acknowledgment is retried after reconnect or restart.
 
 This path supports appearance, widget order/visibility, labels, units, navigation
-visibility and telemetry polling. It does not install code packages. Keep the
+visibility, telemetry polling, and [custom HTML/CSS/JavaScript UI projects](UI_BUILDER.md).
+Custom projects run only in an isolated browser frame; this path does not install native code packages. Keep the
 existing GitHub updater for software updates (`deploy/enable-updates.sh`); this
 feature does not trigger it remotely. LoRaWAN, MQTT, cryptography packages and
 `CAR_LINK_KEY` are not needed. Use only one configuration delivery agent per car.

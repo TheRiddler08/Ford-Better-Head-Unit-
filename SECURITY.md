@@ -9,3 +9,7 @@
 ## Automatic login kiosk
 
 The standard installer offers immediate dashboard startup by enabling GDM automatic login for the installing user. This is not a hardened kiosk: anybody with physical access may reach that account outside the fullscreen browser. To disable, run `bash deploy/disable-kiosk.sh` as that user and reboot. Consider using a dedicated restricted desktop account for an unattended vehicle.
+
+## Custom display projects
+
+Home-authored HTML/CSS/JavaScript runs in an opaque-origin iframe with scripts enabled and a separate restrictive CSP. The parent sends read-only telemetry; custom content cannot access parent DOM, API credentials, filesystem or vehicle commands. External network access and nested frames are blocked. The authenticated panel retains its own CSP. Publish only scripts you have previewed; browser sandboxing does not bound CPU or memory consumption. The standard dashboard and recovery link remain outside authored content. Layout delivery acknowledgments confirm saving, not successful visual rendering.
