@@ -23,6 +23,7 @@
   </nav>
 
   <div class="workspace">
+    <a class="archive-link" href="/records">Reports &amp; GPS history →</a>
     <header class="topbar">
       <div class="system-left"><span id="topClock">--:--</span><span class="dot-sep">•</span><span id="topDate">—</span></div>
       <div class="top-center"><span class="small-brand">DRIVE CONSOLE</span><span class="top-subtitle">HEAD UNIT</span></div>
@@ -181,6 +182,7 @@
       <div class="panel-heading"><div><span class="eyebrow">SYSTEM DELIVERY</span><h1 id="updatesTitle">Updates &amp; synchronization</h1><p>GitHub is the full-update source. LoRaWAN configuration and patch transport requires a configured gateway.</p></div></div>
       <div class="settings-grid">
         <div class="glass setting-box"><h2>Installed software</h2><p id="updateRevision">Checking installed revision…</p><p id="updateAuto">Update timer status is managed by systemd.</p></div>
+        <div class="glass setting-box"><h2>Duet update courier</h2><p id="updateCourier">No carried update receipt yet.</p><p>The Duet can download signed software updates on Wi-Fi and deliver them over the wired car connection. One-time pairing is required; no LoRaWAN hardware is needed.</p></div>
         <div class="glass setting-box"><h2>LoRaWAN connection</h2><p id="updateRadio">No gateway transport is connected yet.</p><p>UI and recorder changes require signed and validated packages before application. No unverified radio commands are executed.</p></div>
         <div class="glass setting-box"><h2>Remote configuration</h2><p id="updateConfigRevision">Loading configuration…</p><p>Control-panel changes use versioned leaf-field deltas. Last known settings remain usable offline.</p></div>
         <div class="glass setting-box"><h2>Delivery policy</h2><p>Verified approved updates are mandatory when a delivery channel is available. Integrity, rollback, and safe vehicle operation still take priority.</p><button class="subtle-button" id="updateRefresh">Refresh update status</button></div>

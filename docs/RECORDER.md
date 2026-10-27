@@ -34,3 +34,11 @@ sudo journalctl -u car-obd-monitor -n 60 --no-pager
 ```
 
 If your existing recorder has special behavior, compare the old and new outputs before adopting. In particular, the new recorder has its own read-only polling and snapshot scheduler. GitHub updates can automatically deploy code to both only after adoption.
+
+## Request journal and reports
+
+The managed recorder now adds `command_attempts` without removing legacy readings.
+Every attempted safe request records its timing, wire request, decoded result,
+available response bytes, status (including empty/errors), and snapshot ID.
+Open **Reports & GPS history** for lossless pagination and full CSV exports.
+[Detailed archive and separate USB GPS recorder](ARCHIVE_AND_GPS.md).

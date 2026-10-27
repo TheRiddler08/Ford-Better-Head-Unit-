@@ -5,7 +5,7 @@ set -euo pipefail
 exec 9>/run/lock/car-dashboard-update.lock
 flock -n 9 || { echo 'Already updating'; exit 0; }
 run_git(){ runuser -u "$APP_USER" -- git -C "$REPO" "$@"; }
-run_python(){ runuser -u "$APP_USER" -- /usr/bin/python3 "$@"; }
+run_python(){ (cd "$REPO" && runuser -u "$APP_USER" -- /usr/bin/python3 "$@"); }
 [[ "$(run_git symbolic-ref --short HEAD)" == "$BRANCH" ]] || { echo 'Unexpected branch'; exit 1; }
 [[ -z "$(run_git status --porcelain --untracked-files=no)" ]] || { echo 'Local changes; no update'; exit 0; }
 [[ "$(run_git remote get-url origin)" == 'https://github.com/TheRiddler08/Ford-Better-Head-Unit-.git' ]] || { echo 'Origin changed; refusing update'; exit 1; }
@@ -14,12 +14,17 @@ run_git fetch --no-tags --quiet origin "$BRANCH"
 NEW="$(run_git rev-parse FETCH_HEAD)"
 [[ "$NEW" != "$OLD" ]] || { echo "Already current at ${OLD:0:12}"; exit 0; }
 run_git merge-base --is-ancestor "$OLD" "$NEW" || { echo 'Refusing rewritten branch'; exit 1; }
+GPS_WAS_ACTIVE=0
+if systemctl is-active --quiet car-gps-recorder.service; then GPS_WAS_ACTIVE=1; fi
 RECORDER_WAS_ACTIVE=0
 if systemctl is-active --quiet car-obd-monitor.service; then RECORDER_WAS_ACTIVE=1; fi
 rollback(){
  echo "Rolling back dashboard to ${OLD:0:12}" >&2
  run_git reset --hard "$OLD"
  systemctl restart car-dashboard.service || true
+ if [[ "$GPS_WAS_ACTIVE" == 1 ]] && systemctl cat car-gps-recorder.service | grep -Fq "$REPO/recorder/gps_recorder.py"; then
+   systemctl restart car-gps-recorder.service || true
+ fi
  if [[ "$RECORDER_WAS_ACTIVE" == 1 ]] && [[ -f /etc/systemd/system/car-obd-monitor.service ]] && grep -Fq "$REPO/recorder/obd_full_recorder.py" /etc/systemd/system/car-obd-monitor.service; then
    systemctl restart car-obd-monitor.service || true
  fi
@@ -41,13 +46,19 @@ done
 # FORScan or manual stops stay respected: do not start an intentionally stopped service.
 if [[ -f /etc/systemd/system/car-obd-monitor.service ]] &&
    grep -Fq "$REPO/recorder/obd_full_recorder.py" /etc/systemd/system/car-obd-monitor.service &&
-   run_git diff --name-only "$OLD" "$NEW" -- recorder/ | grep -q .; then
+   run_git diff --name-only "$OLD" "$NEW" -- recorder/obd_full_recorder.py | grep -q .; then
    if systemctl is-active --quiet car-obd-monitor.service; then
      systemctl restart car-obd-monitor.service
      systemctl is-active --quiet car-obd-monitor.service
    else
      echo 'Recorder is stopped; leaving it stopped (possibly FORScan is using the port)'
    fi
+fi
+if [[ "$GPS_WAS_ACTIVE" == 1 ]] &&
+   systemctl cat car-gps-recorder.service | grep -Fq "$REPO/recorder/gps_recorder.py" &&
+   run_git diff --name-only "$OLD" "$NEW" -- recorder/gps_recorder.py | grep -q .; then
+ systemctl restart car-gps-recorder.service
+ systemctl is-active --quiet car-gps-recorder.service
 fi
 trap - ERR
 echo "Updated ${OLD:0:12} -> ${NEW:0:12}"

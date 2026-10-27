@@ -13,3 +13,15 @@ The standard installer offers immediate dashboard startup by enabling GDM automa
 ## Custom display projects
 
 Home-authored HTML/CSS/JavaScript runs in an opaque-origin iframe with scripts enabled and a separate restrictive CSP. The parent sends read-only telemetry; custom content cannot access parent DOM, API credentials, filesystem or vehicle commands. External network access and nested frames are blocked. The authenticated panel retains its own CSP. Publish only scripts you have previewed; browser sandboxing does not bound CPU or memory consumption. The standard dashboard and recovery link remain outside authored content. Layout delivery acknowledgments confirm saving, not successful visual rendering.
+
+## GPS archives and carried updates
+
+GPS history stays local and has no automatic deletion; protect it and its backups.
+The update courier packages repository source only, never vehicle/location databases.
+It uses a separate pinned Ed25519 key and strict SSH host checking. Its restricted
+Tiny receiver verifies signed metadata and bundle hashes, permits only fast-forward
+`main` updates from the configured repository, preserves local work, runs tests as
+an ordinary user, and controls only fixed dashboard/recorder services. The key grants
+code-deployment authority; do not reuse the display key or copy the courier private
+key to the Tiny. The privileged receiver is a root-owned bootstrap copy and is not
+silently replaced by repository updates.

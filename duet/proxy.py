@@ -76,8 +76,40 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         return self.dispatch()
 
+    def stream_csv(self):
+        """Export without buffering/capping the lifetime archive in tablet RAM."""
+        conn=http.client.HTTPConnection(self.upstream_host,self.upstream_port,timeout=15)
+        started=False
+        try:
+            conn.request("GET",self.path,headers={"Accept":"text/csv"})
+            response=conn.getresponse()
+            if response.status!=200:
+                return self.reply(response.status,response.read(65536),response.getheader("Content-Type","text/plain"))
+            self.protocol_version="HTTP/1.1"
+            self.send_response(200)
+            self.send_header("Content-Type","text/csv; charset=utf-8")
+            self.send_header("Content-Disposition",response.getheader("Content-Disposition",'attachment; filename="archive.csv"'))
+            self.send_header("Transfer-Encoding","chunked")
+            self.send_header("Cache-Control","no-store")
+            self.send_header("Connection","close")
+            self.send_header("X-Content-Type-Options","nosniff")
+            self.end_headers();started=True
+            while True:
+                chunk=response.read(65536)
+                if not chunk:break
+                self.wfile.write((format(len(chunk),"x")+"\r\n").encode()+chunk+b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
+        except (OSError,TimeoutError,http.client.HTTPException):
+            if not started:self.reply(503,OFFLINE_HTML,"text/html; charset=utf-8")
+            # A truncated chunked stream deliberately has no success terminator.
+        finally:
+            self.close_connection=True
+            conn.close()
+
     def dispatch(self):
         url = urlsplit(self.path)
+        if self.command=="GET" and url.path=="/api/report/export":
+            return self.stream_csv()
         if url.path == "/__link":
             try:
                 status, _, _ = fetch_upstream(

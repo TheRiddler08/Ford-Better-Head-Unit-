@@ -240,6 +240,7 @@ async function refreshUpdates(){
     const status=await api("/api/update-status");
     $("updateRevision").textContent="Git revision: "+(status.revision||"unknown");
     $("updateAuto").textContent=status.updateTimer || "Auto-update timer not detected";
+    $("updateCourier").textContent=status.courier?.ok?"Carried update installed: "+status.courier.commit.slice(0,12)+" · "+datetime(status.courier.installed):"No carried update receipt yet. Set up the Duet courier once.";
     $("updateRadio").textContent=status.lorawan || "LoRaWAN adapter not configured";
     $("updateConfigRevision").textContent="Configuration revision: "+status.configRevision;
   }catch(err){$("updateRevision").textContent="Could not read update status: "+err.message;}

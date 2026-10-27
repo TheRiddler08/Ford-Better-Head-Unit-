@@ -26,11 +26,13 @@ TILE_ROUTE = re.compile(r"^/tiles/([0-9]{1,2})/([0-9]{1,8})/([0-9]{1,8})\.png$")
 
 
 sys.path.insert(0, str(WEB_DIR.parent.parent))
+from app import reporting
 from control.config_core import read_config
 from control.layouts import read_delivery, FRAME_HOST, FRAME_POLICY
 from app.headunit_prefs import read as read_prefs, update as update_prefs
 
 CONFIG_FILE = Path(os.environ.get("CAR_UI_CONFIG", "/etc/car-dashboard/ui-config.json"))
+GPS_DB_PATH = Path(os.getenv("CAR_GPS_DB", str(DB_PATH.with_name("gps.sqlite3")))).expanduser()
 LAYOUT_FILE = Path(os.getenv("CAR_LAYOUT_FILE", str(CONFIG_FILE.with_name("layout.json"))))
 PREFS_FILE = Path(os.environ.get("CAR_HEADUNIT_PREFS", str(Path.home() / ".config/car-dashboard/preferences.json")))
 OVERRIDE_DIR = Path(os.environ.get("CAR_OVERRIDE_DIR", "/var/lib/car-dashboard/overrides"))
@@ -229,6 +231,9 @@ ROUTES = {"/api/live": route_live, "/api/summary": route_summary,
 STATIC = {"/": ("cockpit.html", "text/html; charset=utf-8"),
           "/cockpit.html": ("cockpit.html", "text/html; charset=utf-8"),
           "/classic.html": ("index.html", "text/html; charset=utf-8"),
+          "/records": ("records.html", "text/html; charset=utf-8"),
+          "/records.js": ("records.js", "text/javascript; charset=utf-8"),
+          "/records.css": ("records.css", "text/css; charset=utf-8"),
           "/custom": ("custom.html", "text/html; charset=utf-8"),
           "/custom.js": ("custom.js", "text/javascript; charset=utf-8"),
           "/custom.css": ("custom.css", "text/css; charset=utf-8"),
@@ -258,6 +263,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urlsplit(self.path)
+        if url.path.startswith("/api/report/"):
+            return self.report_request(url)
         if url.path=="/layout-host":
             return self.send_bytes(FRAME_HOST,mime="text/html; charset=utf-8",policy=FRAME_POLICY)
         if url.path=="/layout-runtime.js":
@@ -309,7 +316,12 @@ class Handler(BaseHTTPRequestHandler):
                 config_rev = int(cfg.get("revision", 0))
             except (OSError, ValueError, TypeError):
                 config_rev = 0
+            try:
+                courier = json.loads(Path("/etc/car-dashboard/courier-last.json").read_text())
+            except (OSError, ValueError):
+                courier = None
             return self.send_json({"revision": revision, "updateTimer": timer,
+                                   "courier": courier,
                                    "lorawan": "Not configured (radio driver and network server required)",
                                    "configRevision": config_rev,
                                    "packagesExecutable": False})
@@ -351,6 +363,43 @@ class Handler(BaseHTTPRequestHandler):
         except (FileNotFoundError, sqlite3.Error, ValueError, TypeError) as exc:
             LOG.warning("Request %s failed: %s", url.path, exc)
             self.send_json({"error": str(exc)}, 503)
+
+    def report_request(self, url):
+        db = gps = None
+        sent = False
+        try:
+            query = parse_qs(url.query, keep_blank_values=True)
+            kind = url.path[len("/api/report/"):]
+            db = reporting.connect(DB_PATH)
+            gps = reporting.connect(GPS_DB_PATH)
+            if kind == "summary":
+                return self.send_json(reporting.summary(db, gps))
+            export = kind == "export"
+            if export:kind = query.get("kind", ["values"])[0]
+            target = gps if kind in ("gps", "stops", "gps-messages", "gps-events") else db
+            if not export:return self.send_json(reporting.page(target, kind, query))
+            # Validate before sending headers, then stream every matching row.
+            reporting.selection(kind, query)
+            self.protocol_version = "HTTP/1.1"
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="'+kind+'.csv"')
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            sent = True
+            self.close_connection = True
+            for batch in reporting.csv_batches(target, kind, query):
+                self.wfile.write((format(len(batch),"x")+"\r\n").encode()+batch+b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
+        except (ValueError, TypeError, sqlite3.Error, OSError) as exc:
+            if not sent and not self.wfile.closed:
+                self.send_json({"error": str(exc)}, 400)
+        finally:
+            if db is not None:db.close()
+            if gps is not None:gps.close()
 
     def do_POST(self):
         if urlsplit(self.path).path != "/api/headunit-prefs":

@@ -201,3 +201,13 @@ Use the [home server and car installation guide](docs/TAILSCALE_HOME_CONTROL.md)
 ## Visual UI builder and source editor
 
 The home panel includes a multi-page drag-and-resize canvas, component inspector, HTML/CSS/JavaScript editors, sandboxed live preview, draft saving, project import/export, and versioned publishing over Tailscale. [Builder usage and upgrade steps](docs/UI_BUILDER.md). The original dashboard remains available for recovery.
+
+## Full archive, GPS history, and offline Duet updates
+
+[Reports and persistent GPS routes](docs/ARCHIVE_AND_GPS.md) retain individual readings,
+request outcomes and raw GPS messages, with complete CSV exports and a route/stop
+viewer. GPS recording runs on the Tiny independently of the Duet browser.
+
+[Duet update courier](docs/DUET_UPDATE_COURIER.md) downloads signed software packages
+on Wi-Fi and delivers them to the offline Tiny over wired SSH. It includes separate
+key pairing, tests, health checks, receipts and rollback; LoRaWAN is not required.

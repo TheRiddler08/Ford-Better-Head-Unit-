@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import math
+import json
 import os
 from pathlib import Path
 import re
@@ -37,6 +38,7 @@ def wire_code(command):
 
 def approved(command):
     return (getattr(command, "name", "").upper() not in EXCLUDED_NAMES
+            and wire_code(command) != "0902"
             and SAFE_WIRE.fullmatch(wire_code(command)) is not None)
 
 def supported_commands(connection, obd_module):
@@ -77,6 +79,12 @@ def open_db(path):
         CREATE TABLE IF NOT EXISTS snapshots (
             id INTEGER PRIMARY KEY, stage TEXT, started INTEGER,
             total INTEGER, successes INTEGER);
+        CREATE TABLE IF NOT EXISTS command_attempts (
+            id INTEGER PRIMARY KEY, ts REAL NOT NULL, completed REAL NOT NULL,
+            name TEXT NOT NULL, command TEXT NOT NULL, status TEXT NOT NULL,
+            duration_ms REAL NOT NULL, value TEXT, number REAL, unit TEXT,
+            error TEXT, raw TEXT, snapshot_id INTEGER);
+        CREATE INDEX IF NOT EXISTS command_attempts_name_id ON command_attempts(name,id);
         CREATE TABLE IF NOT EXISTS recorder_snapshot_values (
             id INTEGER PRIMARY KEY AUTOINCREMENT, snapshot_id INTEGER,
             ts INTEGER, name TEXT, value TEXT, number REAL, unit TEXT);
@@ -117,6 +125,41 @@ def safe_query(connection, cmd):
         raise ValueError(f"Refusing non-read-only OBD command: {getattr(cmd, 'name', '?')}")
     return connection.query(cmd)
 
+def collect_query(db, connection, cmd, snapshot_id=None):
+    """Persist every request outcome, including empty replies and exceptions."""
+    started = time.time()
+    clock = time.monotonic()
+    status, error, raw = "empty", None, []
+    label = number = unit = None
+    response = None
+    try:
+        response = safe_query(connection, cmd)
+        if response is not None:
+            for message in getattr(response, "messages", ()) or ():
+                wire = getattr(message, "raw", None)
+                try:
+                    value = wire() if callable(wire) else str(message)
+                    raw.append(value.hex() if isinstance(value, bytes) else str(value))
+                except Exception as exc:
+                    raw.append({"captureError":type(exc).__name__})
+        if response is not None and not response.is_null():
+            label, number, unit = detail(response.value)
+            status = "ok"
+    except Exception as exc:
+        status = "error" if approved(cmd) else "rejected"
+        error = f"{type(exc).__name__}: {exc}"
+    db.execute("""INSERT INTO command_attempts
+        (ts,completed,name,command,status,duration_ms,value,number,unit,error,raw,snapshot_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (started,time.time(),cmd.name,wire_code(cmd),status,
+         round((time.monotonic()-clock)*1000,3),label,number,unit,error,json.dumps(raw),snapshot_id))
+    if status == "ok":
+        record_value(db, cmd, response, snapshot_id)
+    else:
+        db.commit()
+    return status == "ok"
+
+
 def snapshot(db, connection, commands, stage):
     started = timestamp()
     cur = db.execute("INSERT INTO snapshots(stage,started,total,successes) VALUES(?,?,?,?)",
@@ -129,7 +172,7 @@ def snapshot(db, connection, commands, stage):
         if STOP:
             break
         try:
-            if record_value(db, cmd, safe_query(connection, cmd), snapshot_id=sid):
+            if collect_query(db, connection, cmd, snapshot_id=sid):
                 successes += 1
         except (OSError, ValueError, RuntimeError) as exc:
             print(f"Snapshot {cmd.name}: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
@@ -166,7 +209,7 @@ def run_loop(db, connection, commands, stop_check=lambda: STOP):
             if stop_check():
                 return
             try:
-                record_value(db, by_name[name], safe_query(connection, by_name[name]))
+                collect_query(db, connection, by_name[name])
             except (OSError, ValueError, RuntimeError) as exc:
                 print(f"Poll {name}: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             schedule[name] = time.monotonic() + rates[name]
