@@ -6,7 +6,17 @@ pulled with normal TLS verification and pinned by its repository digest. This is
 Home Assistant Container, not Home Assistant OS or Supervised; it has no Supervisor
 app/add-on store. Ubuntu and the existing car services remain in place.
 
-## Existing Tiny — one-time bootstrap
+## Recommended: only Duet connects to Internet
+
+Use [one-device automatic updates](ONE_DEVICE_UPDATES.md) to carry the Home Assistant
+image and signed Ubuntu dependencies from Duet. Tiny can be offline for its first
+HA installation and later updates. The signed courier also upgrades its managed
+bootstrap automatically after the initial authorization. HA stable releases are
+resolved on Duet and digest-locked per bundle, with backup/health validation on Tiny.
+
+The manual installer below is an alternative when Tiny itself has Internet.
+
+## Existing Tiny — manual online bootstrap
 
 On the **x86-64 ThinkCentre/Tiny**, as its normal dashboard user:
 
@@ -122,7 +132,7 @@ HA instance, install HACS, expose MQTT, or copy home-server credentials. Connect
 two instances over Tailscale/MQTT is a separate configuration step requiring the
 home instance's address and authentication.
 
-## Automatic configuration after Git updates
+## Automatic configuration after Git updates (standalone installer)
 
 The one-time bootstrap installs:
 
@@ -141,15 +151,17 @@ User-edited configuration is preserved and listed in the installation status.
 Native `.storage` dashboards, owner accounts, tokens and history are never rewritten
 by asset reconciliation. If you customize `configuration.yaml`, keep its
 `car_console:` entry to retain automatic car entities. A deliberately stopped HA
-service is not resurrected by reconciliation. The helper/image are stable bootstrap
-components: Git updates refresh car assets, not the privileged bootstrap or HA Core
-image itself. Upgrade those explicitly after review and backup.
+service is not resurrected by reconciliation. In this standalone/manual mode the helper/image are stable bootstrap components.
+The full signed courier is the automated alternative: it updates its managed
+bootstrap and delivers newer official HA stable images as well as car assets,
+with offline verification and backup/rollback.
 
-Offline courier packages contain Git source, **not** Docker Engine, the HA image,
-OS packages or an HA instance backup. Once bootstrapped, the pinned image is cached
-on Tiny and normal car-asset updates work without a registry download. Initial HA
-installation on a completely offline Tiny still requires supplying those packages
-and image separately or temporarily connecting the Tiny to Internet.
+Legacy `--code-only` courier packages contain Git source only. The default full
+courier now also carries the HA image and signed Ubuntu prerequisites; see the
+one-device guide. It does not carry an HA instance backup. Once bootstrapped, the pinned image is cached
+on Tiny and normal car-asset updates work without a registry download. Initial offline HA installation is supported by the full courier after its one-time
+pairing; the standalone manual installer still needs either a carried image and
+packages or Internet on Tiny.
 
 ## Status, recovery and data paths
 

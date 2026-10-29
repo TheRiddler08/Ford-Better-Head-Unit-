@@ -215,3 +215,7 @@ key pairing, tests, health checks, receipts and rollback; LoRaWAN is not require
 ## Home Assistant car dashboard
 
 [Install Home Assistant on the Tiny](docs/HOME_ASSISTANT.md) with automatic local car entities, a starter dashboard, native visual editing, boot startup and managed Git-update reconciliation. The Duet uses a direct SSH/WebSocket tunnel; the existing dashboard and archives remain available for recovery. An existing Tiny needs the one-time installer and its first-run owner account.
+
+## Automatic updates with only Duet on Wi-Fi
+
+[One-time Duet setup](docs/ONE_DEVICE_UPDATES.md) enables automatic background downloads, carried Home Assistant images/Ubuntu prerequisites, offline Tiny installation, retry/health checks and signed updater self-upgrades. Tiny needs only the wired connection when the Duet returns. Existing reports, GPS history and source editor remain available.

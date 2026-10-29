@@ -23,9 +23,13 @@ Tiny receiver verifies signed metadata and bundle hashes, permits only fast-forw
 `main` updates from the configured repository, preserves local work, runs tests as
 an ordinary user, and controls only fixed dashboard/recorder services. The key grants
 code-deployment authority; do not reuse the display key or copy the courier private
-key to the Tiny. The privileged receiver is a root-owned bootstrap copy and is not
-silently replaced by repository updates.
+key to the Tiny. The legacy Git-only receiver is a fixed root-owned bootstrap. The full v2 courier
+explicitly authorizes signed, versioned managed-bootstrap updates as described below.
 
 ## Car Home Assistant
 
 Home Assistant binds to Tiny loopback and uses a separate restricted Duet SSH forward. Owner authentication stays enabled; installation never writes auth storage or invents an owner password. The integration polls the existing read-only backend and has no serial/device or Docker-socket mount. Its official container image is digest-pinned. Managed updates preserve edited config and native storage, validate before restarting, and roll back rejected assets. Repository write/deployment access still authorizes executable integration code; protect it accordingly.
+
+## Full offline runtime courier
+
+The full courier key also authorizes privileged managed installer updates. Ubuntu Release/index/package signatures and hashes remain enforced through native APT with trusted archive keys and temporary local-only sources. Official HA image manifests, compressed layer hashes, unpacked diff IDs, archive hashes and loaded image IDs are checked. Managed bootstrap versions are published atomically from the signed immutable Git commit. HA upgrades back up private configuration/database state and require a healthy live car integration; failed updates remain queued with backoff. Protect the signing key and repository permissions as code-deployment authority.

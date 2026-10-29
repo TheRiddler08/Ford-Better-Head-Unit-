@@ -7,7 +7,12 @@ REPO="$(realpath "${2:-$HOME/car-dashboard}")"
 USER_NAME="$(id -un)"
 [[ "$REPO" =~ ^/[a-zA-Z0-9_./-]+$ && "$USER_NAME" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Unsupported account/repository path' >&2; exit 1; }
 [[ "$(git -C "$REPO" rev-parse --show-toplevel)" == "$REPO" ]] || { echo 'Expected the dashboard checkout root.' >&2; exit 1; }
-SOURCE="$(cd "$(dirname "$0")" && pwd -P)/offline_updates.py"
+SOURCE_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+SOURCE="$SOURCE_DIR/offline_updates.py"
+for name in offline_updates.py runtime_assets.py offline_payload.py home_assistant.py; do
+ [[ -f "$SOURCE_DIR/$name" ]] || { echo "Missing bootstrap component: $name" >&2; exit 1; }
+ python3 -m py_compile "$SOURCE_DIR/$name"
+done
 [[ -f "$SOURCE" ]] || { echo 'Keep offline_updates.py beside this installer.' >&2; exit 1; }
 ssh-keygen -lf "$PUB" >/dev/null
 read -r TYPE KEY _ < "$PUB"
@@ -16,16 +21,30 @@ if [[ -f "$HOME/.ssh/authorized_keys" ]] && grep -Fq " $KEY" "$HOME/.ssh/authori
  EXISTING="$(grep -F " $KEY" "$HOME/.ssh/authorized_keys")"
  [[ "$EXISTING" == *'restrict,command="sudo -n /usr/local/sbin/car-courier-receive" '* ]] || { echo 'Key already authorized for another purpose. Use a separate courier key.' >&2; exit 1; }
 fi
-echo 'Authorizing this separate key to deploy signed dashboard updates. Display key remains unchanged.'
+echo 'Authorizing signed dashboard, Home Assistant, Ubuntu dependency and managed installer updates from this courier key.'
+echo 'This key authorizes root installer updates; protect the Duet account and private key. Display key remains unchanged.'
 sudo install -d -m 0755 /usr/local/lib/car-dashboard /etc/car-dashboard
-sudo install -o root -g root -m 0644 "$SOURCE" /usr/local/lib/car-dashboard/offline_updates.py
+BOOTSTRAP_ID="$(python3 - "$SOURCE_DIR" <<'PYID'
+import hashlib,sys
+from pathlib import Path
+root=Path(sys.argv[1]);h=hashlib.sha256()
+for name in ('offline_updates.py','runtime_assets.py','offline_payload.py','home_assistant.py'):h.update((root/name).read_bytes())
+print('bootstrap-'+h.hexdigest())
+PYID
+)"
+sudo install -d -m 0755 "/usr/local/lib/car-dashboard/courier-versions/$BOOTSTRAP_ID"
+for name in offline_updates.py runtime_assets.py offline_payload.py home_assistant.py; do
+ sudo install -o root -g root -m 0644 "$SOURCE_DIR/$name" "/usr/local/lib/car-dashboard/courier-versions/$BOOTSTRAP_ID/$name"
+done
+sudo ln -sfn "courier-versions/$BOOTSTRAP_ID" /usr/local/lib/car-dashboard/courier-next
+sudo mv -Tf /usr/local/lib/car-dashboard/courier-next /usr/local/lib/car-dashboard/courier-current
 printf 'duet %s %s\n' "$TYPE" "$KEY" | sudo tee /etc/car-dashboard/courier.allowed_signers >/dev/null
 sudo chmod 0644 /etc/car-dashboard/courier.allowed_signers
 sudo tee /usr/local/sbin/car-courier-receive >/dev/null <<WRAPPER
 #!/bin/sh
 set -eu
 [ "\$#" -eq 0 ] || exit 2
-exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 -I /usr/local/lib/car-dashboard/offline_updates.py receive --repo '$REPO' --user '$USER_NAME' --allowed-signers /etc/car-dashboard/courier.allowed_signers
+exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 -I /usr/local/lib/car-dashboard/courier-current/offline_updates.py receive --repo '$REPO' --user '$USER_NAME' --allowed-signers /etc/car-dashboard/courier.allowed_signers
 WRAPPER
 sudo chown root:root /usr/local/sbin/car-courier-receive
 sudo chmod 0755 /usr/local/sbin/car-courier-receive

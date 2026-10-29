@@ -33,7 +33,9 @@ def run(args,timeout=180):
         environment=dict(os.environ)
         for key in ('DOCKER_HOST','DOCKER_CONTEXT','DOCKER_TLS','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH'):environment.pop(key,None)
     result=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout,env=environment)
-    if result.returncode:raise RuntimeError(' '.join(str(a) for a in args[:3])+': '+result.stderr.decode(errors='replace')[-2500:])
+    if result.returncode:
+        if 'check_config' in args:raise RuntimeError('Home Assistant configuration check failed; inspect the private local HA log')
+        raise RuntimeError(' '.join(str(a) for a in args[:3])+': '+result.stderr.decode(errors='replace')[-2500:])
     return result.stdout
 
 
@@ -134,12 +136,19 @@ def image_id(image):
     return matches[0]
 
 
-def check_http(timeout=120):
+def check_http(timeout=120,bridge_since=None):
     client=build_opener(ProxyHandler({}));end=time.monotonic()+timeout
     while True:
         try:
             with client.open('http://127.0.0.1:8123/',timeout=3) as response:
-                if response.status==200:return True
+                if response.status==200:
+                    if bridge_since is None:return True
+                    try:
+                        health=BASE/'config/car-console-health.json'
+                        if not health.resolve().is_relative_to((BASE/'config').resolve()) or health.stat().st_size>4096:raise ValueError('Invalid bridge health file')
+                        status=json.loads(health.read_text())
+                        if status.get('schema')==1 and status.get('ready') and status.get('entities',0)>=11 and status.get('checkedAt',0)>=bridge_since:return True
+                    except (OSError,ValueError,TypeError):pass
         except OSError:pass
         if time.monotonic()>=end:return False
         time.sleep(2)
@@ -168,7 +177,7 @@ def record_status(settings,ready,preserved=None):
 
 
 def validate_config(settings):
-    run(['docker','run','--rm','--network','none','--volume',str(BASE/'config')+':/config',
+    run(['docker','run','--rm','--pull=never','--network','none','--volume',str(BASE/'config')+':/config',
          '--env','CAR_CONSOLE_URL='+settings['backend'],'--entrypoint','python3',settings['image'],
          '-m','homeassistant','--script','check_config','--config','/config'],timeout=300)
 
@@ -188,13 +197,17 @@ def reconcile():
     changed,preserved=sync_assets(settings['repo'],config,settings['timezone'],registry)
     active=service_active()
     restarted=False
+    bridge_since=time.time()-15
     try:
         if changed:
             validate_config(settings)
             if active:
                 restarted=True
-                run(['systemctl','restart','car-home-assistant.service'])
-        ready=check_http(120 if active else 0)
+                run(['systemctl','stop','car-home-assistant.service'])
+                (BASE/'config/car-console-health.json').unlink(missing_ok=True)
+                bridge_since=time.time()
+                run(['systemctl','start','car-home-assistant.service'])
+        ready=check_http(120 if active else 0,bridge_since=bridge_since if active else None)
         if active and not ready:raise RuntimeError('Home Assistant did not become ready')
         record_status(settings,ready,preserved)
     except Exception:
@@ -206,7 +219,68 @@ def reconcile():
         raise
 
 
-def install(repo,user,timezone):
+def create_container(settings):
+    run(['docker','create','--pull=never','--name',NAME,'--network','host','--label',LABEL+'=true',
+         '--security-opt','no-new-privileges=true','--volume',str(BASE/'config')+':/config',
+         '--env','TZ='+settings['timezone'],'--env','CAR_CONSOLE_URL='+settings['backend'],settings['image']],timeout=600)
+
+
+def trim_failed_backups(candidate):
+    failures=[]
+    for folder in (BASE/'backups').iterdir():
+        if not folder.is_dir() or folder.is_symlink() or not folder.name.isdigit():continue
+        marker=folder/'result.json'
+        if not marker.exists():continue
+        data=json.loads(marker.read_text())
+        if data.get('candidate')==candidate and data.get('result')=='rolled_back':failures.append(folder)
+    for folder in sorted(failures,key=lambda p:int(p.name))[:-2]:shutil.rmtree(folder)
+
+
+def upgrade_image(settings,new_image):
+    previous=dict(settings);backup=BASE/'backups'/str(time.time_ns())
+    backup.mkdir(parents=True,mode=0o700);os.chmod(backup,0o700)
+    active=service_active();renamed=False;created=False;snapshot_complete=False
+    if active:run(['systemctl','stop','car-home-assistant.service'])
+    try:
+        # Stop first so SQLite/WAL and HA's private storage have a consistent backup.
+        shutil.copytree(BASE/'config',backup/'config',symlinks=True)
+        snapshot_complete=True
+        save(backup/'settings.json',json.dumps(previous).encode(),0o600)
+        registry=BASE/'managed.json'
+        if registry.exists():save(backup/'managed.json',registry.read_bytes(),0o600)
+        sync_assets(settings['repo'],BASE/'config',settings['timezone'],registry)
+        candidate=dict(settings,image=new_image)
+        validate_config(candidate)
+        run(['docker','rename',NAME,NAME+'-rollback']);renamed=True
+        create_container(candidate);created=True
+        if active:
+            (BASE/'config/car-console-health.json').unlink(missing_ok=True)
+            started=time.time()
+            run(['systemctl','start','car-home-assistant.service'])
+            if not check_http(180,bridge_since=started):raise RuntimeError('New HA image failed readiness')
+        settings['image']=new_image
+        save(SETTINGS,json.dumps(settings).encode(),0o600)
+        run(['docker','rm',NAME+'-rollback'])
+    except Exception:
+        if created:
+            if active:run(['systemctl','stop','car-home-assistant.service'])
+            run(['docker','rm',NAME])
+        if renamed:run(['docker','rename',NAME+'-rollback',NAME])
+        if snapshot_complete:
+            failed=backup/'failed-config'
+            (BASE/'config').rename(failed)
+            shutil.copytree(backup/'config',BASE/'config',symlinks=True)
+            if (backup/'managed.json').exists():save(BASE/'managed.json',(backup/'managed.json').read_bytes(),0o600)
+        settings.clear();settings.update(previous)
+        save(SETTINGS,json.dumps(previous).encode(),0o600)
+        if active:run(['systemctl','start','car-home-assistant.service'])
+        recovered=not active or check_http(120)
+        save(backup/'result.json',json.dumps({'candidate':new_image,'result':'rolled_back' if recovered else 'rollback-needs-attention'}).encode(),0o600)
+        if recovered:trim_failed_backups(new_image)
+        raise
+
+
+def install(repo,user,timezone,offline_image=None):
     if os.uname().machine!='x86_64':raise ValueError('This installer targets the x86-64 Tiny, not the ARM Duet')
     owner=pwd.getpwnam(user);repo=Path(repo).resolve()
     if owner.pw_uid==0 or repo.stat().st_uid!=owner.pw_uid:raise ValueError('Use the ordinary Tiny dashboard account')
@@ -215,7 +289,9 @@ def install(repo,user,timezone):
     if not re.fullmatch(r'/[A-Za-z0-9_./-]+',str(repo)):raise ValueError('Unsupported checkout path')
     ZoneInfo(timezone)
     if shutil.disk_usage('/var/lib').free<6*1024**3:raise ValueError('At least 6 GB free space is required for the first image download')
+    if offline_image and not re.fullmatch('sha256:[0-9a-f]{64}',offline_image):raise ValueError('Invalid offline image identity')
     if not shutil.which('docker'):
+        if offline_image:raise ValueError('Install the carried Ubuntu Docker packages first')
         run(['env','DEBIAN_FRONTEND=noninteractive','apt-get','update'],timeout=300)
         run(['env','DEBIAN_FRONTEND=noninteractive','apt-get','install','-y','docker.io'],timeout=600)
     run(['systemctl','enable','--now','docker.service'])
@@ -248,15 +324,20 @@ def install(repo,user,timezone):
             try:sock.bind(('127.0.0.1',8123))
             except OSError as exc:raise ValueError('Port 8123 is already occupied; preserving existing installation') from exc
     if not old:
-        run(['docker','pull',IMAGE],timeout=900)
-        settings['image']=image_id(IMAGE)
+        if offline_image:
+            info=json.loads(run(['docker','image','inspect',offline_image]))[0]
+            if info['Id']!=offline_image or info['Architecture']!='amd64':raise ValueError('Offline Tiny image mismatch')
+            settings['image']=offline_image
+        else:
+            run(['docker','pull',IMAGE],timeout=900)
+            settings['image']=image_id(IMAGE)
         config=BASE/'config';config.mkdir(parents=True,exist_ok=True)
         if any(config.iterdir()) and not (BASE/'managed.json').exists():raise ValueError('Existing unmanaged HA configuration; refusing replacement')
         sync_assets(repo,config,timezone,BASE/'managed.json')
         validate_config(settings)
-        run(['docker','create','--name',NAME,'--network','host','--label',LABEL+'=true',
-             '--security-opt','no-new-privileges=true','--volume',str(config)+':/config',
-             '--env','TZ='+timezone,'--env','CAR_CONSOLE_URL='+settings['backend'],settings['image']],timeout=600)
+        create_container(settings)
+    elif offline_image and info['Image']!=offline_image:
+        upgrade_image(settings,offline_image)
     save(SETTINGS,json.dumps(settings).encode(),0o600)
     save('/usr/local/lib/car-dashboard/home_assistant.py',Path(__file__).read_bytes(),0o644)
     wrapper=b'#!/bin/sh\nset -eu\n[ "$#" -eq 0 ] || exit 2\nexec /usr/bin/python3 -I /usr/local/lib/car-dashboard/home_assistant.py reconcile\n'
@@ -302,7 +383,7 @@ WantedBy=timers.target
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action',choices=['install','reconcile','disable'])
-    parser.add_argument('--repo');parser.add_argument('--user');parser.add_argument('--timezone',default='UTC')
+    parser.add_argument('--repo');parser.add_argument('--user');parser.add_argument('--timezone',default='UTC');parser.add_argument('--offline-image');parser.add_argument('--update-lock-fd',type=int)
     args=parser.parse_args()
     if os.geteuid()!=0:raise SystemExit('Use deploy/install-home-assistant.sh as your ordinary Tiny user')
     BASE.mkdir(parents=True,exist_ok=True)
@@ -310,14 +391,18 @@ def main():
     import fcntl
     with Path('/run/lock/car-home-assistant.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)
-        update_lock=Path('/run/lock/car-dashboard-update.lock').open('a')
+        if args.update_lock_fd is not None:
+            update_lock=os.fdopen(os.dup(args.update_lock_fd),'a')
+            actual=os.fstat(update_lock.fileno());expected=Path('/run/lock/car-dashboard-update.lock').stat()
+            if (actual.st_dev,actual.st_ino)!=(expected.st_dev,expected.st_ino):raise ValueError('Invalid inherited update lock')
+        else:update_lock=Path('/run/lock/car-dashboard-update.lock').open('a')
         try:fcntl.flock(update_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:
             if args.action=='reconcile':return
             raise ValueError('A Git update is in progress; retry setup when it finishes')
         if args.action=='install':
             if not args.repo or not args.user:raise ValueError('Missing checkout/account')
-            install(args.repo,args.user,args.timezone)
+            install(args.repo,args.user,args.timezone,args.offline_image)
         elif args.action=='disable':
             if not SETTINGS.exists():raise ValueError('Home Assistant is not installed')
             settings=read_json(SETTINGS,{})

@@ -2,11 +2,15 @@
 from datetime import timedelta
 import logging
 import os
+import json
+import time
+import tempfile
+from pathlib import Path
 from urllib.parse import urlsplit
-from aiohttp import ClientTimeout
+from aiohttp import ClientTimeout, ClientSession, TCPConnector
 from homeassistant.const import Platform
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 DOMAIN='car_console'
@@ -30,8 +34,22 @@ async def async_setup(hass,config):
 
 
 async def async_setup_entry(hass,entry):
-    session=async_get_clientsession(hass)
     url=backend_url()
+    # This API is strictly loopback-only; it must work even with no usable LAN
+    # interface while the portable display is away from the car.
+    session=ClientSession(connector=TCPConnector(local_addr=('127.0.0.1',0)))
+    entry.async_on_unload(lambda:hass.async_create_task(session.close()))
+    platforms_ready=False
+    async def health(ready):
+        if not platforms_ready:return
+        count=len(er.async_entries_for_config_entry(er.async_get(hass),entry.entry_id))
+        data={'schema':1,'ready':bool(ready and count>=11),'entities':count,'checkedAt':time.time()}
+        path=Path(hass.config.path('car-console-health.json'))
+        def write():
+            with tempfile.NamedTemporaryFile(mode='w',dir=path.parent,delete=False) as f:
+                json.dump(data,f);pending=Path(f.name)
+            os.replace(pending,path)
+        await hass.async_add_executor_job(write)
     async def update():
         try:
             async with session.get(url,timeout=ClientTimeout(total=5)) as response:
@@ -39,14 +57,18 @@ async def async_setup_entry(hass,entry):
                 data=await response.json()
             if data.get('schema')!=1 or not isinstance(data.get('metrics'),dict):
                 raise ValueError('Unexpected car data schema')
+            await health(True)
             return data
         except Exception as exc:
+            await health(False)
             raise UpdateFailed('Local car data unavailable') from exc
     coordinator=DataUpdateCoordinator(hass,logging.getLogger(__name__),name='Car Console',
         config_entry=entry,update_method=update,update_interval=timedelta(seconds=5))
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN,{})[entry.entry_id]=coordinator
     await hass.config_entries.async_forward_entry_setups(entry,PLATFORMS)
+    platforms_ready=True
+    await health(True)
     return True
 
 

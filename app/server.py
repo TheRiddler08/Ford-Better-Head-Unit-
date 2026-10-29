@@ -341,7 +341,11 @@ class Handler(BaseHTTPRequestHandler):
                 courier = json.loads(Path("/etc/car-dashboard/courier-last.json").read_text())
             except (OSError, ValueError):
                 courier = None
+            try:
+                courier_progress=json.loads(Path('/etc/car-dashboard/courier-progress.json').read_text())
+            except (OSError,ValueError):courier_progress=None
             return self.send_json({"revision": revision, "updateTimer": timer,
+                                   "courierProgress":courier_progress,
                                    "courier": courier,
                                    "lorawan": "Not configured (radio driver and network server required)",
                                    "configRevision": config_rev,

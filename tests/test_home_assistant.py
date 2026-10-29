@@ -101,3 +101,35 @@ class HomeAssistantTests(unittest.TestCase):
             target.symlink_to(outside)
             with self.assertRaises(ValueError):sync_assets(ROOT,config,'UTC',registry)
             self.assertEqual(outside.read_text(),'preserve')
+
+    def test_image_upgrade_restores_private_storage_and_database(self):
+        from deploy import home_assistant as ha
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);base=root/'installed';config=base/'config'
+            sync_assets(ROOT,config,'UTC',base/'managed.json')
+            auth=config/'.storage/auth';auth.parent.mkdir();auth.write_text('original owner storage')
+            database=config/'home-assistant_v2.db';database.write_text('original database')
+            settings={'repo':str(ROOT),'timezone':'UTC','image':'old-image','enabled':True}
+            settings_path=root/'settings.json';settings_path.write_text(json.dumps(settings))
+            def create(candidate):
+                auth.write_text('new storage');database.write_text('new schema')
+            with patch.object(ha,'BASE',base),patch.object(ha,'SETTINGS',settings_path),patch.object(ha,'service_active',return_value=True),patch.object(ha,'validate_config'),patch.object(ha,'create_container',side_effect=create),patch.object(ha,'check_http',side_effect=[False,True]),patch.object(ha,'run'):
+                with self.assertRaises(RuntimeError):ha.upgrade_image(settings,'new-image')
+            self.assertEqual(auth.read_text(),'original owner storage')
+            self.assertEqual(database.read_text(),'original database')
+            self.assertEqual(settings['image'],'old-image')
+
+    def test_failed_backup_never_replaces_live_configuration(self):
+        from deploy import home_assistant as ha
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);base=root/'installed';config=base/'config'
+            sync_assets(ROOT,config,'UTC',base/'managed.json')
+            auth=config/'.storage/auth';auth.parent.mkdir();auth.write_text('preserve owner')
+            settings={'repo':str(ROOT),'timezone':'UTC','image':'old-image','enabled':True}
+            def fail(source,destination,**kwargs):
+                Path(destination).mkdir();raise OSError('disk full during backup')
+            with patch.object(ha,'BASE',base),patch.object(ha,'SETTINGS',root/'settings.json'),patch.object(ha,'service_active',return_value=True),patch.object(ha.shutil,'copytree',side_effect=fail),patch.object(ha,'check_http',return_value=True),patch.object(ha,'run'):
+                with self.assertRaises(OSError):ha.upgrade_image(settings,'new-image')
+            self.assertEqual(auth.read_text(),'preserve owner')
