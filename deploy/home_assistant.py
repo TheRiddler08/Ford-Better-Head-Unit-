@@ -68,7 +68,7 @@ def configuration(timezone):
         'http':{'server_host':'127.0.0.1','server_port':8123,'ip_ban_enabled':True,'login_attempts_threshold':5},
         'car_console':{},'lovelace':{'mode':'storage','dashboards':{'car-starter':{'mode':'yaml','title':'Car starter',
             'icon':'mdi:car','show_in_sidebar':True,'filename':'car-dashboard.yaml'}}},
-        'recorder':{'purge_keep_days':10}}
+        'recorder':{'purge_keep_days':10,'commit_interval':1}}
 
 
 def managed_files(repo,timezone):

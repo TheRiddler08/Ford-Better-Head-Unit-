@@ -24,6 +24,7 @@ def open_db(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=15)
     db.execute('PRAGMA journal_mode=WAL')
+    db.execute('PRAGMA synchronous=FULL')
     db.executescript('''
       CREATE TABLE IF NOT EXISTS gps_messages(id INTEGER PRIMARY KEY, received REAL, class TEXT, raw TEXT);
       CREATE TABLE IF NOT EXISTS fixes(id INTEGER PRIMARY KEY, received REAL, ts REAL,

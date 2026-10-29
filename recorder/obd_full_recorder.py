@@ -70,6 +70,10 @@ def open_db(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(path), timeout=15)
     db.execute("PRAGMA busy_timeout = 15000")
+    # Explicit per-connection durability; committed WAL survives process crashes.
+    # Actual power-loss durability still depends on filesystem/drive flush support.
+    db.execute("PRAGMA journal_mode = WAL")
+    db.execute("PRAGMA synchronous = FULL")
     db.executescript("""
         CREATE TABLE IF NOT EXISTS readings (
             ts INTEGER NOT NULL, name TEXT NOT NULL, value TEXT,

@@ -6,12 +6,15 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 
 try:
     from .runtime_assets import release_hashes,sha,safe_path,ROOT_PACKAGES,records
 except ImportError:
+    # Standalone copies are installed together in a root-owned directory.
+    sys.path.insert(0,str(Path(__file__).resolve().parent))
     from runtime_assets import release_hashes,sha,safe_path,ROOT_PACKAGES,records
 
 
@@ -122,7 +125,45 @@ def docker(*args,timeout=600):
     return run(['docker','--host=unix:///var/run/docker.sock',*args],environment,timeout)
 
 
+def configure_power_safety(directory='/etc/systemd/system'):
+    """Best-effort flushes, never a claim that it is safe to remove power."""
+    units={
+        'car-disk-flush.service': '''[Unit]
+Description=Reduce dirty disk data before unexpected vehicle power loss
+[Service]
+Type=oneshot
+DynamicUser=yes
+ExecStart=/usr/bin/sync
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+TimeoutStartSec=120
+''',
+        'car-disk-flush.timer': '''[Unit]
+Description=Periodically flush car computer disks (not a UPS replacement)
+[Timer]
+OnBootSec=15
+OnUnitInactiveSec=15
+AccuracySec=1
+Unit=car-disk-flush.service
+[Install]
+WantedBy=timers.target
+'''}
+    directory=Path(directory);directory.mkdir(parents=True,exist_ok=True)
+    changed=False
+    for name,content in units.items():
+        path=directory/name
+        if path.is_symlink():raise ValueError('Refusing a symlink power-safety unit')
+        if path.exists() and path.read_text()==content:continue
+        with tempfile.NamedTemporaryFile(mode='w',dir=directory,delete=False) as file:
+            file.write(content);file.flush();os.fsync(file.fileno());pending=Path(file.name)
+        os.chmod(pending,0o644);os.replace(pending,path);changed=True
+    if changed:run(['systemctl','daemon-reload'])
+    run(['systemctl','enable','--now','car-disk-flush.timer'])
+
+
 def install(stage,runtime,repo,user,home_assistant_manager,update_lock_fd=None):
+    configure_power_safety()
     settings_path=Path('/etc/car-dashboard/home-assistant-settings.json')
     if settings_path.exists():
         settings=json.loads(settings_path.read_text())
@@ -155,3 +196,9 @@ def install(stage,runtime,repo,user,home_assistant_manager,update_lock_fd=None):
     if update_lock_fd is not None:args+=['--update-lock-fd',str(update_lock_fd)]
     run(args,timeout=1800,pass_fds=() if update_lock_fd is None else (update_lock_fd,))
     return {'homeAssistant':'ready','imageId':image['imageId'],'ubuntu':version,'internetRequiredOnTiny':False}
+
+
+if __name__=='__main__':
+    if sys.argv[1:]!=['--install-power-safety'] or os.geteuid()!=0:
+        raise SystemExit('Use deploy/install-power-safety.sh as your ordinary Tiny user')
+    configure_power_safety()

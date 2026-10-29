@@ -14,6 +14,19 @@ from deploy import runtime_assets as assets,offline_payload as payload,offline_u
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_flush_service_is_unprivileged_repeatable_and_never_powers_off(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(payload,'run') as run:
+                payload.configure_power_safety(temp)
+                self.assertEqual(run.call_count,2)
+            with patch.object(payload,'run') as run:
+                payload.configure_power_safety(temp)
+                run.assert_called_once_with(['systemctl','enable','--now','car-disk-flush.timer'])
+            unit=(Path(temp)/'car-disk-flush.service').read_text()
+            self.assertIn('DynamicUser=yes',unit)
+            self.assertIn('ExecStart=/usr/bin/sync',unit)
+            self.assertNotIn('poweroff',unit)
+
     def test_dependencies_include_versions_alternatives_and_virtuals(self):
         def record(name,version='1',deps='',provides=''):
             return {'Package':name,'Version':version,'Architecture':'amd64','Depends':deps,'Provides':provides}

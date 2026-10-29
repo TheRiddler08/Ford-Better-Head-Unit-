@@ -35,6 +35,7 @@ class HomeAssistantTests(unittest.TestCase):
         data=configuration('America/New_York')
         self.assertEqual(data['http']['server_host'],'127.0.0.1')
         self.assertEqual(data['lovelace']['mode'],'storage')
+        self.assertEqual(data['recorder']['commit_interval'],1)
         self.assertIn('car_console',data)
         self.assertEqual(len(managed_files(ROOT,'UTC')),10)
 

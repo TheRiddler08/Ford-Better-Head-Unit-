@@ -54,6 +54,7 @@ WantedBy=multi-user.target
 EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now car-dashboard.service
+bash "$ROOT/deploy/install-power-safety.sh"
 bash "$ROOT/deploy/install-recorder.sh"
 if [[ "${CAR_HOME_ASSISTANT:-1}" == 1 ]]; then
   bash "$ROOT/deploy/install-home-assistant.sh"

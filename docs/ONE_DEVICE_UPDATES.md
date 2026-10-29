@@ -192,3 +192,7 @@ container after disconnecting its network. The rootless image downloader's outpu
 was loaded by Docker, with all layer and image identities checked. Other Ubuntu
 bundles are generated from their official signed metadata; physical Tiny/OpenRC/
 USB/two-machine operations still need validation on your devices.
+
+## Ignition-switched power
+
+Keep Tiny powered throughout update installation. See [power-loss protection](POWER_LOSS.md) for recorder durability, the disk-flush timer and the retained-power hardware needed for reliable shutdown. Being parked does not guarantee power remains available.
