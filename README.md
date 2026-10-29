@@ -211,3 +211,7 @@ viewer. GPS recording runs on the Tiny independently of the Duet browser.
 [Duet update courier](docs/DUET_UPDATE_COURIER.md) downloads signed software packages
 on Wi-Fi and delivers them to the offline Tiny over wired SSH. It includes separate
 key pairing, tests, health checks, receipts and rollback; LoRaWAN is not required.
+
+## Home Assistant car dashboard
+
+[Install Home Assistant on the Tiny](docs/HOME_ASSISTANT.md) with automatic local car entities, a starter dashboard, native visual editing, boot startup and managed Git-update reconciliation. The Duet uses a direct SSH/WebSocket tunnel; the existing dashboard and archives remain available for recovery. An existing Tiny needs the one-time installer and its first-run owner account.

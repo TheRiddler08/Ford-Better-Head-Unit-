@@ -1,0 +1,1 @@
+{"title":"Car Console","config":{"step":{"user":{"title":"Car Console","description":"Read-only local car telemetry. No ECU commands or cloud account required."}},"abort":{"already_configured":"The local car is already configured."}}}

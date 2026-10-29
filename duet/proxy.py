@@ -31,6 +31,9 @@ Vehicle data and controls are temporarily unavailable.</p>
 if(r.ok)location.replace('/');}catch(e){}},2000)</script></body></html>"""
 
 
+START_HTML=b"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Car dashboard</title><style>body{background:#081422;color:#eaf5ff;font:20px system-ui;padding:10vh 8vw}a{display:inline-block;color:#8dddff;padding:18px;border:1px solid #37546c;border-radius:12px;margin:12px 12px 12px 0}p{color:#a4bbd0}</style><h1>Car dashboard</h1><p id="status">Connecting to the Tiny...</p><a href="/cockpit.html">Open standard dashboard / Recovery</a><a href="/records">Reports and GPS archive</a><script>async function check(){try{const r=await fetch('/__start-status',{cache:'no-store'});const data=await r.json();document.getElementById('status').textContent=data.message;if(data.target){location.replace(data.target);return;}}catch(_){}setTimeout(check,3000);}check();</script></html>"""
+
+
 def fetch_upstream(host, port, path, method="GET", body=None, content_type=None):
     conn = http.client.HTTPConnection(host, port, timeout=3)
     try:
@@ -76,6 +79,26 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         return self.dispatch()
 
+    def start_status(self):
+        try:
+            code,_,raw=fetch_upstream(self.upstream_host,self.upstream_port,"/api/home-assistant")
+            try:settings=json.loads(raw)
+            except (ValueError,UnicodeError):settings={}
+            if not isinstance(settings,dict):settings={}
+            if code==200 and settings.get('installed') and settings.get('enabled'):
+                conn=http.client.HTTPConnection('127.0.0.1',8878,timeout=2)
+                try:
+                    conn.request('GET','/manifest.json');response=conn.getresponse()
+                    manifest=json.loads(response.read(65536))
+                    if response.status==200 and isinstance(manifest,dict) and 'home assistant' in str(manifest.get('name','')).lower():
+                        return {'target':'http://127.0.0.1:8878/lovelace','message':'Home Assistant is ready'}
+                except (OSError,ValueError,http.client.HTTPException):pass
+                finally:conn.close()
+                return {'target':None,'message':'Waiting for Home Assistant and its SSH tunnel. Recovery is available below.'}
+            if code in (200,404):return {'target':'/','message':'Opening the standard dashboard'}
+        except (OSError,TimeoutError,http.client.HTTPException,ValueError):pass
+        return {'target':None,'message':'Waiting for the Tiny wired connection. The display will reconnect automatically.'}
+
     def stream_csv(self):
         """Export without buffering/capping the lifetime archive in tablet RAM."""
         conn=http.client.HTTPConnection(self.upstream_host,self.upstream_port,timeout=15)
@@ -108,6 +131,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def dispatch(self):
         url = urlsplit(self.path)
+        if self.command=="GET" and url.path in ("/__start","/home-assistant"):
+            return self.reply(200,START_HTML,"text/html; charset=utf-8",{'Content-Security-Policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"})
+        if self.command=="GET" and url.path=="/__start-status":
+            return self.reply(200,json.dumps(self.start_status()).encode(),"application/json")
         if self.command=="GET" and url.path=="/api/report/export":
             return self.stream_csv()
         if url.path == "/__link":

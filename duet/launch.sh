@@ -11,7 +11,7 @@ fi
 TINY_HOST="${DRIVE_TINY_HOST:-172.16.42.2}"
 TINY_USER="${DRIVE_TINY_USER:-cayden}"
 KEY="$HOME/.ssh/drive-console-duet"
-URL="http://127.0.0.1:8877/"
+URL="http://127.0.0.1:8877/__start"
 PROFILE="$HOME/.local/state/drive-console/firefox-profile"
 mkdir -p "$PROFILE"
 if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
@@ -38,6 +38,12 @@ PROXY_PID=$!
 (
   while :; do
     echo "$(date -Is) Opening USB SSH tunnel to $TINY_HOST"
+    EXTRA_FORWARD=()
+    # A separate direct tunnel preserves HA WebSockets and authentication.
+    # If another application owns 8878, keep the original display tunnel usable.
+    if python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",8878)); s.close()' 2>/dev/null; then
+      EXTRA_FORWARD=(-L 127.0.0.1:8878:127.0.0.1:8123)
+    fi
     # SSH exits nonzero while the Tiny reboots or its interface has no carrier.
     # Keep retrying even with errexit enabled for the rest of this launcher.
     if ssh -F /dev/null -N -T \
@@ -47,6 +53,7 @@ PROXY_PID=$!
       -o ConnectionAttempts=1 \
       -i "$KEY" \
       -L 127.0.0.1:8788:127.0.0.1:8787 \
+      "${EXTRA_FORWARD[@]}" \
       "$TINY_USER@$TINY_HOST"; then
       echo "$(date -Is) SSH tunnel closed; reconnecting."
     else

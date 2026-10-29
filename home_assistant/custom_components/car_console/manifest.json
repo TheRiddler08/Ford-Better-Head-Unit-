@@ -1,0 +1,12 @@
+{
+  "domain": "car_console",
+  "name": "Car Console",
+  "version": "0.1.0",
+  "config_flow": true,
+  "documentation": "https://github.com/TheRiddler08/Ford-Better-Head-Unit-/blob/main/docs/HOME_ASSISTANT.md",
+  "issue_tracker": "https://github.com/TheRiddler08/Ford-Better-Head-Unit-/issues",
+  "codeowners": [],
+  "iot_class": "local_polling",
+  "integration_type": "device",
+  "requirements": []
+}

@@ -25,3 +25,7 @@ an ordinary user, and controls only fixed dashboard/recorder services. The key g
 code-deployment authority; do not reuse the display key or copy the courier private
 key to the Tiny. The privileged receiver is a root-owned bootstrap copy and is not
 silently replaced by repository updates.
+
+## Car Home Assistant
+
+Home Assistant binds to Tiny loopback and uses a separate restricted Duet SSH forward. Owner authentication stays enabled; installation never writes auth storage or invents an owner password. The integration polls the existing read-only backend and has no serial/device or Docker-socket mount. Its official container image is digest-pinned. Managed updates preserve edited config and native storage, validate before restarting, and roll back rejected assets. Repository write/deployment access still authorizes executable integration code; protect it accordingly.

@@ -55,6 +55,9 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now car-dashboard.service
 bash "$ROOT/deploy/install-recorder.sh"
+if [[ "${CAR_HOME_ASSISTANT:-1}" == 1 ]]; then
+  bash "$ROOT/deploy/install-home-assistant.sh"
+fi
 # Install the dashboard kiosk by default for legacy installations. A persistent
 # headless marker takes precedence even if the installer is rerun later.
 # Do not reboot or restart GDM: remote MeshCentral sessions stay connected.

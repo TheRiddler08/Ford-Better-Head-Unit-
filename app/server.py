@@ -26,7 +26,7 @@ TILE_ROUTE = re.compile(r"^/tiles/([0-9]{1,2})/([0-9]{1,8})/([0-9]{1,8})\.png$")
 
 
 sys.path.insert(0, str(WEB_DIR.parent.parent))
-from app import reporting
+from app import reporting, ha_bridge
 from control.config_core import read_config
 from control.layouts import read_delivery, FRAME_HOST, FRAME_POLICY
 from app.headunit_prefs import read as read_prefs, update as update_prefs
@@ -263,6 +263,27 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urlsplit(self.path)
+        if url.path=="/home-assistant":
+            try:ha_status=json.loads(Path('/etc/car-dashboard/home-assistant.json').read_text())
+            except (OSError,ValueError):ha_status={}
+            if not isinstance(ha_status,dict) or not ha_status.get('installed') or not ha_status.get('enabled'):
+                return self.send_bytes(b'<h1>Home Assistant is not installed or is disabled</h1><p>Run deploy/install-home-assistant.sh on the Tiny first.</p><a href="/cockpit.html">Return to standard dashboard</a>',mime='text/html; charset=utf-8')
+            self.send_response(302)
+            self.send_header('Location','http://127.0.0.1:8123/lovelace')
+            self.send_header('Content-Length','0')
+            self.end_headers()
+            return
+        if url.path=="/api/home-assistant/state":
+            try:
+                with connect() as db:live=route_live(db)
+                sensors=live['sensors']
+            except (OSError,ValueError,sqlite3.Error):sensors={}
+            return self.send_json(ha_bridge.snapshot(sensors,query_gpsd()))
+        if url.path=="/api/home-assistant":
+            try:
+                data=json.loads(Path('/etc/car-dashboard/home-assistant.json').read_text())
+            except (OSError,ValueError):data={'installed':False,'enabled':False,'ready':False}
+            return self.send_json(data)
         if url.path.startswith("/api/report/"):
             return self.report_request(url)
         if url.path=="/layout-host":
