@@ -10,6 +10,32 @@ Python 3, Git, SSH, sudo, a dashboard checkout on `main`, and its working
 `car-dashboard.service`. It does not install an operating system or guess which
 serial adapter is the GPS versus OBD device.
 
+## One command while Tiny is disconnected
+
+On Duet's Wi-Fi, as your normal desktop user:
+
+```sh
+cd ~/car-dashboard
+git pull --ff-only
+bash duet/prepare-update.sh cayden@172.16.42.2
+```
+
+This installs the current Duet display/courier, starts downloads, and waits for
+Tiny to reconnect locally. It then runs the one-time receiver bootstrap, including
+upgrading older v1 receivers, without requiring Internet or a Git pull on Tiny.
+Normal admin SSH/sudo authorization and host-key verification still apply; an
+unpaired Tiny can ask for its normal password once. The display-only key cannot
+authorize software installation. Tiny still needs its original working dashboard,
+SSH and sudo; this does not provision a blank computer.
+
+Leave the terminal open. If Duet reboots, an interactive pairing terminal resumes
+at the next **desktop login** until pairing succeeds. You can also resume offline
+with `bash ~/.local/share/drive-console/finish-courier-pairing.sh`. Downloads use
+an independent worker. Keep Duet online until a full bundle is ready before
+carrying it away; successful pairing alone does not mean downloading is complete.
+After pairing, future delivery uses the normal automatic courier. Keep Tiny
+powered until installation finishes.
+
 ## One-time setup, all initiated on Duet
 
 1. At home, connect **Duet** to Wi-Fi and update its checkout:
