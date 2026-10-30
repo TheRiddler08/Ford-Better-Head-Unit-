@@ -1,6 +1,7 @@
 """Exercise reconnect pairing without SSH, hardware, passwords or init changes."""
 from contextlib import redirect_stdout
 import io
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -35,3 +36,22 @@ class DuetPairingTests(unittest.TestCase):
     def test_rejected_pairing_keeps_reminder_and_reports_failure(self):
         with tempfile.TemporaryDirectory() as temp:
             self.assertTrue(self.exercise(Path(temp),1).exists())
+
+    def test_real_terminal_can_be_forwarded_without_seeking(self):
+        master,slave=os.openpty()
+        original_open=open
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);marker=root/'pending.desktop';marker.write_text('pending')
+                args=['pairing',str(root),'car@172.16.42.2',str(root),str(marker)]
+                def terminal_open(path,*args,**kwargs):
+                    self.assertEqual(path,'/dev/tty')
+                    return original_open(os.ttyname(slave),*args,**kwargs)
+                def pairing(command,stdin):
+                    self.assertTrue(os.isatty(stdin.fileno()))
+                    return subprocess.CompletedProcess(command,0)
+                with patch.object(sys,'argv',args),patch('socket.create_connection'),patch('builtins.open',side_effect=terminal_open),patch('subprocess.run',side_effect=pairing),redirect_stdout(io.StringIO()):
+                    exec(RUNNER,{'__name__':'__main__'})
+                self.assertFalse(marker.exists())
+        finally:
+            os.close(master);os.close(slave)

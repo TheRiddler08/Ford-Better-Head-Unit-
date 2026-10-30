@@ -57,7 +57,7 @@ try:
     print('Tiny detected. Upgrading/pairing its receiver over the local link.',flush=True)
     # This Python program came from a heredoc; restore the actual terminal so
     # SSH can allocate a PTY and sudo can ask for authorization on the Tiny.
-    with open('/dev/tty','r+') as terminal:
+    with open('/dev/tty','rb',buffering=0) as terminal:
         result=subprocess.run(['bash',str(Path(root)/'duet/setup-offline-updates.sh'),target],stdin=terminal)
     if result.returncode:
         print('Pairing did not finish. Downloads remain active; rerun:',flush=True)
