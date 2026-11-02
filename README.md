@@ -221,3 +221,5 @@ key pairing, tests, health checks, receipts and rollback; LoRaWAN is not require
 [One-time Duet setup](docs/ONE_DEVICE_UPDATES.md) enables automatic background downloads, carried Home Assistant images/Ubuntu prerequisites, offline Tiny installation, retry/health checks and signed updater self-upgrades. Tiny needs only the wired connection when the Duet returns. Existing reports, GPS history and source editor remain available.
 
 For Tiny installations that lose power with the ignition, see [power-loss protection and retained-power shutdown](docs/POWER_LOSS.md). Park alone cannot guarantee a safe power cut.
+
+Pi-controlled startup over the central Ethernet switch: [timed wake packets and optional boot standby](docs/PI_WAKE_POWER.md).

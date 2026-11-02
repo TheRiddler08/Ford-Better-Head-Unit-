@@ -94,3 +94,5 @@ unfinished transaction after a writer is killed with SIGKILL. Those tests check
 process-crash recovery, not electrical power-loss guarantees. Validate actual
 shutdown timing, storage recovery and restart on your devices using backups and
 a test database, rather than risking the only copy of vehicle history.
+
+For the separate ignition-on startup sequence, see [Pi wake and boot standby](PI_WAKE_POWER.md). WOL does not replace retained-power shutdown.

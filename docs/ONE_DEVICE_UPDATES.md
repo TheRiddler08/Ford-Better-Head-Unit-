@@ -122,7 +122,7 @@ The default full bundle includes:
 - the official Home Assistant stable image, resolved on Duet and locked to exact
   manifest/config/layer hashes for that bundle;
 - the dependency closure for Docker Engine, CA certificates, GPG verification and
-  Ubuntu archive keys, with signed repository metadata for Ubuntu **22.04, 24.04
+  Ubuntu archive keys and Ethernet wake tooling (`ethtool`), with signed repository metadata for Ubuntu **22.04, 24.04
   and 26.04 amd64**. Tiny chooses its own release; ARM packages are never installed
   merely because Duet is ARM.
 

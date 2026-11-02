@@ -20,7 +20,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
 
-ROOT_PACKAGES=('docker.io','ca-certificates','gpgv','ubuntu-keyring')
+ROOT_PACKAGES=('docker.io','ca-certificates','gpgv','ubuntu-keyring','ethtool')
 KEEP={'Package','Version','Architecture','Filename','SHA256','Size','Depends','Pre-Depends','Provides'}
 DIGEST=re.compile(r'^sha256:[0-9a-f]{64}$')
 MAX_DOWNLOAD=6*1024**3
@@ -267,7 +267,7 @@ def ubuntu_archive(downloads,version,codename,output):
                     record['_base']=base
                     index.setdefault(record['Package'],[]).append(record)
     releases={name:sha(path) for name,path in metadata.items() if name.endswith('/InRelease')}
-    identity=hashlib.sha256(json.dumps({'format':3,'releases':releases},sort_keys=True).encode()).hexdigest()
+    identity=hashlib.sha256(json.dumps({'format':4,'releases':releases,'roots':ROOT_PACKAGES},sort_keys=True).encode()).hexdigest()
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
     archive=output/(version+'-'+identity+'.tar.gz');info_file=archive.with_suffix('.json')
     if archive.exists() and info_file.exists():

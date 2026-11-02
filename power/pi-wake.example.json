@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "status": {"bind": "172.16.42.3", "interface": "eth0"},
+  "targets": [
+    {"name": "tiny", "mac": "02:00:00:00:00:01", "broadcast": "172.16.42.255", "interface": "eth0"},
+    {"name": "duet", "mac": "02:00:00:00:00:02", "broadcast": "172.16.42.255", "interface": "eth0"}
+  ]
+}
