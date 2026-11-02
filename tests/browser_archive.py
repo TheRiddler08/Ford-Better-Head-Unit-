@@ -49,6 +49,13 @@ with tempfile.TemporaryDirectory() as temp:
             expect(page.locator('#routePaths path')).to_have_count(1)
             assert page.locator('#routePaths path').get_attribute('d').count('L')==2104
             page.locator('#routeMap').click(position={'x':150,'y':140});expect(page.locator('#fixDetail')).to_contain_text('lat')
+            page.locator('#replaySpeed').select_option('600')
+            page.locator('#replayPlay').click()
+            expect(page.locator('#replaySeek')).not_to_have_value('0')
+            page.locator('#replayPlay').click()
+            page.locator('#replaySeek').fill('100')
+            expect(page.locator('#replayStatus')).to_contain_text('101 / 2105')
+            expect(page.locator('#fixDetail')).to_contain_text('altitude')
             page.locator('#recordKind').select_option('gps');expect(page.locator('#recordRows tr')).to_have_count(500)
             page.set_viewport_size({'width':390,'height':844})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')

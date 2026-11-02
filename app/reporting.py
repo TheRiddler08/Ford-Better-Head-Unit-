@@ -14,6 +14,8 @@ TABLES = {
  'gps':('fixes','id','ts',['received','ts','time_source','lat','lon','altitude','speed','heading','mode','epx','epy','segment','break_reason']),
  'gps-messages':('gps_messages','id','received',['received','class','raw']),
  'stops':('stops','id','started',['started','ended','lat','lon','samples','segment']),
+ 'gps-stream':('gps_stream','id','received',['received','session','raw_b64']),
+ 'gps-sessions':('gps_sessions','id','started',['started','ended','reason']),
  'gps-events':('gps_events','id','ts',['ts','name','detail'])}
 
 

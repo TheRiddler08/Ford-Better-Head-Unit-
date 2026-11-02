@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Persistent local gpsd journal. Records real fixes; never interpolates gaps."""
 import argparse
+import base64
 from datetime import datetime
 import json
 import math
@@ -22,10 +23,14 @@ def distance(a, b):
 def open_db(path):
     path = Path(path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
+    fresh=not path.exists()
     db = sqlite3.connect(path, timeout=15)
+    if fresh:path.chmod(0o600)
     db.execute('PRAGMA journal_mode=WAL')
     db.execute('PRAGMA synchronous=FULL')
     db.executescript('''
+      CREATE TABLE IF NOT EXISTS gps_stream(id INTEGER PRIMARY KEY, received REAL, session INTEGER, raw_b64 TEXT);
+      CREATE TABLE IF NOT EXISTS gps_sessions(id INTEGER PRIMARY KEY, started REAL, ended REAL, reason TEXT);
       CREATE TABLE IF NOT EXISTS gps_messages(id INTEGER PRIMARY KEY, received REAL, class TEXT, raw TEXT);
       CREATE TABLE IF NOT EXISTS fixes(id INTEGER PRIMARY KEY, received REAL, ts REAL,
         time_source TEXT, lat REAL, lon REAL, altitude REAL, speed REAL, heading REAL,
@@ -70,17 +75,20 @@ def parse_fix(message, received):
             'mode':mode, 'epx':finite(message.get('epx')), 'epy':finite(message.get('epy'))}
 
 
-def record_message(db, message, received=None):
+def record_message(db, message, received=None, commit=True):
     received = time.time() if received is None else received
     raw = json.dumps(message, allow_nan=False)
     db.execute('INSERT INTO gps_messages(received,class,raw) VALUES(?,?,?)',
                (received,message.get('class','unknown') if isinstance(message,dict) else 'unknown',raw))
     fix = parse_fix(message, received)
-    if fix is None:
-        db.commit()
-        return None
     saved = db.execute('SELECT value FROM gps_state WHERE id=1').fetchone()
     state = json.loads(saved[0]) if saved else {}
+    if fix is None:
+        if isinstance(message,dict) and message.get('class')=='TPV':
+            state['force_break']='fix_lost'
+            db.execute('INSERT OR REPLACE INTO gps_state VALUES(1,?)',(json.dumps(state),))
+        if commit:db.commit()
+        return None
     previous = state.get('last')
     reason = 'start' if previous is None else ''
     if previous:
@@ -90,6 +98,7 @@ def record_message(db, message, received=None):
         elif dt > 120 or received-previous['received'] > 120:reason='gap'
         elif abs(fix['lon']-previous['lon'])>180:reason='date_line'
         elif metres > max(100, max(dt,0)*120):reason='position_jump'
+    reason=state.get('force_break') or reason
     segment = state.get('segment',0)+(1 if reason else 0)
     fix.update(segment=segment,break_reason=reason)
     columns = list(fix)
@@ -106,8 +115,48 @@ def record_message(db, message, received=None):
             db.execute('UPDATE stops SET ended=?,samples=? WHERE id=?',(fix['ts'],candidate['samples'],candidate['stop_id']))
     state = {'last':fix,'segment':segment,'candidate':candidate}
     db.execute('INSERT OR REPLACE INTO gps_state VALUES(1,?)',(json.dumps(state),))
-    db.commit()
+    if commit:db.commit()
     return fix
+
+
+def start_session(db, received=None):
+    received=time.time() if received is None else received
+    with db:
+        db.execute("UPDATE gps_sessions SET ended=?,reason='interrupted' WHERE ended IS NULL",(received,))
+        session=db.execute('INSERT INTO gps_sessions(started) VALUES(?)',(received,)).lastrowid
+        saved=db.execute('SELECT value FROM gps_state WHERE id=1').fetchone()
+        state=json.loads(saved[0]) if saved else {}
+        state['force_break']='connection_start'
+        db.execute('INSERT OR REPLACE INTO gps_state VALUES(1,?)',(json.dumps(state),))
+    return session
+
+
+def end_session(db, session, reason, received=None):
+    if session is not None:
+        with db:db.execute('UPDATE gps_sessions SET ended=?,reason=? WHERE id=? AND ended IS NULL',
+                           (time.time() if received is None else received,reason,session))
+
+
+def ingest_chunk(db, session, buffer, chunk, received=None):
+    """Durably retain exact gpsd bytes, including malformed/partial JSON."""
+    received=time.time() if received is None else received
+    with db:
+        db.execute('INSERT INTO gps_stream(received,session,raw_b64) VALUES(?,?,?)',
+                   (received,session,base64.b64encode(chunk).decode('ascii')))
+        buffer+=chunk
+        while b'\n' in buffer:
+            line,buffer=buffer.split(b'\n',1)
+            try:
+                if len(line)>65536:raise ValueError('Oversized gpsd line')
+                record_message(db,json.loads(line),received,commit=False)
+            except (ValueError,TypeError,UnicodeError):
+                db.execute('INSERT INTO gps_events(ts,name,detail) VALUES(?,?,?)',
+                           (received,'invalid_message','Malformed or oversized gpsd line; bytes retained'))
+        if len(buffer)>262144:
+            db.execute('INSERT INTO gps_events(ts,name,detail) VALUES(?,?,?)',
+                       (received,'invalid_message','Unterminated gpsd line; bytes retained, parser reset'))
+            buffer=b''
+    return buffer
 
 
 def event(db, name, detail):
@@ -132,31 +181,28 @@ def main():
     lock=Path(str(Path(args.db).expanduser())+'.lock').open('a')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     try:
+        session=None
         while not STOP:
             try:
                 with socket.create_connection(('127.0.0.1',2947),timeout=3) as sock:
                     sock.settimeout(2)
                     sock.sendall(b'?WATCH={"enable":true,"json":true};\n')
                     event(db,'connected','Local gpsd watch established')
+                    session=start_session(db)
                     buffer=b''
                     while not STOP:
                         try:chunk=sock.recv(8192)
                         except socket.timeout:continue
                         if not chunk:raise OSError('gpsd closed connection')
-                        buffer+=chunk
-                        if len(buffer)>262144:raise ValueError('gpsd message exceeds buffer limit')
-                        while b'\n' in buffer:
-                            line,buffer=buffer.split(b'\n',1)
-                            if len(line)>65536:
-                                event(db,'invalid_message','gpsd line exceeds 64 KB');continue
-                            try:record_message(db,json.loads(line))
-                            except (ValueError,TypeError,UnicodeError):event(db,'invalid_message','Malformed gpsd message')
+                        buffer=ingest_chunk(db,session,buffer,chunk)
             except (OSError,ValueError) as exc:
+                end_session(db,session,'disconnected');session=None
                 event(db,'disconnected',str(exc))
                 for _ in range(10):
                     if STOP:break
                     time.sleep(.5)
     finally:
+        end_session(db,session,'stopped')
         db.close();lock.close()
 
 

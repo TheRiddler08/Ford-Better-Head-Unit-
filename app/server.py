@@ -414,7 +414,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(reporting.summary(db, gps))
             export = kind == "export"
             if export:kind = query.get("kind", ["values"])[0]
-            target = gps if kind in ("gps", "stops", "gps-messages", "gps-events") else db
+            target = gps if kind in ("gps", "stops", "gps-messages", "gps-events", "gps-stream", "gps-sessions") else db
             if not export:return self.send_json(reporting.page(target, kind, query))
             # Validate before sending headers, then stream every matching row.
             reporting.selection(kind, query)

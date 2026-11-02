@@ -257,6 +257,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             name=parse_qs(req.query).get("device",["car-1"])[0]
             cfg_file,queue_file=paths(name)
+            if req.path=="/api/coverage":
+                from control.coverage import report
+                after=int(parse_qs(req.query).get('after',['0'])[0])
+                if after<0:raise ValueError('Invalid coverage cursor')
+                return self.response(report(ROOT/'coverage.sqlite3',after))
             if req.path=="/api/software/source":
                 query=parse_qs(req.query)
                 return self.response(software().source(name,query.get("role",["tiny"])[0],query.get("path",[""])[0]))

@@ -45,6 +45,7 @@ function tiles(){
   }
 }
 function draw(){
+  pauseReplay();$('replaySeek').max=Math.max(0,points.length-1);
   $('routePaths').replaceChildren();if(!points.length){extent=null;view=null;$('routeTiles').replaceChildren();$('selectedFix').setAttribute('r',0);return;}
   let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity,path='',lastSegment=null;
   for(const point of points){const p=project(point);minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);path+=(point.segment!==lastSegment?'M':'L')+p.x+' '+p.y+' ';lastSegment=point.segment;}
@@ -78,3 +79,24 @@ $('applyFilters').onclick=()=>{loadingAll=false;routeGeneration++;points=[];draw
 $('allTime').onclick=()=>{$('fromTime').value='';$('toTime').value='';$('applyFilters').click();};
 $('recordKind').onchange=()=>records(true);$('moreRecords').onclick=()=>records(false);$('closeDetail').onclick=()=>$('recordDetail').close();
 summary().catch(error=>$('recordStatus').textContent=error.message);records(true);
+
+let replayTimer=null;
+function pauseReplay(){clearTimeout(replayTimer);replayTimer=null;}
+function replayPoint(index){
+  if(!points.length||!view)return;
+  const point=points[index],p=project(point);
+  $('selectedFix').setAttribute('cx',p.x);$('selectedFix').setAttribute('cy',p.y);$('selectedFix').setAttribute('r',view.w/180);
+  $('replaySeek').value=index;
+  $('replayStatus').textContent=timestamp(point.ts)+' · '+(index+1)+' / '+points.length+' loaded fixes';
+  $('fixDetail').textContent=JSON.stringify(point,null,2);
+}
+function replayNext(){
+  const index=Number($('replaySeek').value),next=points[index+1];
+  if(!next){pauseReplay();return;}
+  const current=points[index],gap=next.segment!==current.segment;
+  const delay=gap?1000:Math.max(16,(next.ts-current.ts)*1000/Number($('replaySpeed').value));
+  if(gap)$('replayStatus').textContent+=' · skipping a recording gap; no interpolated movement';
+  replayTimer=setTimeout(()=>{replayPoint(index+1);replayNext();},delay);
+}
+$('replayPlay').onclick=()=>{if(replayTimer){pauseReplay();return;}if(!points.length)return;if(Number($('replaySeek').value)>=points.length-1)$('replaySeek').value=0;replayPoint(Number($('replaySeek').value));replayNext();};
+$('replaySeek').oninput=()=>{pauseReplay();replayPoint(Number($('replaySeek').value));};

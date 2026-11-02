@@ -342,6 +342,40 @@ def native_dependencies(offline=False,role=None):
 def unit(name,content):save(Path('/etc/systemd/system')/name,content.encode())
 
 
+def install_gps(config):
+    """Adopt Tiny's GPS client automatically; never probe arbitrary USB ports."""
+    if not config.get('gps_recording',True):return
+    service='car-gps-recorder.service'
+    existing=Path('/etc/systemd/system')/service
+    # Respect a deliberately stopped or masked existing recorder.
+    if existing.is_symlink() and existing.resolve()==Path('/dev/null'):return
+    # Existing units can carry a custom database path or deliberate opt-out.
+    # Their checkout/overlay code is updated through the existing recorder path.
+    if existing.exists():return
+    commit=config.get('commit') or git(config,'rev-parse','HEAD')
+    source=source_bytes(config,commit,'recorder/gps_recorder.py')
+    ast.parse(source)
+    target=Path(config['repo'])/'recorder/gps_recorder.py'
+    unit(service,'''[Unit]
+Description=Persistent local GPS movement history
+After=network.target gpsd.service
+[Service]
+User='''+config['user']+'''
+Environment=HOME='''+config['home']+'''
+EnvironmentFile=-/etc/car-dashboard/dashboard.env
+ExecStart=/usr/bin/python3 -u '''+str(target)+'''
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+UMask=0077
+[Install]
+WantedBy=multi-user.target
+''')
+    run(['systemctl','daemon-reload'])
+    run(['systemctl','enable',service])
+    run(['systemctl','restart',service])
+
+
 def install_app_updates(config):
     # Use committed source, not an editable root-executed checkout script.
     commit=config.get('commit') or git(config,'rev-parse','HEAD')
@@ -599,7 +633,9 @@ def install(role,repo,user,sources,offline=False,commit=None):
         return {'provisioning':VERSION,'disabled':True,'missing':missing}
     if Path('/run/systemd/system').exists():
         systemd_units(role)
-        if role=='tiny':install_app_updates(defaults)
+        if role=='tiny':
+            install_app_updates(defaults)
+            install_gps(defaults)
     elif Path('/run/openrc').exists():openrc_units(role)
     else:raise ValueError('Automatic role setup needs systemd or OpenRC')
     save(STATE/'installed.json',{'provisioning':VERSION,'version':destination.name,'commit':defaults['commit'],'missing':missing})

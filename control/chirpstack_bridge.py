@@ -81,6 +81,13 @@ class Bridge:
         try:
             wire=json.loads(msg.payload)
             if not isinstance(wire,dict):raise ValueError('Invalid uplink event')
+            from control.coverage import ingest
+            registry_file=ROOT/'gateways.json'
+            try:
+                registry=json.loads(registry_file.read_text()) if registry_file.exists() else {}
+                ingest(ROOT/'coverage.sqlite3',wire,registry)
+            except (ValueError,TypeError,AttributeError,OSError) as exc:
+                print('Coverage evidence rejected: '+str(exc),flush=True)
             window=True
             from control.update_agent import atomic
             atomic(ROOT/'radio-status.json',json.dumps({'phase':'uplink-received','time':time.time()}).encode())

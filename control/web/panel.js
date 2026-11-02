@@ -107,3 +107,25 @@ $("save").addEventListener("click",save);
 $("refresh").addEventListener("click",()=>refresh().catch(err=>$("pendingEdits").textContent=err.message));
 $("reset").addEventListener("click",()=>refresh().catch(err=>$("pendingEdits").textContent=err.message));
 $("device").addEventListener("change",()=>{document.dispatchEvent(new Event("panel-device"));return refresh().catch(err=>$("pendingEdits").textContent=err.message);});
+
+let coverageCursor=0,coverageCount=0;
+$('loadCoverage').onclick=async()=>{
+  try{
+    const result=await call('/api/coverage?after='+coverageCursor);
+    for(const point of result.items){
+      if(!point.eligible)continue;
+      const cellSize=.001; // Display cells (~111 m latitude); not a claimed RF radius.
+      const cell=document.createElementNS('http://www.w3.org/2000/svg','rect');
+      cell.setAttribute('x',Math.floor(point.lon/cellSize)*cellSize);cell.setAttribute('y',Math.floor(-point.lat/cellSize)*cellSize);
+      cell.setAttribute('width',cellSize);cell.setAttribute('height',cellSize);cell.setAttribute('fill','#58e8be');cell.setAttribute('opacity','.15');
+      $('coverageMap').append(cell);
+      const dot=document.createElementNS('http://www.w3.org/2000/svg','circle');
+      dot.setAttribute('cx',point.lon);dot.setAttribute('cy',-point.lat);dot.setAttribute('r','.3');dot.setAttribute('fill','#58e8be');
+      const title=document.createElementNS('http://www.w3.org/2000/svg','title');title.textContent=point.gateway+' · '+new Date(point.received*1000).toLocaleString()+' · RSSI '+point.rssi+' · SNR '+point.snr;dot.append(title);$('coverageMap').append(dot);coverageCount++;
+    }
+    coverageCursor=result.next;
+    const dots=[...$('coverageMap').querySelectorAll('circle')];
+    if(dots.length){let x=Infinity,y=Infinity,maxX=-Infinity,maxY=-Infinity;for(const dot of dots){const a=Number(dot.getAttribute('cx')),b=Number(dot.getAttribute('cy'));x=Math.min(x,a);y=Math.min(y,b);maxX=Math.max(maxX,a);maxY=Math.max(maxY,b);}const w=Math.max(.01,maxX-x),h=Math.max(.01,maxY-y);$('coverageMap').setAttribute('viewBox',[x-w*.1,y-h*.1,w*1.2,h*1.2].join(' '));for(const dot of dots)dot.setAttribute('r',Math.max(w,h)/150);}
+    $('coverageStatus').textContent=coverageCount+' eligible receptions loaded'+(result.hasMore?' · more available':'')+'\n'+JSON.stringify(result.totals,null,2)+'\n'+result.meaning;
+  }catch(error){$('coverageStatus').textContent=error.message;}
+};

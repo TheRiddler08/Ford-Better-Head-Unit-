@@ -129,3 +129,66 @@ the live main file and assume it contains its WAL. Use SQLite's online backup AP
 or the SQLite CLI `.backup` command for both databases, and protect backups like
 private vehicle/location history. Downloaded software courier packages contain
 Git source, not these databases.
+
+## Automatic recorder and replay
+
+Normal Tiny installation and verified role updates now enable the GPS recorder
+by default. Existing stopped/masked services and `gps_recording: false` in the
+root-owned fleet configuration are preserved. The recorder reads the dashboard's
+`CAR_DB` / `CAR_GPS_DB` environment, runs as the dashboard account and reconnects
+to localhost gpsd automatically. It does not claim an unidentified USB serial
+port: receiver provisioning remains pending until the GPS receiver is identified
+and gpsd provides real fixes. Do not give gpsd the OBD adapter.
+
+The archive additionally retains every byte received from the **gpsd JSON
+socket**, base64-encoded by chunk, with receipt timestamp and connection session.
+This includes malformed JSON and incomplete messages; it is not USB wire capture.
+The stream and derived fixes commit together. A lost GPS fix or new connection
+starts a new segment, even during short outages. An unclosed previous session is
+marked interrupted on reconnection (its end is detection time, not exact outage).
+
+Load a route and use Play/pause, speed and the position slider to replay its
+recorded timestamps. Replay is limited to loaded fixes; load further pages or all
+matching fixes for a longer trip. Segment breaks are skipped after a visible pause,
+without creating intermediate positions. Dates, coordinates and complete fix
+fields remain available while replaying.
+
+## Fixed-gateway coverage evidence
+
+The authenticated home control panel includes a coverage plot and audit totals.
+ChirpStack MQTT events can contribute observations through a decoded object:
+
+```json
+{"carGpsV1":{"lat":40.0,"lon":-75.0,"ts":1793100000,
+ "gatewayMode":"client","gatewayModeAt":1793100000}}
+```
+
+The MQTT event must contain a stable `deduplicationId` and `rxInfo` gateway IDs.
+Configure `gateways.json` in the home control state directory (default
+`~/.local/share/car-home-control`) using actual lowercase gateway IDs:
+
+```json
+{"actual-fixed-gateway-id":{"role":"fixed"},
+ "actual-vehicle-gateway-id":{"role":"mobile"}}
+```
+
+Only a fixed registered receiver plus an explicitly known client-only vehicle
+role, a mode observation within 30 seconds of its GPS sample, and a GPS sample
+received within five minutes can contribute. Mobile/unknown/stale observations
+remain in the audit database but cannot contribute to coverage. Duplicate MQTT
+events are idempotent. Classify the entire vehicle as gateway-active while its
+future concentrator forwards traffic, even if the RAK3172 end device also runs.
+
+Reception points and sampled 0.001-degree cells are evidence, not guaranteed RF
+circles. Unheard packets, stale GPS, backhaul failures and untested areas are not
+negative RF measurements. No synthetic boundary is drawn across untested areas.
+The archive is persistent and cursor-paginated, with no automatic deletion.
+
+This adds the evidence consumer, audit and map; **it does not configure a real
+RAK3172 modem, produce that decoded telemetry, install ChirpStack, or detect the
+future RAK5146 role yet**. Until the modem sender and fresh gateway-role reporting
+are connected, the coverage plot correctly stays empty. Do not mistake a configured
+MQTT connection or a queued message for validated over-air delivery. Phase 1 uses
+the RAK3172-E on the Pi, Tiny USB GPS and a US915 fixed gateway; the future
+RAK5146 is a separate radio role. Match US915 sub-band/data-rate payload limits
+before enabling transmissions. Large GPS backlogs belong on Wi-Fi/Ethernet.
