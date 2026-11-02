@@ -46,3 +46,6 @@ echo "On Duet: ssh-keyscan -t ed25519 172.16.42.2 | ssh-keygen -lf -"
 echo "After confirming fingerprints match, save: ssh-keyscan -H -t ed25519 172.16.42.2 >> ~/.ssh/known_hosts"
 echo "Kiosk starts automatically at next graphical login; no reboot was triggered."
 echo "Manual launch (from Duet's graphical terminal): python3 ~/.local/share/drive-console/launcher_lock.py ~/.local/share/drive-console/launch.sh"
+
+# Apply all role settings as part of the ordinary display install/update.
+bash "$ROOT/../deploy/install-fleet.sh" duet

@@ -136,3 +136,6 @@ DESKTOP
 fi
 echo "Downloads run automatically; delivery retries when $TARGET reconnects."
 echo 'First pair the Tiny once with duet/setup-offline-updates.sh if not already paired.'
+
+# Also bind the root reconciler to this separate courier signing key.
+bash "$ROOT/deploy/install-fleet.sh" duet

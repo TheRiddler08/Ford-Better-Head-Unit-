@@ -1,8 +1,15 @@
 # Pi-controlled car startup over the central Ethernet switch
 
+**Normal role installs now configure this automatically.** See [automatic device
+setup](AUTOMATIC_DEVICE_SETUP.md) for the default path, including Wi-Fi sharing and
+automatic MAC discovery. The standalone commands below are retained for advanced
+manual installations and diagnostics; they are not required after normal setup.
+
 The Pi, Tiny and Duet share a powered Ethernet switch. That LAN is the main path
 for car communication; the old direct USB link is not required for this setup.
-The scripts do not change Wi-Fi, IP addresses, gateways, DHCP, NAT or Tailscale.
+The standalone scripts below do not change Wi-Fi, IP addresses, gateways, DHCP,
+NAT or Tailscale; the automatic role manager described above manages the car LAN
+and sharing routes itself.
 Internet sharing from Pi or Duet can be configured independently; use one active
 Internet gateway/DHCP authority per LAN, not competing Pi and Duet gateways.
 Wake-on-LAN does not need Internet, DHCP, DNS, Home Assistant or LoRaWAN. The radio
@@ -188,8 +195,9 @@ On OpenRC: `sudo rc-update del car-boot-standby default`. For a physically
 unreachable already-sleeping target, disarming cannot wake it; send a known-working
 magic packet or use its power button first.
 
-No target is automatically armed by a Git/courier update. This protects existing
-remote access when NIC and firmware capabilities have not been established.
+The standalone power installer remains unarmed unless requested. Normal role
+install/update instead enables supported standby automatically, with updater,
+link, wake-registration and Pi timing checks. Unsupported hardware stays awake.
 Source updates arrive through the normal Git/courier path; rerun the role's power
 installer to refresh its installed root-owned helper and units.
 

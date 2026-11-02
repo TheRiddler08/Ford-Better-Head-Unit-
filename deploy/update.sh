@@ -4,6 +4,7 @@ set -euo pipefail
 : "${REPO:?missing REPO}" "${APP_USER:?missing APP_USER}" "${BRANCH:?missing BRANCH}"
 exec 9>/run/lock/car-dashboard-update.lock
 flock -n 9 || { echo 'Already updating'; exit 0; }
+systemctl is-active --quiet car-dashboard.service || { echo 'Dashboard deliberately stopped; leaving it stopped'; exit 0; }
 run_git(){ runuser -u "$APP_USER" -- git -C "$REPO" "$@"; }
 run_python(){ (cd "$REPO" && runuser -u "$APP_USER" -- /usr/bin/python3 "$@"); }
 [[ "$(run_git symbolic-ref --short HEAD)" == "$BRANCH" ]] || { echo 'Unexpected branch'; exit 1; }

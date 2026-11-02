@@ -54,6 +54,7 @@ WantedBy=multi-user.target
 EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now car-dashboard.service
+bash "$ROOT/deploy/install-fleet.sh" tiny
 bash "$ROOT/deploy/install-power-safety.sh"
 bash "$ROOT/deploy/install-recorder.sh"
 if [[ "${CAR_HOME_ASSISTANT:-1}" == 1 ]]; then
@@ -73,4 +74,4 @@ fi
 printf '\nDashboard installed: http://127.0.0.1:8787\n'
 printf 'Service status: sudo systemctl status car-dashboard --no-pager\n'
 printf 'OBD recorder installed with dashboard.\n'
-printf 'GitHub auto-updates are OFF. Run bash deploy/enable-updates.sh after pushing the repository.\n'
+printf 'Automatic role settings and guarded GitHub updates are configured; explicit update opt-outs are preserved.\n'

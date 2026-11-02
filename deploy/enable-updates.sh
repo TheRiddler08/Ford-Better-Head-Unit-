@@ -47,3 +47,5 @@ UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable --now car-dashboard-update.timer
 echo 'Enabled. Logs: sudo journalctl -u car-dashboard-update.service -n 60 --no-pager'
+
+sudo rm -f /etc/car-dashboard/updates-disabled

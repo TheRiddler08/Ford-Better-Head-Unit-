@@ -1,6 +1,8 @@
 # One Internet-connected device: the Duet
 
-Only the **Duet** needs Wi-Fi/Internet. It downloads Git source, the official
+Only the **Duet** needs Wi-Fi/Internet for carried updates. Normal installs also
+apply [automatic device settings](AUTOMATIC_DEVICE_SETUP.md), including Wi-Fi
+sharing, MAC discovery and supported boot standby, without separate setup steps. It downloads Git source, the official
 Home Assistant image for the **amd64 Tiny**, and Ubuntu's signed Docker dependency
 packages. Later, over the wired USB/Ethernet SSH connection, the Tiny verifies and
 installs the carried update without contacting a registry or package mirror.
@@ -122,7 +124,7 @@ The default full bundle includes:
 - the official Home Assistant stable image, resolved on Duet and locked to exact
   manifest/config/layer hashes for that bundle;
 - the dependency closure for Docker Engine, CA certificates, GPG verification and
-  Ubuntu archive keys and Ethernet wake tooling (`ethtool`), with signed repository metadata for Ubuntu **22.04, 24.04
+  Ubuntu archive keys and Ethernet/network-sharing tooling (`ethtool`, NetworkManager, iptables, dnsmasq and curl), with signed repository metadata for Ubuntu **22.04, 24.04
   and 26.04 amd64**. Tiny chooses its own release; ARM packages are never installed
   merely because Duet is ARM.
 

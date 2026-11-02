@@ -223,3 +223,5 @@ key pairing, tests, health checks, receipts and rollback; LoRaWAN is not require
 For Tiny installations that lose power with the ignition, see [power-loss protection and retained-power shutdown](docs/POWER_LOSS.md). Park alone cannot guarantee a safe power cut.
 
 Pi-controlled startup over the central Ethernet switch: [timed wake packets and optional boot standby](docs/PI_WAKE_POWER.md).
+
+Normal install/update now applies car Ethernet, automatic Pi/Duet Wi-Fi sharing, MAC discovery and supported boot standby: [automatic device setup](docs/AUTOMATIC_DEVICE_SETUP.md). Use `bash install.sh duet`, `tiny` or `pi` on the corresponding device.

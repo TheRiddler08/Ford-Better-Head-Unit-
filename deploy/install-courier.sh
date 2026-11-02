@@ -64,3 +64,15 @@ else
 fi
 echo 'Tiny receiver installed. Pin the Tiny host key on Duet before first delivery.'
 echo 'No networking, recorder, database, or dashboard source was changed by this bootstrap.'
+
+# Apply role defaults during the existing local pairing operation as well. The
+# copied bootstrap supports an old Tiny checkout with no new fleet sources yet.
+FLEET_BASE=/usr/local/lib/car-dashboard/fleet-bootstrap
+if [[ -f "$SOURCE_DIR/fleet.py" ]]; then
+ if [[ -f "$SOURCE_DIR/wake.py" && -f "$SOURCE_DIR/standby.py" ]]; then POWER_SOURCE="$SOURCE_DIR"
+ else POWER_SOURCE="$SOURCE_DIR/../power"; fi
+ sudo install -d -m 0755 "$FLEET_BASE"
+ sudo install -o root -g root -m 0644 "$SOURCE_DIR/fleet.py" "$FLEET_BASE/fleet.py"
+ sudo install -o root -g root -m 0644 "$POWER_SOURCE/wake.py" "$POWER_SOURCE/standby.py" "$FLEET_BASE/"
+ sudo /usr/bin/python3 -I "$FLEET_BASE/fleet.py" install --role tiny --repo "$REPO" --user "$USER_NAME" --source "$FLEET_BASE" --commit "$(git -C "$REPO" rev-parse HEAD)" --offline
+fi

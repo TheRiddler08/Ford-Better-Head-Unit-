@@ -25,6 +25,7 @@ else
 fi
 scp "$ROOT/deploy/install-courier.sh" "$ROOT/deploy/offline_updates.py" \
  "$ROOT/deploy/runtime_assets.py" "$ROOT/deploy/offline_payload.py" "$ROOT/deploy/home_assistant.py" \
+ "$ROOT/deploy/fleet.py" "$ROOT/power/wake.py" "$ROOT/power/standby.py" \
  "$HOME/.ssh/drive-console-courier.pub" "$TARGET:car-courier-bootstrap/"
 ssh -t "$TARGET" 'bash "$HOME/car-courier-bootstrap/install-courier.sh" "$HOME/car-courier-bootstrap/drive-console-courier.pub" "$HOME/car-dashboard"'
 echo 'Pairing complete. Duet downloads automatically; Tiny installs when reconnected, without Internet.'

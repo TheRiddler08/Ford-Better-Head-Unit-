@@ -83,6 +83,9 @@ def wake_pending(config):
             sock.connect((config['pi_address'],8799))
             sock.send(b'CAR_WAKE_STATUS_V1')
             status=json.loads(sock.recv(256))
+        if config.get('require_registration'):
+            mac=(Path('/sys/class/net')/config['interface']/'address').read_text().strip().lower()
+            if mac not in status.get('knownMacs',[]):return False
         seconds=status['uptime']
         return status.get('schema')==1 and status.get('lastWake')==150 and type(seconds) in (int,float) and 0<=seconds<140
     except (OSError,ValueError,KeyError,TypeError):return False
@@ -123,6 +126,7 @@ def sleep_once(config,test=False):
                 if wake.exists():wake.write_text('enabled\n')
                 if config['sleep_mode']=='deep':Path('/sys/power/mem_sleep').write_text('deep\n')
                 if not test and (uptime()>=120 or not wake_pending(config)):
+                    if config.get('require_registration'):raise BlockingIOError('Waiting for Pi to register this adapter before standby')
                     print('Pi wake window is unknown or nearly over; staying awake',flush=True);return
                 print('Suspending once; Pi must wake this adapter. Waiting for resume.',flush=True)
                 # The parent holds updater locks through suspend and releases on resume.
@@ -139,7 +143,11 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action',choices=['check','boot','test-suspend'])
     parser.add_argument('--config',default='/etc/car-dashboard/boot-standby.json')
-    args=parser.parse_args();config=json.loads(Path(args.config).read_text())
+    args=parser.parse_args()
+    if args.action=='boot':
+        while not Path(args.config).exists() and uptime()<120:time.sleep(1)
+        if not Path(args.config).exists():raise SystemExit('Role configuration is not ready; staying awake')
+    config=json.loads(Path(args.config).read_text())
     if args.action=='check':
         probe(config);print('Reported capabilities pass. Physical wake test still required.')
     else:

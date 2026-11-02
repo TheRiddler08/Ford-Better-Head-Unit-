@@ -240,6 +240,9 @@ async function refreshUpdates(){
     const status=await api("/api/update-status");
     $("updateRevision").textContent="Git revision: "+(status.revision||"unknown");
     $("updateAuto").textContent=status.updateTimer || "Auto-update timer not detected";
+    $("fleetStatus").textContent=status.fleet
+      ? "Setup: "+status.fleet.phase+" · Gateway: "+(status.fleet.gateway || "offline LAN")+(status.fleet.standby?" · Standby: "+status.fleet.standby:"")
+      : "Automatic role setup has not reported yet.";
     $("updateCourier").textContent=status.courier?.ok?"Carried update installed: "+status.courier.commit.slice(0,12)+" · "+datetime(status.courier.installed):"No carried update receipt yet. Set up the Duet courier once.";
     if(status.courierProgress && ["receiving","verifying","installing","failed"].includes(status.courierProgress.phase)){
       $("updateCourier").textContent="Carried update: "+status.courierProgress.phase+" · queued packages are retained until successful";

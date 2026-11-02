@@ -56,7 +56,7 @@ def status_settings(config):
     return status
 
 
-def serve(config):
+def serve(config,config_path=None):
     status=status_settings(config)
     with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET,socket.SO_BINDTODEVICE,status['interface'].encode()+b'\0')
@@ -66,7 +66,9 @@ def serve(config):
             data,peer=sock.recvfrom(256)
             if data!=b'CAR_WAKE_STATUS_V1':continue
             seconds=float(Path('/proc/uptime').read_text().split()[0])
-            response=json.dumps({'schema':1,'uptime':seconds,'lastWake':150}).encode()
+            current=json.loads(Path(config_path).read_text()) if config_path else config
+            macs=[row['mac'].lower() for row in current.get('targets',[])]
+            response=json.dumps({'schema':1,'uptime':seconds,'lastWake':150,'knownMacs':macs}).encode()
             sock.sendto(response,peer)
 
 
@@ -80,5 +82,5 @@ if __name__=='__main__':
     config=json.loads(Path(args.config).read_text())
     if args.check:
         targets(config);status_settings(config);print('Wake configuration valid; no packets sent')
-    elif args.serve:serve(config)
+    elif args.serve:serve(config,args.config)
     else:send(config)

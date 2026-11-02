@@ -254,6 +254,26 @@ def progress(phase,commit=None):
     save_json(Path('/etc/car-dashboard/courier-progress.json'),{'phase':phase,'commit':commit,'time':int(time.time())})
 
 
+def provision_role(git,commit,repo,user):
+    """Run only root-owned installer bytes from the verified immutable commit."""
+    paths={'fleet.py':'deploy/fleet.py','wake.py':'power/wake.py','standby.py':'power/standby.py'}
+    sources={name:git('show',commit+':'+path) for name,path in paths.items()}
+    for name,content in sources.items():ast.parse(content,filename=name)
+    base=Path('/usr/local/lib/car-dashboard/fleet-inputs');base.mkdir(parents=True,exist_ok=True)
+    identity=hashlib.sha256(b''.join(sources[name] for name in sorted(sources))).hexdigest()
+    destination=base/identity
+    if destination.exists():
+        if any((destination/name).read_bytes()!=content for name,content in sources.items()):raise ValueError('Installed fleet source changed')
+    else:
+        with tempfile.TemporaryDirectory(dir=base) as temp:
+            temp=Path(temp)
+            for name,content in sources.items():(temp/name).write_bytes(content);os.chmod(temp/name,0o644)
+            os.chmod(temp,0o755);os.replace(temp,destination)
+    output=run(['/usr/bin/python3','-I',destination/'fleet.py','install','--role','tiny','--repo',repo,'--user',user,
+                '--source',destination,'--commit',commit,'--offline'],timeout=180)
+    return json.loads(output.decode().splitlines()[-1])
+
+
 def receive(repo,user,allowed_signers):
     if os.geteuid()!=0:raise ValueError('Receiver must run through installed root wrapper')
     repo=Path(repo).resolve()
@@ -281,6 +301,7 @@ def receive(repo,user,allowed_signers):
         progress('installing',manifest['commit'])
         os.chmod(temp/'update.bundle',0o644)
         runtime_result={}
+        role_setup={}
         adopted=[]
         for unit,path in [('car-obd-monitor.service','recorder/obd_full_recorder.py'),('car-gps-recorder.service','recorder/gps_recorder.py')]:
             if active(unit):
@@ -302,6 +323,7 @@ def receive(repo,user,allowed_signers):
             if not healthy:raise RuntimeError('Dashboard post-update health check failed')
             if manifest.get('runtime'):
                 runtime_result.update(support('offline_payload').install(temp,manifest['runtime'],repo,user,Path(__file__).resolve().with_name('home_assistant.py'),update_lock.fileno()))
+            role_setup.update(provision_role(git,manifest['commit'],repo,user))
             for unit,path in adopted:
                 if any(name.startswith('recorder/') for name in changed) and path in changed:
                     run(['systemctl','restart',unit])
@@ -314,6 +336,8 @@ def receive(repo,user,allowed_signers):
                 source=git('show',manifest['commit']+':deploy/home_assistant.py')
                 with tempfile.NamedTemporaryFile(dir=manager.parent,delete=False) as f:f.write(source);pending_manager=Path(f.name)
                 os.chmod(pending_manager,0o644);os.replace(pending_manager,manager)
+        result['provisioning']=1
+        result['roleSetup']=role_setup
         result['installed']=int(time.time())
         result['payloadId']=delivery_id(manifest)
         if runtime_result:result['runtime']=runtime_result
@@ -334,7 +358,8 @@ def deliver(state,key,target):
         receipt=state/'delivered.json'
         if receipt.exists():
             previous=json.loads(receipt.read_text())
-            if previous.get('payloadId',previous.get('commit'))==delivery_id(manifest) and previous.get('target')==target:
+            configured=manifest.get('schema')!=2 or (previous.get('provisioning',0)>=1 and not previous.get('roleSetup',{}).get('missing'))
+            if configured and previous.get('payloadId',previous.get('commit'))==delivery_id(manifest) and previous.get('target')==target:
                 return dict(previous,skipped=True)
         failure_path=state/'failed.json'
         failure=json.loads(failure_path.read_text()) if failure_path.exists() else {}
