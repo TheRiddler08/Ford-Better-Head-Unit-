@@ -160,4 +160,11 @@ def main():
         db.close();lock.close()
 
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    overlay=Path(os.getenv('CAR_OVERRIDE_DIR','/var/lib/car-dashboard/overrides'))/'recorder/gps_recorder.py'
+    if overlay.is_file() and not overlay.is_symlink() and os.getenv('CAR_RECORDER_OVERLAY_ACTIVE')!='1':
+        import runpy
+        os.environ['CAR_RECORDER_OVERLAY_ACTIVE']='1'
+        runpy.run_path(str(overlay),run_name='__main__')
+    else:
+        main()

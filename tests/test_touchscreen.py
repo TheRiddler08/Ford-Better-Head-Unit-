@@ -60,7 +60,7 @@ class TouchscreenContractTest(unittest.TestCase):
         self.assertIn("data-stale", self.js)
 
     def test_local_resources_only(self):
-        self.assertEqual(self.document.scripts, ["/app.js"])
+        self.assertEqual(self.document.scripts, ["/app.js", "/update-watch.js"])
         self.assertEqual(self.document.styles, ["/styles.css"])
         self.assertNotIn("https://", self.html)
         self.assertNotIn("http://", self.html)

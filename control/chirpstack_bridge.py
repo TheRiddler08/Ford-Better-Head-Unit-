@@ -8,11 +8,12 @@ server performs actual regional radio scheduling.
 import base64
 import json
 import os
+import re
 import time
 from collections import defaultdict
 
 from control.home_server import (ROOT, ack_revision, export_next,
-                                 mark_transmitted, radio_key, rewind_chunks)
+                                 mark_transmitted, radio_key, rewind_chunks, software)
 from control.lorawan_protocol import Assembler
 
 HOST = os.getenv("CAR_CHIRPSTACK_MQTT_HOST","127.0.0.1")
@@ -30,6 +31,7 @@ PASSWORD = os.getenv("CAR_CHIRPSTACK_MQTT_PASSWORD","")
 class Bridge:
     def __init__(self, client):
         self.client=client
+        self.software=software()
         self.assembler=Assembler(radio_key())
         self.last=0.0
         self.day=int(time.time()//86400)
@@ -43,8 +45,13 @@ class Bridge:
     def send_one(self):
         if not self.may_send():return
         item=export_next(NAME)
-        if not item:return
-        frame=bytes.fromhex(item["frame_hex"])
+        modern=None
+        if not item:
+            frames=self.software.outgoing(NAME,limit=1,mark=False)
+            if not frames:return
+            modern=bytes.fromhex(frames[0])
+        frame=modern if modern else bytes.fromhex(item["frame_hex"])
+        if not self.software.journal.budget('mqtt-downlinks',COOLDOWN,DAILY_LIMIT):return
         topic=f"application/{APP}/device/{DEV_EUI}/command/down"
         message={"confirmed":False,"fPort":FPORT,"data":base64.b64encode(frame).decode("ascii")}
         info=self.client.publish(topic,json.dumps(message,separators=(",",":")),qos=1)
@@ -52,21 +59,38 @@ class Bridge:
             print("Broker rejected publish; keeping fragment queued",flush=True)
             return
         # This acknowledges broker queueing, NOT successful over-air delivery.
+        if modern:
+            self.software.journal.mark_sent(modern,radio_key(),"lorawan")
+            self.last=time.monotonic();self.sent+=1
+            print("Queued resumable update fragment; awaiting durable device receipt",flush=True)
+            return
         if mark_transmitted(NAME,item["revision"],item["index"]):
             self.last=time.monotonic();self.sent+=1
             print(f"Queued fragment {item['index']+1} of revision {item['revision']} "
                   f"({len(frame)} bytes; {self.sent}/{DAILY_LIMIT} daily cap)",flush=True)
 
     def on_connect(self,client,userdata,flags,reason_code,properties=None):
+        from control.update_agent import atomic
+        atomic(ROOT/'radio-status.json',json.dumps({'phase':'mqtt-connected-awaiting-uplink','time':time.time()}).encode())
         topic=f"application/{APP}/device/{DEV_EUI}/event/up"
         client.subscribe(topic,qos=1)
         print("Subscribed to "+topic,flush=True)
 
     def on_message(self,client,userdata,msg):
+        window=False
         try:
             wire=json.loads(msg.payload)
+            if not isinstance(wire,dict):raise ValueError('Invalid uplink event')
+            window=True
+            from control.update_agent import atomic
+            atomic(ROOT/'radio-status.json',json.dumps({'phase':'uplink-received','time':time.time()}).encode())
             payload=base64.b64decode(wire.get("data",""),validate=True)
-            if len(payload)<=46 and payload:
+            if payload[:1]==b'\x02':
+                from control.update_transfer import decode
+                _,short,*_=decode(payload,radio_key())
+                with self.software.journal.db() as db:row=db.execute('SELECT doc FROM jobs WHERE short=?',(short,)).fetchone()
+                if row:self.software.receipts(NAME,json.loads(row[0])['role'],[payload.hex()],transport='lorawan')
+            elif len(payload)<=46 and payload:
                 result=self.assembler.accept(payload)
                 if result:
                     packet=result["payload"]
@@ -74,13 +98,19 @@ class Bridge:
                         ack_revision(NAME,packet["revision"])
                     elif result["kind"]=="chunk-request" and isinstance(packet,dict):
                         rewind_chunks(NAME,packet.get("sequence"),packet.get("missing"))
-            if MODE=="A":self.send_one()
         except (ValueError,TypeError,KeyError) as exc:
-            print("Ignored invalid uplink: "+str(exc),flush=True)
+            print("Ignored invalid application data in uplink: "+str(exc),flush=True)
+        finally:
+            if window and MODE=="A":self.send_one()
+
+    def on_disconnect(self,*args):
+        from control.update_agent import atomic
+        atomic(ROOT/'radio-status.json',json.dumps({'phase':'mqtt-disconnected-retrying','time':time.time()}).encode())
 
     def run(self):
         self.client.on_connect=self.on_connect
         self.client.on_message=self.on_message
+        self.client.on_disconnect=self.on_disconnect
         self.client.connect(HOST,PORT,keepalive=60)
         if MODE=="A":
             self.client.loop_forever(retry_first_connection=True)
@@ -94,12 +124,15 @@ class Bridge:
                 self.client.loop_stop()
 
 def main():
-    if not APP or not DEV_EUI or len(DEV_EUI)!=16:
-        raise SystemExit("Set ChirpStack application ID and 16-character DevEUI")
+    if not re.fullmatch('[A-Za-z0-9_-]{1,64}',APP) or not re.fullmatch('[0-9a-f]{16}',DEV_EUI):
+        from control.update_agent import atomic
+        while True:
+            atomic(ROOT/'radio-status.json',b'{"phase":"unconfigured","detail":"ChirpStack application and DevEUI required"}')
+            time.sleep(60)
     if MODE not in ("A","C"):
         raise SystemExit("CAR_LORAWAN_CLASS must be A or C")
-    from paho.mqtt.client import Client, CallbackAPIVersion
-    mqtt=Client(callback_api_version=CallbackAPIVersion.VERSION2)
+    import paho.mqtt.client as library
+    mqtt=library.Client(callback_api_version=library.CallbackAPIVersion.VERSION2) if hasattr(library,'CallbackAPIVersion') else library.Client()
     if USERNAME:
         mqtt.username_pw_set(USERNAME,PASSWORD)
     if os.getenv("CAR_CHIRPSTACK_MQTT_TLS","0")=="1":

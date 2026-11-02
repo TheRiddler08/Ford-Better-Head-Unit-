@@ -11,6 +11,7 @@ from contextlib import ExitStack
 import fcntl
 import hashlib
 import ipaddress
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,7 @@ import sys
 import tempfile
 import time
 import zipfile
+from urllib.request import Request,urlopen
 
 ADDRESSES={'duet':'172.16.42.1','tiny':'172.16.42.2','pi':'172.16.42.3'}
 SUBNET='172.16.42.0/24'
@@ -144,12 +146,19 @@ def wifi_uplink():
 
 class Sharing:
     def __init__(self):self.gateway_state=None;self.route_state=None;self.dns=None
-    def firewall(self,lan,wan):
+    def firewall(self,lan,wan,control=True):
         # Scope all rules to our chains and car subnet. No flush ruleset, global
         # DROP policy changes, DHCP service, or edits to Docker/Tailscale chains.
-        for table,chain in [('filter','CAR_FLEET_FWD'),('nat','CAR_FLEET_NAT')]:
+        for table,chain in [('filter','CAR_FLEET_FWD'),('nat','CAR_FLEET_NAT'),('filter','CAR_FLEET_IN')]:
             run(['iptables','-w','5','-t',table,'-N',chain],check=False)
             run(['iptables','-w','5','-t',table,'-F',chain])
+        if control:
+            args=['iptables','-w','5','-t','filter']
+            run([*args,'-A','CAR_FLEET_IN','-p','udp','-m','multiport','--dports','8796,8798,8799','-j','ACCEPT'])
+            if run([*args,'-C','INPUT','-i',lan,'-s',SUBNET,'-j','CAR_FLEET_IN'],check=False).returncode:
+                run([*args,'-I','INPUT','1','-i',lan,'-s',SUBNET,'-j','CAR_FLEET_IN'])
+            if wan:
+                for protocol in ('tcp','udp'):run([*args,'-A','CAR_FLEET_IN','-p',protocol,'--dport','53','-j','ACCEPT'])
         if not wan:return
         Path('/proc/sys/net/ipv4/ip_forward').write_text('1\n')
         rules=[('filter','CAR_FLEET_FWD',['-s',SUBNET,'-i',lan,'-o',wan,'-j','ACCEPT']),
@@ -200,7 +209,7 @@ class Sharing:
             self.dns.terminate()
             try:self.dns.wait(timeout=5)
             except subprocess.TimeoutExpired:self.dns.kill();self.dns.wait()
-        if self.gateway_state:self.firewall(self.gateway_state[0],None)
+        if self.gateway_state:self.firewall(self.gateway_state[0],None,control=False)
         if self.route_state:self.route(self.route_state[0],None)
 
 
@@ -309,15 +318,25 @@ def publish(sources,base=BASE):
 def native_dependencies(offline=False,role=None):
     needed=list(REQUIRED)
     if role in ('duet','tiny') and Path('/run/openrc').exists():needed.append('loginctl')
+    libraries=('cryptography','paho.mqtt.client','serial')
     missing=[name for name in needed if not shutil.which(name)]
+    for library in libraries:
+        try:available=importlib.util.find_spec(library) is not None
+        except ModuleNotFoundError:available=False
+        if not available:missing.append('python:'+library)
     if not missing or offline:return missing
     if shutil.which('apt-get'):
         run(['apt-get','update'],timeout=300)
         env=dict(os.environ,DEBIAN_FRONTEND='noninteractive')
-        subprocess.run(['apt-get','install','-y','network-manager','iproute2','iptables','dnsmasq-base','curl','ethtool'],env=env,check=True,timeout=600)
+        subprocess.run(['apt-get','install','-y','network-manager','iproute2','iptables','dnsmasq-base','curl','ethtool','python3-cryptography','python3-paho-mqtt','python3-serial'],env=env,check=True,timeout=600)
     elif shutil.which('apk'):
-        run(['apk','add','networkmanager','iproute2','iptables','dnsmasq','curl','ethtool','elogind'],timeout=600)
-    return [name for name in needed if not shutil.which(name)]
+        run(['apk','add','networkmanager','iproute2','iptables','dnsmasq','curl','ethtool','elogind','py3-cryptography','py3-paho-mqtt','py3-pyserial'],timeout=600)
+    remaining=[name for name in needed if not shutil.which(name)]
+    for library in libraries:
+        try:available=importlib.util.find_spec(library) is not None
+        except ModuleNotFoundError:available=False
+        if not available:remaining.append('python:'+library)
+    return remaining
 
 
 def unit(name,content):save(Path('/etc/systemd/system')/name,content.encode())
@@ -379,6 +398,24 @@ Type=oneshot
 ExecStart=/usr/bin/python3 -I {current}/fleet.py refresh
 TimeoutStartSec=900
 ''')
+    config=load(CONFIG,{})
+    user=config.get('user','nobody');repo=config.get('repo','/nonexistent');home=config.get('home','/nonexistent')
+    for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway')]:
+        unit(name+'.service',f'''[Unit]
+Description=Automatic resumable software link ({module})
+After=car-fleet.service
+[Service]
+User={user}
+SupplementaryGroups=dialout
+Environment=HOME={home}
+WorkingDirectory={repo}
+ExecStart=/usr/bin/python3 -m {module}
+Restart=always
+RestartSec=10
+UMask=0077
+[Install]
+WantedBy=multi-user.target
+''')
     unit('car-fleet-refresh.timer','''[Unit]
 Description=Reconcile installed car settings automatically
 [Timer]
@@ -436,7 +473,8 @@ WantedBy=timers.target
 ''')
     run(['systemctl','daemon-reload'])
     run(['systemctl','disable','--now','car-duet-ethernet-'+role+'.timer'],check=False)
-    run(['systemctl','enable','--now','car-fleet.service','car-fleet-refresh.timer'])
+    run(['systemctl','enable','--now','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service'])
+    run(['systemctl','restart','car-update-link.service','car-radio-adapter.service'])
     # Never force suspend the SSH session that installed an update. Arming is
     # automatic, but the once-per-boot timer starts on the next device boot.
     extras=['car-wake-first.timer','car-wake-retry.timer','car-wake-status.service'] if role=='pi' else ['car-boot-standby.timer']
@@ -479,6 +517,24 @@ depend() {{ need car-fleet; }}
         os.chmod('/etc/init.d/car-wake-status',0o755)
         run(['rc-update','add','car-wake-status','default'])
         run(['rc-service','car-wake-status','restart'])
+    cfg=load(CONFIG,{})
+    for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway')]:
+        save(Path('/etc/init.d')/name,f'''#!/sbin/openrc-run
+name="Automatic resumable update transport"
+supervisor="supervise-daemon"
+command="/usr/bin/python3"
+command_args="-m {module}"
+command_user="{cfg.get('user','nobody')}"
+directory="{cfg.get('repo','/nonexistent')}"
+export HOME="{cfg.get('home','/nonexistent')}"
+respawn_delay=10
+respawn_max=0
+output_log="/var/log/{name}.log"
+error_log="/var/log/{name}.log"
+depend() {{ need car-fleet; }}
+'''.encode())
+        os.chmod(Path('/etc/init.d')/name,0o755)
+        run(['rc-update','add',name,'default']);run(['rc-service',name,'restart'])
     # A Pi OpenRC boot worker handles the same absolute deadlines. Targets use
     # the same once-per-boot code, with elogind providing normal suspend policy.
     save('/etc/init.d/car-fleet-boot',f'''#!/sbin/openrc-run
@@ -508,11 +564,16 @@ def install(role,repo,user,sources,offline=False,commit=None):
     missing=native_dependencies(offline or not config.get('enabled',True),role)
     destination=publish(sources)
     defaults={'schema':1,'role':role,'repo':str(repo),'user':user,'home':account.pw_dir,
-              'enabled':True,'boot_standby':True,'interface':None,'commit':commit,'auto_update':role=='pi','app_updates':True}
+              'enabled':True,'boot_standby':True,'interface':None,'commit':commit,'auto_update':role=='pi','app_updates':True,'reboot_updates':True}
     defaults.update(config)
     if commit:defaults['commit']=commit
+    if role=='duet' and commit and not missing:advance_duet(defaults,commit)
     save(CONFIG,defaults)
     STATE.mkdir(parents=True,exist_ok=True)
+    if role=='tiny':
+        overlay=Path('/var/lib/car-dashboard/overrides');overlay.mkdir(parents=True,exist_ok=True)
+        os.chown(overlay,account.pw_uid,account.pw_gid);overlay.chmod(0o700)
+    if not Path('/etc/car-dashboard/update-link.json').exists():save('/etc/car-dashboard/update-link.json',{'home_url':'http://127.0.0.1:8791','device':'car-1'})
     if role=='duet':
         pub=Path(account.pw_dir)/'.ssh/drive-console-courier.pub'
         if pub.exists():
@@ -530,10 +591,10 @@ def install(role,repo,user,sources,offline=False,commit=None):
             previous=load(standby,{});previous['armed']=False;save(standby,previous)
     if not defaults.get('enabled',True):
         if Path('/run/systemd/system').exists():
-            for service in ['car-fleet.service','car-fleet-refresh.timer','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
+            for service in ['car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
                 run(['systemctl','disable','--now',service],check=False)
         elif Path('/run/openrc').exists():
-            for service in ['car-fleet','car-fleet-refresh','car-fleet-boot','car-wake-status']:
+            for service in ['car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-fleet-boot','car-wake-status']:
                 run(['rc-update','del',service,'default'],check=False);run(['rc-service',service,'stop'],check=False)
         return {'provisioning':VERSION,'disabled':True,'missing':missing}
     if Path('/run/systemd/system').exists():
@@ -559,6 +620,28 @@ def source_bytes(config,commit,path,bare=None):
     return result.stdout
 
 
+def advance_duet(config,commit):
+    old=git(config,'rev-parse','HEAD')
+    if old==commit:return
+    if git(config,'symbolic-ref','--short','HEAD')!='main' or git(config,'remote','get-url','origin')!=ORIGIN or git(config,'status','--porcelain'):
+        raise ValueError('Duet checkout has local edits/branch/origin changes; preserving them')
+    bare=Path(config['home'])/'.local/share/drive-console/courier/cache.git'
+    git(config,'fetch','--no-tags',str(bare),commit)
+    if git(config,'rev-parse','FETCH_HEAD')!=commit:raise ValueError('Duet fetched a different commit')
+    git(config,'merge-base','--is-ancestor',old,commit)
+    old_files=set(git(config,'ls-tree','-r','--name-only',old).splitlines())
+    for name in git(config,'diff','--name-only',old,commit).splitlines():
+        path=Path(config['repo'])/name
+        if name not in old_files and (path.exists() or path.is_symlink()):raise ValueError('Duet update would replace a local file')
+        for parent in path.parents:
+            if parent==Path(config['repo']):break
+            if parent.is_symlink():raise ValueError('Duet update would cross a local symlink')
+    git(config,'merge','--ff-only',commit)
+    tests=subprocess.run(['runuser','-u',config['user'],'--','/usr/bin/python3','-B','-m','unittest','discover','-s','tests'],cwd=config['repo'],capture_output=True,timeout=300)
+    if tests.returncode:
+        git(config,'reset','--keep',old);raise ValueError('Duet candidate tests failed; restored previous checkout')
+
+
 def signed_prepared(config):
     state=Path(config['home'])/'.local/share/drive-console/courier'
     signers=STATE/'allowed_signers'
@@ -576,6 +659,187 @@ def signed_prepared(config):
         return manifest['commit'],state/'cache.git'
 
 
+def ensure_duet_supervisor(config):
+    """Migrate an old running kiosk using only its own user's graphical context."""
+    account=pwd.getpwnam(config['user']);base=Path(config['home'])/'.local/share/drive-console'
+    state=Path(config['home'])/'.local/state/drive-console'
+    known=load(state/'supervisor.json',{})
+    for proc in Path('/proc').iterdir():
+        if not proc.name.isdigit():continue
+        try:
+            if proc.stat().st_uid!=account.pw_uid:continue
+            argv=(proc/'cmdline').read_bytes().split(b'\0')
+            if str(base/'launcher_lock.py').encode() not in argv:continue
+            if known.get('pid')==int(proc.name) and known.get('version')==2 and known.get('source')==hashlib.sha256((base/'launcher_lock.py').read_bytes()).hexdigest():return True
+            permitted={'DISPLAY','WAYLAND_DISPLAY','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS','XAUTHORITY','XDG_SESSION_TYPE'}
+            env={'HOME':config['home'],'USER':config['user'],'PATH':'/usr/local/bin:/usr/bin:/bin'}
+            # Never log/dump the process environment or copy unrelated secrets.
+            for entry in (proc/'environ').read_bytes().split(b'\0'):
+                key,sep,value=entry.partition(b'=')
+                if sep and key.decode(errors='ignore') in permitted:env[key.decode()]=value.decode()
+            if not env.get('DISPLAY') and not env.get('WAYLAND_DISPLAY'):return False
+            os.kill(int(proc.name),signal.SIGHUP)
+            for _ in range(6):
+                if not proc.exists():break
+                time.sleep(1)
+            command=['/usr/bin/python3',str(base/'launcher_lock.py'),str(base/'launch.sh')]
+            if Path('/run/systemd/system').exists():
+                args=['systemd-run','--collect','--unit=car-duet-display-'+str(account.pw_uid),'--uid='+config['user'],'--property=Restart=on-failure','--property=KillMode=control-group']
+                for key,value in env.items():args+=['--setenv='+key+'='+value]
+                run(args+command)
+            else:
+                subprocess.Popen(['runuser','-u',config['user'],'--',*command],env=env,start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            return True
+        except (OSError,ValueError):continue
+    return False
+
+
+def stage_duet_overlay(config,request):
+    path=request['path'];ident=request['id']
+    if path not in ('duet/proxy.py','duet/launcher_lock.py','duet/launch.sh') or not re.fullmatch('[0-9a-f]{16}',ident):raise ValueError('Invalid display activation')
+    home=Path(config['home']);source=home/'.local/state/drive-console/software/overrides'/path
+    if hashlib.sha256(source.read_bytes()).hexdigest()!=request['sha256']:raise ValueError('Display overlay changed before activation')
+    code="""import json,os,shutil,sys,tempfile
+from pathlib import Path
+home,source,name,ident=sys.argv[1:];base=Path(home)/'.local/share/drive-console';backup=base/'duet-backups'/ident
+backup.mkdir(parents=True,exist_ok=True)
+for helper in ('proxy.py','launcher_lock.py','launch.sh'):
+ if not (backup/helper).exists():shutil.copy2(base/helper,backup/helper)
+with tempfile.NamedTemporaryFile(dir=base,delete=False) as f:f.write(Path(source).read_bytes());pending=Path(f.name)
+pending.chmod(0o755 if name.endswith('.sh') else 0o644);os.replace(pending,base/name)
+with tempfile.NamedTemporaryFile(mode='w',dir=base,delete=False) as f:
+ json.dump(dict(id=ident,phase='pending',backup=str(backup)),f);f.flush();os.fsync(f.fileno());pending=Path(f.name)
+os.replace(pending,base/'duet-activation.json')
+"""
+    marker=home/'.local/share/drive-console/duet-activation.json'
+    current=load(marker,{})
+    if current.get('phase')=='pending' and current.get('id')!=ident:return
+    actual=home/'.local/share/drive-console'/Path(path).name
+    if current.get('id')!=ident and hashlib.sha256(actual.read_bytes()).hexdigest()!=request.get('base'):
+        save('/etc/car-dashboard/software-activation.json',{'id':ident,'phase':'failed','reason':'base-changed-before-activation','time':time.time()});return
+    if current.get('id')!=ident:
+        run(['runuser','-u',config['user'],'--','/usr/bin/python3','-c',code,str(home),str(source),Path(path).name,ident])
+
+
+def rollback_duet_watchdog(config,activation):
+    # This recovery code is independent of the candidate supervisor, which might
+    # itself fail before it can run its normal rollback handler. All file work
+    # runs as the ordinary display user, never candidate code as root.
+    code="""import json,os,sys,tempfile,subprocess
+from pathlib import Path
+home,ident=sys.argv[1:];base=Path(home)/'.local/share/drive-console';marker=base/'duet-activation.json'
+request=json.loads(marker.read_text());backup=Path(request['backup']).resolve()
+if request['id']!=ident or not backup.is_relative_to((base/'duet-backups').resolve()):raise SystemExit(2)
+for name in ('proxy.py','launcher_lock.py','launch.sh'):
+ data=(backup/name).read_bytes()
+ if name.endswith('.py'):compile(data,name,'exec')
+ else:subprocess.run(['bash','-n'],input=data,check=True)
+for name in ('proxy.py','launcher_lock.py','launch.sh'):
+ with tempfile.NamedTemporaryFile(dir=base,delete=False) as f:f.write((backup/name).read_bytes());pending=Path(f.name)
+ pending.chmod(0o755 if name.endswith('.sh') else 0o644);os.replace(pending,base/name)
+request.update(phase='failed',reason='supervisor-watchdog')
+with tempfile.NamedTemporaryFile(mode='w',dir=base,delete=False) as f:json.dump(request,f);f.flush();os.fsync(f.fileno());pending=Path(f.name)
+os.replace(pending,marker)
+"""
+    run(['runuser','-u',config['user'],'--','/usr/bin/python3','-c',code,config['home'],activation['id']])
+    if Path('/run/systemd/system').exists():
+        unit='car-duet-display-'+str(pwd.getpwnam(config['user']).pw_uid)+'.service'
+        run(['systemctl','reset-failed',unit],check=False);run(['systemctl','restart',unit],check=False)
+
+
+def maintenance(config,update_locked=False):
+    home=Path(config['home']);state=home/'.local/state/drive-console/software'
+    request=load(state/'activation-request.json',{})
+    if config['role']=='tiny':
+        source=home/'.config/car-dashboard/ui-config.json'
+        target=Path('/etc/car-dashboard/ui-config.json')
+        environment=Path('/etc/car-dashboard/dashboard.env')
+        custom=environment.exists() and any(line.startswith('CAR_UI_CONFIG=') for line in environment.read_text().splitlines())
+        if source.exists() and not custom:
+            desired=load(source,{})
+            current=load(target,{})
+            if type(desired.get('revision')) is int and desired['revision']>current.get('revision',-1):save(target,desired)
+    previous=load('/etc/car-dashboard/software-activation.json',{})
+    if request and request.get('id')!=previous.get('id'):
+        path=request.get('path');ident=request.get('id')
+        if not isinstance(ident,str) or not re.fullmatch('[0-9a-f]{16}',ident):raise ValueError('Invalid activation request identity')
+        if config['role']=='duet':stage_duet_overlay(config,request)
+        elif config['role']=='tiny' and path in ('recorder/obd_full_recorder.py','recorder/gps_recorder.py'):
+            unit='car-obd-monitor.service' if path.endswith('obd_full_recorder.py') else 'car-gps-recorder.service'
+            adopted=str(Path(config['repo'])/path) in run(['systemctl','cat',unit],check=False).stdout
+            if adopted and run(['systemctl','is-active','--quiet',unit],check=False).returncode==0:
+                overlay=Path('/var/lib/car-dashboard/overrides')/path
+                staged=state/'staged-overrides'/path
+                actual=overlay if overlay.is_file() else Path(config['repo'])/path
+                if hashlib.sha256(actual.read_bytes()).hexdigest() not in (request.get('base'),request['sha256']):
+                    save('/etc/car-dashboard/software-activation.json',{'id':ident,'phase':'failed','reason':'base-changed-before-activation','time':time.time()});return
+                if hashlib.sha256(staged.read_bytes()).hexdigest()!=request['sha256']:raise ValueError('Recorder staging changed before activation')
+                code="""import os,shutil,sys,tempfile
+from pathlib import Path
+source,target=map(Path,sys.argv[1:]);target.parent.mkdir(parents=True,exist_ok=True)
+if target.exists() and target.read_bytes()!=source.read_bytes():shutil.copy2(target,target.with_suffix(target.suffix+'.previous'))
+with tempfile.NamedTemporaryFile(dir=target.parent,delete=False) as f:f.write(source.read_bytes());f.flush();os.fsync(f.fileno());pending=Path(f.name)
+pending.chmod(0o600);os.replace(pending,target)
+"""
+                run(['runuser','-u',config['user'],'--','/usr/bin/python3','-c',code,str(staged),str(overlay)])
+                restart=run(['systemctl','restart',unit],check=False);time.sleep(3)
+                success=restart.returncode==0 and run(['systemctl','is-active','--quiet',unit],check=False).returncode==0
+                if not success:
+                    overlay=Path('/var/lib/car-dashboard/overrides')/path
+                    code="""import os,sys
+from pathlib import Path
+p=Path(sys.argv[1]);backup=p.with_suffix(p.suffix+'.previous')
+if p.exists():os.replace(p,p.with_suffix(p.suffix+'.failed'))
+if backup.exists():os.replace(backup,p)
+"""
+                    run(['runuser','-u',config['user'],'--','/usr/bin/python3','-c',code,str(overlay)])
+                    run(['systemctl','restart',unit],check=False)
+                save('/etc/car-dashboard/software-activation.json',{'id':ident,'phase':'applied' if success else 'failed','time':time.time()})
+    if config['role']=='duet':
+        marker=home/'.local/share/drive-console/duet-activation.json'
+        activation=load(marker,{})
+        if activation.get('phase')=='pending':
+            attempt=load('/etc/car-dashboard/duet-activation-attempt.json',{})
+            boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+            same=attempt.get('id')==activation.get('id') and attempt.get('boot')==boot_id
+            if same and time.monotonic()-attempt.get('monotonic',0)>65:
+                rollback_duet_watchdog(config,activation)
+            elif ensure_duet_supervisor(config) and not same:
+                save('/etc/car-dashboard/duet-activation-attempt.json',{'id':activation['id'],'started':time.time(),'monotonic':time.monotonic(),'boot':boot_id})
+        elif activation.get('phase') in ('applied','failed') and request.get('id')==activation.get('id'):
+            target=home/'.local/share/drive-console'/Path(request['path']).name
+            phase=activation['phase']
+            if phase=='applied' and hashlib.sha256(target.read_bytes()).hexdigest()!=request['sha256']:phase='failed'
+            save('/etc/car-dashboard/software-activation.json',{'id':request['id'],'phase':phase,'time':time.time()})
+    # OS updates may require reboot, but receiving bytes is never a reboot signal.
+    # A fresh root-owned real Park input is required; zero speed alone is not Park.
+    flag=Path('/var/run/reboot-required')
+    if flag.exists():
+        power=Path('/run/car-dashboard/power-state.json')
+        safe=False
+        if config.get('reboot_updates',True) and power.exists():
+            stat=power.stat();values=load(power,{})
+            safe=stat.st_uid==0 and not stat.st_mode&0o022 and values.get('parked') is True and 0<=time.time()-values.get('checkedAt',0)<10
+        save('/etc/car-dashboard/reboot-status.json',{'phase':'rebooting' if safe else 'pending-verified-park','time':time.time()})
+        if safe:
+            # These fixed role locks are also used by native/courier updates.
+            if config['role']=='duet':
+                paths=[home/'.local/share/drive-console/courier/prepare.lock',home/'.local/share/drive-console/courier/courier.lock']
+            else:paths=[] if update_locked else [Path('/run/lock/car-dashboard-update.lock')]
+            with ExitStack() as stack:
+                for path in paths:
+                    if config['role']=='duet':
+                        try:fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+                        except FileNotFoundError:return
+                        file=stack.enter_context(os.fdopen(fd,'rb'))
+                    else:file=stack.enter_context(path.open('a'))
+                    try:fcntl.flock(file,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        save('/etc/car-dashboard/reboot-status.json',{'phase':'pending-update-lock','time':time.time()});return
+                if Path('/run/systemd/system').exists():run(['systemctl','reboot'])
+                else:run(['reboot'])
+
+
 def refresh(config):
     STATE.mkdir(parents=True,exist_ok=True)
     with (STATE/'refresh.lock').open('a') as lock:
@@ -585,8 +849,29 @@ def refresh(config):
             with Path('/run/lock/car-dashboard-update.lock').open('a') as update:
                 try:fcntl.flock(update,fcntl.LOCK_EX|fcntl.LOCK_NB)
                 except BlockingIOError:return
+                maintenance(config,update_locked=True)
                 return refresh_locked(config)
+        maintenance(config)
         return refresh_locked(config)
+
+
+def approved_root_source(config,commit):
+    if commit==config.get('commit'):return True
+    receipt=Path('/etc/car-dashboard/courier-last.json')
+    if receipt.exists() and not receipt.is_symlink():
+        stat=receipt.stat()
+        if stat.st_uid==0 and not stat.st_mode&0o022 and load(receipt,{}).get('commit')==commit:return True
+    # An ordinary-user checkout is not a root trust anchor. Check the advertised
+    # main tip independently of that user's Git proxy/config/hooks/replacement
+    # refs. If offline/private-repo access prevents this, keep the installed role
+    # until a signed courier receipt or a later public-main check authorizes it.
+    request=Request(ORIGIN+'/info/refs?service=git-upload-pack',headers={'Accept':'application/x-git-upload-pack-advertisement'})
+    try:
+        with urlopen(request,timeout=10) as response:raw=response.read(1048577)
+        if len(raw)>1048576:return False
+        match=re.search(rb'([0-9a-f]{40}) refs/heads/main(?:\x00|\n)',raw)
+        return bool(match and match.group(1).decode()==commit)
+    except (OSError,ValueError):return False
 
 
 def refresh_locked(config):
@@ -614,6 +899,7 @@ def refresh_locked(config):
                 save(stamp,{'time':time.time()})
         commit=git(config,'rev-parse','HEAD')
     if not re.fullmatch('[0-9a-f]{40}',commit):raise ValueError('Invalid source commit')
+    if config['role']!='duet' and not approved_root_source(config,commit):raise ValueError('Checkout tip is not independently verified for root role updates')
     installed=load(STATE/'installed.json',{})
     if installed.get('commit')==commit and not installed.get('missing'):return
     if config.get('commit'):git(config,'merge-base','--is-ancestor',config['commit'],commit,bare=bare)

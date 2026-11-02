@@ -107,3 +107,15 @@ class Assembler:
                 return {"sequence":seq,"kind":"chunk-request",
                         "missing":[i for i in range(count) if i not in parts]}
         return None
+
+
+def authenticate_application_frame(frame,secret):
+    """Validate either application version at the modem relay, without applying it."""
+    if frame[:1]==b'\x02':
+        from control.update_transfer import decode
+        decode(frame,secret);return
+    if len(secret)<32 or not HEADER.size<=len(frame)<=MAX_APP_BYTES:raise ValueError('Invalid legacy frame')
+    version,kind,seq,index,count,digest,tag=HEADER.unpack(frame[:HEADER.size])
+    if version!=VERSION or kind not in REVERSE or not 0<=index<count<=MAX_FRAGMENTS:raise ValueError('Invalid legacy header')
+    expected=hmac.new(secret,frame[:AUTH_HEADER.size]+frame[HEADER.size:],hashlib.sha256).digest()[:8]
+    if not hmac.compare_digest(tag,expected):raise ValueError('Legacy frame authentication failed')

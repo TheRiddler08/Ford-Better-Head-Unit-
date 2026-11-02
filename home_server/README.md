@@ -1,3 +1,9 @@
+# Current home service
+
+Run `bash install.sh home` from the repository for the browser panel, signed-copy editor and automatic bridge services. See [resumable updates](../docs/RESUMABLE_UPDATES.md). Actual modem/ChirpStack credentials are required for radio operation.
+
+The remaining notes document the older standalone coordinator foundation, which is retained for compatibility and is not the current panel entry point.
+
 # Home LoRaWAN server — first stage (no radio transmission yet)
 
 This service runs on the **home Ubuntu server**, not the car Tiny or Duet.

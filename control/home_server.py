@@ -30,7 +30,13 @@ PORT = int(os.getenv("CAR_PANEL_PORT","8790"))
 DEVICE_TOKEN = os.getenv("CAR_DEVICE_TOKEN", "")
 DEVICE_NAME = os.getenv("CAR_DEVICE_NAME", "car-1")
 
+def software():
+    from control.software import Software
+    with LOCK:return Software(ROOT/'software')
+
+
 def radio_key():
+    if not KEY_HEX:return software().key()
     try:
         value=bytes.fromhex(KEY_HEX)
     except ValueError:
@@ -152,9 +158,13 @@ def export_next(name):
         _,queue_file=paths(name)
         queue=read_outbox(queue_file)
         for item in queue:
-            if not item.get("acked") and item.get("transmitted",0)<len(item.get("frames",[])):
-                i=item["transmitted"]
-                return {"revision":item["revision"],"index":i,"frame_hex":item["frames"][i]}
+            if item.get('acked') or not item.get('frames'):continue
+            if item.get('transmitted',0)>=len(item['frames']):
+                if time.time()-item.get('lastTransmit',0)<300:return None
+                item['transmitted']=0;save_outbox(queue_file,queue)
+            index=item.get('transmitted',0)
+            return {'revision':item['revision'],'index':index,'frame_hex':item['frames'][index]}
+
         return None
 
 def mark_transmitted(name, revision, index):
@@ -165,6 +175,7 @@ def mark_transmitted(name, revision, index):
         for item in queue:
             if item["revision"]==revision and item["transmitted"]==index:
                 item["transmitted"]=index+1
+                item["lastTransmit"]=time.time()
                 save_outbox(queue_file,queue)
                 return True
         return False
@@ -206,7 +217,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def request_json(self):
         length=int(self.headers.get("Content-Length","0"))
-        limit=512000 if self.path=="/api/layout" else 8192
+        limit=1048576 if self.path.startswith("/api/device/software/") or self.path.startswith("/api/software/") else 512000 if self.path=="/api/layout" else 8192
         if length<=0 or length>limit:raise ValueError("Invalid request length")
         return json.loads(self.rfile.read(length))
 
@@ -221,6 +232,10 @@ class Handler(BaseHTTPRequestHandler):
         req=urlsplit(self.path)
         if req.path=="/layout-host":
             return self.response(FRAME_HOST,mime="text/html; charset=utf-8",policy=FRAME_POLICY)
+        if req.path=="/api/device/software/credentials":
+            if not self.device_access():return
+            service=software()
+            return self.response({"publicKey":service.public.read_text(),"linkKey":service.key().hex()})
         if req.path=="/api/device/layout":
             if not self.device_access():return
             return self.response(LayoutStore(ROOT/"layouts.sqlite3").get(DEVICE_NAME)["published"])
@@ -229,11 +244,12 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 cfg_file,_=paths(DEVICE_NAME)
                 return self.response({"device":DEVICE_NAME,"config":read_config(cfg_file)})
-        if req.path in ("/","/panel.js","/panel.css","/builder.js","/builder.css","/layout-runtime.js"):
+        if req.path in ("/","/panel.js","/panel.css","/builder.js","/builder.css","/layout-runtime.js","/software.js"):
             name,mime={"/":("index.html","text/html; charset=utf-8"),
                        "/panel.js":("panel.js","text/javascript; charset=utf-8"),
                        "/panel.css":("panel.css","text/css; charset=utf-8"),
                        "/builder.js":("builder.js","text/javascript; charset=utf-8"),
+                       "/software.js":("software.js","text/javascript; charset=utf-8"),
                        "/layout-runtime.js":("layout-runtime.js","text/javascript; charset=utf-8"),
                        "/builder.css":("builder.css","text/css; charset=utf-8")}[req.path]
             return self.response((UI/name).read_bytes(),mime=mime)
@@ -241,6 +257,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             name=parse_qs(req.query).get("device",["car-1"])[0]
             cfg_file,queue_file=paths(name)
+            if req.path=="/api/software/source":
+                query=parse_qs(req.query)
+                return self.response(software().source(name,query.get("role",["tiny"])[0],query.get("path",[""])[0]))
+            if req.path=="/api/software/status":
+                return self.response({"updates":software().journal.status(),"radioConfigured":bool(os.getenv("CAR_CHIRPSTACK_APP_ID") and os.getenv("CAR_CHIRPSTACK_DEV_EUI")),"radio":json.loads((ROOT/"radio-status.json").read_text()) if (ROOT/"radio-status.json").exists() else {"phase":"unconfigured"}})
             if req.path=="/api/layout-status":
                 state=LayoutStore(ROOT/"layouts.sqlite3").get(name)
                 return self.response({"generation":state["generation"],"revision":state["published"]["revision"],
@@ -260,6 +281,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(exc)
 
     def do_POST(self):
+        if self.path=="/api/device/software/exchange":
+            if not self.device_access():return
+            try:
+                data=self.request_json();role=data["role"];service=software()
+                if role not in ("tiny","duet","pi"):raise ValueError("Invalid role")
+                service.receipts(DEVICE_NAME,role,data.get("receipts",[]))
+                if "sources" in data:service.inventory(DEVICE_NAME,role,data["sources"])
+                return self.response({"frames":service.outgoing(DEVICE_NAME,role)})
+            except (KeyError,TypeError,ValueError,OSError) as exc:return self.fail(exc)
         if self.path=="/api/device/layout-ack":
             if not self.device_access():return
             try:
@@ -293,6 +323,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data=self.request_json()
             if not isinstance(data,dict):raise ValueError("Invalid object")
+            if self.path=="/api/software/publish":
+                return self.response(software().publish(safe_device(data.get("device","car-1")),data["role"],data["path"],data["base"],data["source"]))
             if self.path=="/api/layout":
                 if data.get("action")=="validate":
                     return self.response({"project":validate_project(data.get("project"))})

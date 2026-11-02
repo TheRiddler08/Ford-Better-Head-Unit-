@@ -23,3 +23,5 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
 footer{font-size:10px;color:#6488a5;letter-spacing:1.7px;margin-top:30px}
 @media(max-width:1050px){.module-grid{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:195px minmax(0,1fr)}aside{padding:22px 14px}}
 @media(max-width:680px){.layout{grid-template-columns:1fr}aside{height:auto;position:static;padding:14px;gap:5px}.side-tab,.side-notice,.navtag,aside .muted{display:none}.brand small{display:inline;margin-left:10px}main{padding:18px}header{align-items:flex-start}.module-grid,.settings-grid{grid-template-columns:1fr}.nav-grid{grid-template-columns:repeat(2,1fr)}.toolbar,.commitbar{flex-direction:column;align-items:stretch}.toolbar button{margin-left:0}.inline{flex-wrap:wrap}}
+
+#softwareSource{width:100%;box-sizing:border-box;min-height:20rem;resize:vertical;font:13px/1.5 monospace;white-space:pre;tab-size:2}#softwareQueue{white-space:pre-wrap;overflow-wrap:anywhere}

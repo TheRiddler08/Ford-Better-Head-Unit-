@@ -8,7 +8,7 @@
 <title>Drive Console · Head Unit</title>
 <link rel="stylesheet" href="/cockpit.css">
 <script src="/cockpit.js" defer></script>
-</head>
+<script defer src="/update-watch.js"></script></head>
 <body>
 <div id="shell">
   <nav class="rail" aria-label="Main sections">
@@ -184,6 +184,7 @@
       <div class="settings-grid">
         <div class="glass setting-box"><h2>Installed software</h2><p id="updateRevision">Checking installed revision…</p><p id="updateAuto">Update timer status is managed by systemd.</p></div>
         <div class="glass setting-box"><h2>Car network</h2><p id="fleetStatus">Checking automatic setup…</p><p>Ethernet connects the car devices. Available Wi-Fi is shared automatically, with Pi preferred and Duet as backup.</p></div>
+        <div class="glass setting-box"><h2>Resumable software updates</h2><p id="softwareUpdateStatus">Waiting for the update link.</p><p id="rebootStatus">No reboot status reported.</p></div>
         <div class="glass setting-box"><h2>Duet update courier</h2><p id="updateCourier">No carried update receipt yet.</p><p>The Duet can download signed software updates on Wi-Fi and deliver them over the wired car connection. One-time pairing is required; no LoRaWAN hardware is needed.</p></div>
         <div class="glass setting-box"><h2>LoRaWAN connection</h2><p id="updateRadio">No gateway transport is connected yet.</p><p>UI and recorder changes require signed and validated packages before application. No unverified radio commands are executed.</p></div>
         <div class="glass setting-box"><h2>Remote configuration</h2><p id="updateConfigRevision">Loading configuration…</p><p>Control-panel changes use versioned leaf-field deltas. Last known settings remain usable offline.</p></div>

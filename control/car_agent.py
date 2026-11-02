@@ -35,9 +35,13 @@ def save_state(path, assembler):
          "chunks":{str(i):v.hex() for i,v in chunks.items()}}
         for (seq,kind,count,digest),chunks in assembler.pending.items()]}
     tmp=path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state,separators=(",",":")),encoding="utf-8")
+    with tmp.open("w",encoding="utf-8") as file:
+        json.dump(state,file,separators=(",",":"));file.flush();os.fsync(file.fileno())
     os.chmod(tmp,0o600)
     os.replace(tmp,path)
+    fd=os.open(path.parent,os.O_DIRECTORY)
+    try:os.fsync(fd)
+    finally:os.close(fd)
 
 def new_assembler(secret, state):
     agent=Assembler(secret,int(state.get("last_sequence",0)))
@@ -60,6 +64,9 @@ def apply_message(message, path=CONFIG):
             raise ValueError("Malformed config delta")
         current=read_config(path)
         rev=payload["revision"]
+        if type(rev) is int and rev==current["revision"]:
+            repeated=apply_changes(current,rev+1,payload["changes"]);repeated["revision"]=rev
+            if repeated==current:return {"revision":message["sequence"],"configRevision":rev,"applied":True,"kind":"configuration"}
         if type(rev) is not int or rev!=current["revision"]+1:
             raise ValueError("Configuration dependency missing; request an earlier revision")
         changed=apply_changes(current,rev,payload["changes"])

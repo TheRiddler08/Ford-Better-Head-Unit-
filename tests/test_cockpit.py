@@ -35,7 +35,7 @@ class CockpitTests(unittest.TestCase):
         self.assertIn('data-widget="gauges"',HTML)
     def test_offline_local_resources(self):
         p=Index();p.feed(HTML)
-        self.assertEqual(p.sources,["/cockpit.js"])
+        self.assertEqual(p.sources,["/cockpit.js","/update-watch.js"])
         self.assertIn('href="/cockpit.css"',HTML)
         self.assertNotIn("https://",HTML)
         self.assertIn("@media(max-width:690px)",CSS)

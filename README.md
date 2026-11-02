@@ -225,3 +225,5 @@ For Tiny installations that lose power with the ignition, see [power-loss protec
 Pi-controlled startup over the central Ethernet switch: [timed wake packets and optional boot standby](docs/PI_WAKE_POWER.md).
 
 Normal install/update now applies car Ethernet, automatic Pi/Duet Wi-Fi sharing, MAC discovery and supported boot standby: [automatic device setup](docs/AUTOMATIC_DEVICE_SETUP.md). Use `bash install.sh duet`, `tiny` or `pi` on the corresponding device.
+
+[Resumable signed small updates](docs/RESUMABLE_UPDATES.md) add a reported-source editor, shared Wi-Fi/radio chunk journal, automatic Duet activation and Park-gated reboot handling. Actual LoRaWAN hardware/credentials remain explicitly pending.

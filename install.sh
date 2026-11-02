@@ -6,5 +6,6 @@ case "${1:-}" in
  duet) exec bash "$ROOT/duet/prepare-update.sh" "${2:-cayden@172.16.42.2}" ;;
  tiny) exec bash "$ROOT/deploy/install.sh" ;;
  pi) exec bash "$ROOT/pi/install.sh" ;;
- *) echo 'Usage: bash install.sh duet|tiny|pi' >&2; exit 2 ;;
+ home) exec bash "$ROOT/home_server/install.sh" ;;
+ *) echo 'Usage: bash install.sh duet|tiny|pi|home' >&2; exit 2 ;;
 esac

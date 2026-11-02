@@ -56,7 +56,7 @@ class FleetTests(unittest.TestCase):
             sharing.firewall('eth0',None)
             for call in run.call_args_list:
                 args=call.args[0]
-                self.assertIn(args[-1],('CAR_FLEET_FWD','CAR_FLEET_NAT'))
+                if '-N' in args or '-F' in args:self.assertIn(args[-1],('CAR_FLEET_FWD','CAR_FLEET_NAT','CAR_FLEET_IN'))
                 self.assertNotIn('-P',args)
                 self.assertNotIn('flush',args)
 
@@ -166,3 +166,27 @@ class FleetTests(unittest.TestCase):
             with patch.object(fleet.Path,'exists',return_value=True):
                 fleet.install_app_updates(config)
                 run.assert_any_call(['systemctl','disable','--now','car-dashboard-update.timer'])
+
+    def test_duet_automatic_checkout_preserves_edits_and_rolls_back_failed_tests(self):
+        config={'repo':'/home/car/car-dashboard','home':'/home/car','user':'car'}
+        old='a'*40;new='b'*40
+        def git(config,*args,**kwargs):
+            if args==('rev-parse','HEAD'):return old
+            if args==('rev-parse','FETCH_HEAD'):return new
+            if args==('symbolic-ref','--short','HEAD'):return 'main'
+            if args==('remote','get-url','origin'):return fleet.ORIGIN
+            return ''
+        with patch.object(fleet,'git',side_effect=git) as calls,patch.object(fleet.subprocess,'run',return_value=subprocess.CompletedProcess([],1)):
+            with self.assertRaises(ValueError):fleet.advance_duet(config,new)
+            calls.assert_any_call(config,'reset','--keep',old)
+        def edited(config,*args,**kwargs):
+            return ' M local.py' if args==('status','--porcelain') else git(config,*args,**kwargs)
+        with patch.object(fleet,'git',side_effect=edited) as calls:
+            with self.assertRaises(ValueError):fleet.advance_duet(config,new)
+            self.assertFalse(any(call.args[1:3]==('merge','--ff-only') for call in calls.call_args_list))
+
+    def test_local_git_tip_alone_cannot_promote_new_root_role_code(self):
+        config={'role':'tiny','repo':'/home/car/car-dashboard','home':'/home/car','user':'car','commit':'a'*40}
+        with patch.object(fleet,'git',return_value='b'*40),patch.object(fleet,'approved_root_source',return_value=False),patch.object(fleet,'publish') as publish:
+            with self.assertRaises(ValueError):fleet.refresh_locked(config)
+            publish.assert_not_called()

@@ -70,6 +70,8 @@ def refresh_duet_runtime(repo, commit, destination):
     """Refresh only already-installed, unmodified managed display helpers."""
     destination=Path(destination)
     result={}
+    changed_helpers=False
+    backup=destination/'duet-backups'/commit
     for name in ('proxy.py','launcher_lock.py','launch.sh'):
         target=destination/name
         if not target.exists() or target.is_symlink():continue
@@ -83,11 +85,18 @@ def refresh_duet_runtime(repo, commit, destination):
         else:run(['bash','-n'],data=source)
         if target.read_bytes()==source:
             result[name]='current';continue
+        if not changed_helpers:
+            backup.mkdir(parents=True,exist_ok=True)
+            for helper in ('proxy.py','launcher_lock.py','launch.sh'):
+                previous=destination/helper
+                if previous.is_file() and not previous.is_symlink() and not (backup/helper).exists():shutil.copy2(previous,backup/helper)
+        changed_helpers=True
         with tempfile.NamedTemporaryFile(dir=destination,delete=False) as file:
             file.write(source);pending=Path(file.name)
         os.chmod(pending,0o755 if name.endswith('.sh') else 0o644)
         os.replace(pending,target)
-        result[name]='updated; active at next display restart'
+        result[name]='updated; automatic display activation queued'
+    if changed_helpers:save_json(destination/'duet-activation.json',{'id':commit,'backup':str(backup),'phase':'pending','created':int(time.time())})
     return result
 
 

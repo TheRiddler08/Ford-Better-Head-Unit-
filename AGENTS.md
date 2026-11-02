@@ -21,3 +21,8 @@
 - Test routing/election/migration behavior without changing the cloud host's
   network or power state. Clearly separate automated validation from physical
   device validation.
+
+- Resumable small updates must use the shared signed transfer identity and durable
+  receipt journal across IP/radio. A broker TX receipt is not installation success.
+  Keep actual modem/network provisioning explicitly pending when its details are
+  unknown; a generic adapter boundary is not proof of an operational LoRaWAN link.

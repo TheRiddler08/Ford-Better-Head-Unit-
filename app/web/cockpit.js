@@ -240,6 +240,10 @@ async function refreshUpdates(){
     const status=await api("/api/update-status");
     $("updateRevision").textContent="Git revision: "+(status.revision||"unknown");
     $("updateAuto").textContent=status.updateTimer || "Auto-update timer not detected";
+    $("softwareUpdateStatus").textContent=status.softwareUpdates
+      ? status.softwareUpdates.phase+" · "+(status.softwareUpdates.updates || []).filter(item=>item.phase!=="ignored").map(item=>(item.path || item.id)+": "+item.phase+" ("+(item.lastTransport || "waiting")+")").join(" · ")
+      : "Update link has not reported yet.";
+    $("rebootStatus").textContent=status.reboot?"OS reboot: "+status.reboot.phase:"No OS reboot request reported.";
     $("fleetStatus").textContent=status.fleet
       ? "Setup: "+status.fleet.phase+" · Gateway: "+(status.fleet.gateway || "offline LAN")+(status.fleet.standby?" · Standby: "+status.fleet.standby:"")
       : "Automatic role setup has not reported yet.";

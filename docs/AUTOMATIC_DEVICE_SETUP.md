@@ -173,3 +173,5 @@ covers election, scoped routes/NAT/DNS, authenticated updater handoff, immutable
 installer publication, wake registration and migration receipts. Physical switch,
 Wi-Fi failover, tablet suspend and firmware boot behavior still need validation
 on the actual devices.
+
+The normal role installer also enables the [resumable software link and activation services](RESUMABLE_UPDATES.md). They wait for home authentication/radio configuration when missing; they do not guess credentials or serial ports. Duet source checkouts now advance automatically after tests, and active display helpers restart with rollback.

@@ -228,7 +228,7 @@ ROUTES = {"/api/live": route_live, "/api/summary": route_summary,
           "/api/sensors": route_sensors, "/api/snapshots": route_snapshots,
           "/api/events": route_events, "/api/trips": route_trips,
           "/api/alerts": route_alerts}
-STATIC = {"/": ("cockpit.html", "text/html; charset=utf-8"),
+STATIC = {"/update-watch.js": ("update-watch.js", "text/javascript; charset=utf-8"),"/": ("cockpit.html", "text/html; charset=utf-8"),
           "/cockpit.html": ("cockpit.html", "text/html; charset=utf-8"),
           "/classic.html": ("index.html", "text/html; charset=utf-8"),
           "/records": ("records.html", "text/html; charset=utf-8"),
@@ -297,7 +297,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error":"Invalid custom layout"},503)
         if url.path in STATIC:
             filename, mime = STATIC[url.path]
-            allowed = {"cockpit.html","cockpit.css","cockpit.js","index.html","styles.css","app.js"}
+            allowed = {"cockpit.html","cockpit.css","cockpit.js","index.html","styles.css","app.js","update-watch.js"}
             if url.path=="/":
                 try:
                     if read_delivery(LAYOUT_FILE)["enabled"]:filename="custom.html"
@@ -347,11 +347,20 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 fleet_status=json.loads(Path('/etc/car-dashboard/fleet-status.json').read_text())
             except (OSError,ValueError):fleet_status=None
+            try:overlay_revision=json.loads((OVERRIDE_DIR/'active.json').read_text()).get('generation')
+            except (OSError,ValueError):overlay_revision=None
+            try:software_status=json.loads((Path.home()/'.local/state/drive-console/software/status.json').read_text())
+            except (OSError,ValueError):software_status=None
+            try:reboot_status=json.loads(Path('/etc/car-dashboard/reboot-status.json').read_text())
+            except (OSError,ValueError):reboot_status=None
+            try:radio_status=json.loads((Path.home()/'.local/state/drive-console/software/radio-status.json').read_text())
+            except (OSError,ValueError):radio_status={"phase":"unconfigured"}
             return self.send_json({"revision": revision, "updateTimer": timer,
+                                   "overlayRevision":overlay_revision,"softwareUpdates":software_status,"reboot":reboot_status,
                                    "fleet":fleet_status,
                                    "courierProgress":courier_progress,
                                    "courier": courier,
-                                   "lorawan": "Not configured (radio driver and network server required)",
+                                   "lorawan": "Local radio: "+radio_status.get("phase","unconfigured"),"radio":radio_status,
                                    "configRevision": config_rev,
                                    "packagesExecutable": False})
         if url.path == "/api/gps":
