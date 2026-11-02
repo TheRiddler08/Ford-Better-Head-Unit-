@@ -9,8 +9,16 @@ request or an implemented feature.
 - Use another Raspberry Pi 5 with an AI HAT for onboard video object detection
   and related detection features. This is a separate future device from the
   existing Pi 4 wake/radio controller.
-- Keep video recording and AI processing onboard. Integrate recordings and
-  detection events with the car's local archive and dashboard when implemented.
+- Keep video recording and baseline AI processing onboard and available offline.
+  Integrate recordings and detection events with the car's local archive and
+  dashboard when implemented.
+- Optionally use the home server for more advanced AI processing when the car
+  has an Internet connection through a hotspot. Send selected video/images or
+  detection data over an authenticated, encrypted IP connection and return
+  results to the car. This supplements the Pi 5; loss of hotspot connectivity
+  must not stop local recording or baseline detection. Which tasks/models to
+  offload, bandwidth limits and upload/retention rules remain undecided. This
+  processing path uses normal Internet connectivity, not LoRaWAN.
 - Use the existing central Ethernet switch to connect the future Pi 5 to the
   other car computers. Full video transfer uses Ethernet/Wi-Fi; any future
   LoRaWAN detection reports must be small and encrypted under the existing policy.

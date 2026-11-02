@@ -39,3 +39,6 @@
 - The G980H is temporary. A future secondary dashcam will use USB cameras and a
   separate Raspberry Pi 5 with an AI HAT for onboard object detection. This is
   notes-only until requested; see docs/FUTURE_USB_CAMERA_AI.md.
+- Future AI may also use the home server for more advanced processing over a
+  hotspot Internet connection, while local recording/detection continue offline.
+  This remains a planning note, not authorization to enable video uploads now.
