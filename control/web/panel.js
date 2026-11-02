@@ -129,3 +129,7 @@ $('loadCoverage').onclick=async()=>{
     $('coverageStatus').textContent=coverageCount+' eligible receptions loaded'+(result.hasMore?' · more available':'')+'\n'+JSON.stringify(result.totals,null,2)+'\n'+result.meaning;
   }catch(error){$('coverageStatus').textContent=error.message;}
 };
+
+$('loadCameraCatalog').onclick=async()=>{try{const data=await call('/api/dashcam');$('cameraCatalog').textContent=JSON.stringify(data,null,2);}catch(error){$('cameraCatalog').textContent=error.message;}};
+
+$('loadGpsRelay').onclick=async()=>{try{$('relayedGps').textContent=JSON.stringify(await call('/api/gps-relay'),null,2);}catch(error){$('relayedGps').textContent=error.message;}};

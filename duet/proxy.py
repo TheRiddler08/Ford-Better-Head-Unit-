@@ -104,14 +104,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
         conn=http.client.HTTPConnection(self.upstream_host,self.upstream_port,timeout=15)
         started=False
         try:
-            conn.request("GET",self.path,headers={"Accept":"text/csv"})
+            headers={"Accept":"*/*"}
+            if self.headers.get("Range"):headers["Range"]=self.headers["Range"]
+            conn.request("GET",self.path,headers=headers)
             response=conn.getresponse()
-            if response.status!=200:
+            if response.status not in (200,206):
                 return self.reply(response.status,response.read(65536),response.getheader("Content-Type","text/plain"))
             self.protocol_version="HTTP/1.1"
-            self.send_response(200)
-            self.send_header("Content-Type","text/csv; charset=utf-8")
-            self.send_header("Content-Disposition",response.getheader("Content-Disposition",'attachment; filename="archive.csv"'))
+            self.send_response(response.status)
+            self.send_header("Content-Type",response.getheader("Content-Type","application/octet-stream"))
+            for header in ("Content-Disposition","Accept-Ranges","Content-Range"):
+                if response.getheader(header):self.send_header(header,response.getheader(header))
             self.send_header("Transfer-Encoding","chunked")
             self.send_header("Cache-Control","no-store")
             self.send_header("Connection","close")
@@ -135,7 +138,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return self.reply(200,START_HTML,"text/html; charset=utf-8",{'Content-Security-Policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"})
         if self.command=="GET" and url.path=="/__start-status":
             return self.reply(200,json.dumps(self.start_status()).encode(),"application/json")
-        if self.command=="GET" and url.path=="/api/report/export":
+        if self.command=="GET" and url.path in ("/api/report/export","/api/dashcam/clip"):
             return self.stream_csv()
         if url.path == "/__link":
             try:

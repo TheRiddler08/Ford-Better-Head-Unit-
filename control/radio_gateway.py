@@ -13,6 +13,7 @@ import socket
 import sqlite3
 import subprocess
 import time
+import uuid
 from control.update_agent import LAN,PORT,atomic
 from control.update_transfer import Journal,decode,encode,ACK,APPLIED,MANIFEST,DATA
 from control.lorawan_protocol import authenticate_application_frame
@@ -25,7 +26,9 @@ def main():
     state=Path(fleet['home'])/'.local/state/drive-console/software'
     state.mkdir(parents=True,exist_ok=True)
     status=state/'radio-status.json';journal=Journal(state/'radio-queue.sqlite3')
-    with journal.db() as db:db.execute('CREATE TABLE IF NOT EXISTS uplinks(id TEXT PRIMARY KEY,frame TEXT,sent INTEGER DEFAULT 0,attempt REAL DEFAULT 0)')
+    with journal.db() as db:
+        db.execute('CREATE TABLE IF NOT EXISTS uplinks(id TEXT PRIMARY KEY,frame TEXT,sent INTEGER DEFAULT 0,attempt REAL DEFAULT 0)')
+        db.execute('CREATE TABLE IF NOT EXISTS modem_attempts(id TEXT PRIMARY KEY,inner_id TEXT,created REAL)')
     while True:
         config=Path('/etc/car-dashboard/update-link.json')
         options=json.loads(config.read_text()) if config.exists() else {}
@@ -39,6 +42,11 @@ def main():
         key=bytes.fromhex(keypath.read_text().strip())
         process=None
         try:
+            from control.radio_crypto import RadioBox
+            cipher=RadioBox(Path(fleet['home'])/'.config/car-dashboard/radio-private.key',
+                            Path(fleet['home'])/'.config/car-dashboard/radio-home.pub',
+                            state/'sealed-radio.sqlite3',b'U',int(options.get('max_app_bytes',46)))
+            if not cipher.peer.exists():raise ValueError('Pinned home encryption key required')
             with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as receiver,socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sender:
                 receiver.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);receiver.bind(('',PORT))
                 sender.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1);sender.bind((LAN[role],0))
@@ -52,7 +60,6 @@ def main():
                         data,peer=receiver.recvfrom(128)
                         if peer[0] in LAN.values() and data[:1]==b'U':
                             authenticate_application_frame(data[1:],key)
-                            if len(data)-1>min(46,int(options.get('max_app_bytes',46))):raise ValueError('Configured regional payload budget is too small')
                             ident=hashlib.sha256(data[1:]).hexdigest()
                             with journal.db() as db:
                                 db.execute('INSERT INTO uplinks(id,frame) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET sent=CASE WHEN uplinks.sent=2 THEN 0 ELSE uplinks.sent END',(ident,data[1:].hex()))
@@ -66,7 +73,9 @@ def main():
                         while b'\n' in buffer:
                             line,buffer=buffer.split(b'\n',1);message=json.loads(line)
                             if 'downlink' in message:
-                                raw=bytes.fromhex(message['downlink']);authenticate_application_frame(raw,key)
+                                raw=cipher.accept(bytes.fromhex(message['downlink']))
+                                if raw is None:continue
+                                authenticate_application_frame(raw,key)
                                 kind,short,index,count,_=decode(raw,key) if raw[:1]==b'\x02' else (None,None,None,None,None)
                                 if kind in (MANIFEST,DATA):
                                     receipt=encode(ACK,short,0 if kind==MANIFEST else index,count,b'M' if kind==MANIFEST else b'd',key)
@@ -78,15 +87,22 @@ def main():
                                 atomic(status,json.dumps({'phase':'receiving','time':time.time()}).encode())
                             elif 'sent' in message:
                                 with journal.db() as db:
-                                    row=db.execute('SELECT frame FROM uplinks WHERE id=?',(message['sent'],)).fetchone()
-                                    if row:
-                                        db.execute('UPDATE uplinks SET sent=1 WHERE id=?',(message['sent'],))
+                                    row=db.execute('SELECT uplinks.frame,uplinks.id FROM uplinks JOIN modem_attempts ON uplinks.id=modem_attempts.inner_id WHERE modem_attempts.id=?',(message['sent'],)).fetchone()
+                                    db.execute('DELETE FROM modem_attempts WHERE id=?',(message['sent'],))
+                                    if row and cipher.sent(bytes.fromhex(row[0])):
+                                        db.execute('UPDATE uplinks SET sent=1 WHERE id=?',(row[1],))
                                         sender.sendto(b'R'+bytes.fromhex(row[0]),('172.16.42.255',PORT))
                     spacing=max(60,int(options.get('uplink_spacing',60)));limit=min(200,int(options.get('uplinks_per_day',120)))
                     with journal.db() as db:
-                        row=db.execute('SELECT id,frame FROM uplinks WHERE sent=0 AND attempt<? ORDER BY attempt LIMIT 1',(time.time()-spacing,)).fetchone()
+                        db.execute("UPDATE uplinks SET sent=0 WHERE sent=1 AND substr(frame,1,4)='0106' AND attempt<?",(time.time()-600,))
+                        row=db.execute("SELECT id,frame FROM uplinks WHERE sent=0 AND attempt<? ORDER BY CASE WHEN substr(frame,1,4)='0106' THEN 1 ELSE 0 END,attempt LIMIT 1",(time.time()-spacing,)).fetchone()
                     if (row or time.monotonic()>=next_poll) and journal.budget('modem-uplinks',spacing,limit):
-                        packet={'id':row[0],'uplink':row[1]} if row else {'poll':True}
+                        attempt=uuid.uuid4().hex
+                        packet={'id':attempt,'uplink':cipher.next(bytes.fromhex(row[1])).hex()} if row else {'poll':True}
+                        if row:
+                            with journal.db() as db:
+                                db.execute('DELETE FROM modem_attempts WHERE created<?',(time.time()-86400,))
+                                db.execute('INSERT INTO modem_attempts VALUES(?,?,?)',(attempt,row[0],time.time()))
                         _,writable,_=select.select([],[process.stdin],[],2)
                         if not writable:raise TimeoutError('Modem adapter input stalled')
                         process.stdin.write(json.dumps(packet).encode()+b'\n');process.stdin.flush()

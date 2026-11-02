@@ -60,6 +60,9 @@ class Agent:
         if self.public.exists() and self.public.read_bytes()!=public:raise ValueError('Pinned home signing key changed; trusted rotation is required')
         if self.link.exists() and self.key()!=key:raise ValueError('Pinned radio link key changed')
         atomic(self.public,public);atomic(self.link,key.hex().encode())
+        from control.radio_crypto import pin
+        if 'radioPublicKey' not in response:raise ValueError('Home radio encryption enrollment needs an updated server')
+        pin(self.credentials/'radio-home.pub',response['radioPublicKey'])
     def receipt(self,raw):
         queue=json.loads(self.pending.read_text()) if self.pending.exists() else []
         value=raw.hex()
@@ -89,11 +92,14 @@ class Agent:
         # Keep the authenticated exchange below its HTTP request limit.
         return rows
     def exchange(self):
-        if not self.public.exists() or not self.link.exists():self.enroll()
+        if not self.public.exists() or not self.link.exists() or not (self.credentials/'radio-home.pub').exists():self.enroll()
         queued=json.loads(self.pending.read_text()) if self.pending.exists() else []
         sources=self.inventory()
         fingerprint=digest(canonical([(row['path'],row['sha256']) for row in sources]))
         data={'role':self.role,'receipts':queued[:128]}
+        if self.role=='pi':
+            from control.radio_crypto import identity
+            data['radioPublicKey']=bytes(identity(self.credentials/'radio-private.key').public_key).hex()
         if fingerprint!=self.inventory_fingerprint or time.monotonic()-self.inventory_sent_at>3600:data['sources']=sources
         response=self.call('/api/device/software/exchange',data)
         if 'sources' in data:self.inventory_fingerprint=fingerprint;self.inventory_sent_at=time.monotonic()

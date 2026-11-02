@@ -14,6 +14,7 @@ from control.update_transfer import digest,decode,ACK
 
 @unittest.skipUnless(importlib.util.find_spec('cryptography'),'native cryptography is not installed yet')
 class LinkTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec('nacl'),'PyNaCl is installed during role provisioning; allow old receiver bootstrap')
     def test_real_authenticated_http_editor_publish_and_automatic_overlay(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);repo=root/'repo';(repo/'app/web').mkdir(parents=True)
@@ -38,6 +39,27 @@ class LinkTests(unittest.TestCase):
                     self.assertEqual((repo/'app/web/cockpit.js').read_text(),'let speed = 10;\n')
                     self.assertEqual(service.journal.status()[0]['lastTransport'],'ip')
                     self.assertEqual(service.source('car-1','tiny',source['path'])['source'],'let speed = 20;\n')
+                finally:server.shutdown();server.server_close();thread.join()
+
+    @unittest.skipUnless(importlib.util.find_spec('nacl'),'PyNaCl enrollment dependency pending')
+    def test_pi_automatically_enrolls_bidirectional_public_keys(self):
+        from control.radio_crypto import RadioBox
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);home=root/'pi';repo=root/'repo';repo.mkdir()
+            creds=home/'.config/car-dashboard';creds.mkdir(parents=True)
+            token='d'*40;(creds/'device-token').write_text(token)
+            server=ThreadingHTTPServer(('127.0.0.1',0),panel.Handler)
+            thread=threading.Thread(target=server.serve_forever,daemon=True)
+            with patch.object(panel,'ROOT',root/'server'),patch.object(panel,'DEVICE_TOKEN',token):
+                thread.start()
+                try:
+                    agent=Agent({'role':'pi','home':str(home),'repo':str(repo),'home_url':f'http://127.0.0.1:{server.server_port}'})
+                    agent.exchange()
+                    car=RadioBox(creds/'radio-private.key',creds/'radio-home.pub',root/'car.db',b'U')
+                    remote=RadioBox(root/'server/radio/private.key',root/'server/radio/car.pub',root/'remote.db',b'D')
+                    _,frames=remote.frames(b'authenticated inner frame')
+                    for frame in frames:raw=car.accept(frame)
+                    self.assertEqual(raw,b'authenticated inner frame')
                 finally:server.shutdown();server.server_close();thread.join()
 
     def test_wrong_signing_key_is_not_silently_replaced(self):

@@ -4,7 +4,7 @@ set -euo pipefail
 [[ "$EUID" != 0 ]] || { echo 'Run as your normal home-server user.' >&2; exit 1; }
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 sudo apt-get update
-sudo apt-get install -y python3-cryptography python3-paho-mqtt python3-serial
+sudo apt-get install -y python3-cryptography python3-paho-mqtt python3-serial python3-nacl
 mkdir -p "$HOME/.config/car-home" "$HOME/.local/share/car-home-control"
 chmod 700 "$HOME/.config/car-home" "$HOME/.local/share/car-home-control"
 ENVFILE="$HOME/.config/car-home/control.env"

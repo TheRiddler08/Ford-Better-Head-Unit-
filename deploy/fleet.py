@@ -10,6 +10,7 @@ import ast
 from contextlib import ExitStack
 import fcntl
 import hashlib
+import grp
 import ipaddress
 import importlib.util
 import json
@@ -317,8 +318,9 @@ def publish(sources,base=BASE):
 
 def native_dependencies(offline=False,role=None):
     needed=list(REQUIRED)
+    if role in ADDRESSES and shutil.which('apt-get'):needed+=['mfsmount','mfschunkserver','ffprobe']+(['mfsmaster'] if role=='tiny' else ['mfsmetalogger'])
     if role in ('duet','tiny') and Path('/run/openrc').exists():needed.append('loginctl')
-    libraries=('cryptography','paho.mqtt.client','serial')
+    libraries=('cryptography','paho.mqtt.client','serial','nacl')
     missing=[name for name in needed if not shutil.which(name)]
     for library in libraries:
         try:available=importlib.util.find_spec(library) is not None
@@ -328,9 +330,9 @@ def native_dependencies(offline=False,role=None):
     if shutil.which('apt-get'):
         run(['apt-get','update'],timeout=300)
         env=dict(os.environ,DEBIAN_FRONTEND='noninteractive')
-        subprocess.run(['apt-get','install','-y','network-manager','iproute2','iptables','dnsmasq-base','curl','ethtool','python3-cryptography','python3-paho-mqtt','python3-serial'],env=env,check=True,timeout=600)
+        subprocess.run(['apt-get','install','-y','--no-install-recommends','network-manager','iproute2','iptables','dnsmasq-base','curl','ethtool','python3-cryptography','python3-paho-mqtt','python3-serial','python3-nacl','moosefs-master','moosefs-chunkserver','moosefs-client','moosefs-metalogger','ffmpeg'],env=env,check=True,timeout=600)
     elif shutil.which('apk'):
-        run(['apk','add','networkmanager','iproute2','iptables','dnsmasq','curl','ethtool','elogind','py3-cryptography','py3-paho-mqtt','py3-pyserial'],timeout=600)
+        run(['apk','add','networkmanager','iproute2','iptables','dnsmasq','curl','ethtool','elogind','py3-cryptography','py3-paho-mqtt','py3-pyserial','py3-pynacl'],timeout=600)
     remaining=[name for name in needed if not shutil.which(name)]
     for library in libraries:
         try:available=importlib.util.find_spec(library) is not None
@@ -340,6 +342,83 @@ def native_dependencies(offline=False,role=None):
 
 
 def unit(name,content):save(Path('/etc/systemd/system')/name,content.encode())
+
+
+def install_storage(config):
+    """Configure packaged MooseFS, without formatting disks or relocating live DBs."""
+    role=config['role'];base=Path('/var/lib/car-storage');cfg=Path('/etc/car-dashboard/storage')
+    if not config.get('shared_storage',True):
+        for service in ('car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount'):
+            if Path('/run/systemd/system').exists():run(['systemctl','disable','--now',service+'.service'],check=False)
+            elif Path('/run/openrc').exists():
+                run(['rc-update','del',service,'default'],check=False);run(['rc-service',service,'stop'],check=False)
+        save(STATE/'storage.json',{'phase':'disabled'});return []
+    needed=['mfsmount','mfschunkserver']+(['mfsmaster'] if role=='tiny' else ['mfsmetalogger'])
+    missing=[name for name in needed if not shutil.which(name)]
+    if missing:
+        save(STATE/'storage.json',{'phase':'pending-packages','missing':missing});return ['storage:'+name for name in missing]
+    name=next((name for name in ('mfs','moosefs') if _has_user(name)),None)
+    if name is None:
+        save(STATE/'storage.json',{'phase':'pending-service-account'});return ['storage:service-account']
+    account=pwd.getpwnam(name)
+    base.mkdir(parents=True,exist_ok=True);cfg.mkdir(parents=True,exist_ok=True)
+    def owned(path):
+        path.mkdir(parents=True,exist_ok=True);os.chown(path,account.pw_uid,account.pw_gid);path.chmod(0o750)
+    for part in ('chunks','chunk-state','master','metadata-backup'):owned(base/part)
+    # Allocate existing free space, preserving an 8 GiB OS/recording reserve.
+    capacity=load(cfg/'capacity.json',{})
+    if not capacity:
+        free=shutil.disk_usage(base).free
+        limit=min(int(free*.6),free-8*1024**3)
+        if limit<1024**3:
+            save(STATE/'storage.json',{'phase':'pending-disk-space','reserveBytes':8*1024**3});return ['storage:disk-space']
+        capacity={'bytes':limit};save(cfg/'capacity.json',capacity)
+    common=f'WORKING_USER = {account.pw_name}\nWORKING_GROUP = {grp.getgrgid(account.pw_gid).gr_name}\nNICE_LEVEL = 0\nDISABLE_OOM_KILLER = 0\n'
+    save(cfg/'hdd.cfg',f'{base}/chunks {capacity["bytes"]}\n'.encode())
+    save(cfg/'chunk.cfg',(common+f'DATA_PATH = {base}/chunk-state\nMASTER_HOST = {ADDRESSES["tiny"]}\nBIND_HOST = {ADDRESSES[role]}\nCSSERV_LISTEN_HOST = {ADDRESSES[role]}\nHDD_CONF_FILENAME = {cfg}/hdd.cfg\nHDD_LEAVE_SPACE_DEFAULT = 8GiB\nHDD_FSYNC_BEFORE_CLOSE = 1\n').encode())
+    services=[('car-storage-chunks',[shutil.which('mfschunkserver'),'-f','-c',str(cfg/'chunk.cfg'),'start'])]
+    if role=='tiny':
+        master=base/'master'
+        if not (master/'metadata.mfs').exists() and not (master/'metadata.mfs.back').exists() and not (cfg/'master-initialized').exists():
+            if any(master.iterdir()):
+                save(STATE/'storage.json',{'phase':'pending-master-recovery'});return ['storage:master-recovery']
+            candidates=[Path('/var/lib/mfs/metadata.mfs.empty'),Path('/var/lib/moosefs/metadata.mfs.empty')]
+            empty=next((p for p in candidates if p.exists()),None)
+            if empty is None:
+                save(STATE/'storage.json',{'phase':'pending-master-seed'});return ['storage:master-seed']
+            shutil.copy2(empty,master/'metadata.mfs');os.chown(master/'metadata.mfs',account.pw_uid,account.pw_gid)
+            save(cfg/'master-initialized',b'initialized\n')
+        exports=''.join(f'{ip} / rw,alldirs,mapall=65534:65534\n' for ip in ADDRESSES.values())
+        save(cfg/'exports.cfg',exports.encode())
+        save(cfg/'master.cfg',(common+f'DATA_PATH = {master}\nEXPORTS_FILENAME = {cfg}/exports.cfg\nMATOML_LISTEN_HOST = {ADDRESSES[role]}\nMATOCS_LISTEN_HOST = {ADDRESSES[role]}\nMATOCL_LISTEN_HOST = {ADDRESSES[role]}\n').encode())
+        services.insert(0,('car-storage-master',[shutil.which('mfsmaster'),'-f','-a','-c',str(cfg/'master.cfg'),'start']))
+    else:
+        save(cfg/'metalogger.cfg',(common+f'DATA_PATH = {base}/metadata-backup\nMASTER_HOST = {ADDRESSES["tiny"]}\nBIND_HOST = {ADDRESSES[role]}\n').encode())
+        services.append(('car-storage-metadata',[shutil.which('mfsmetalogger'),'-f','-c',str(cfg/'metalogger.cfg'),'start']))
+    mount=Path('/car-data')
+    if not mount.exists():mount.mkdir(mode=0o755)
+    if not mount.is_mount() and any(mount.iterdir()):
+        save(STATE/'storage.json',{'phase':'pending-nonempty-mountpoint'});return ['storage:nonempty-mountpoint']
+    services.append(('car-storage-mount',[shutil.which('mfsmount'),'-f','-H',ADDRESSES['tiny'],'-o','allow_other,nosuid,nodev,noexec',str(mount)]))
+    for name,command in services:
+        worker=name=='car-data'
+        if Path('/run/systemd/system').exists():
+            extra=f'User={config["user"]}\nEnvironment=HOME={config["home"]}\nWorkingDirectory={config["repo"]}\n' if worker else ''
+            unit(name+'.service','[Unit]\nDescription=Local car storage ('+name+')\nAfter=car-fleet.service\n[Service]\n'+extra+'ExecStart='+shlex.join(command)+'\nRestart=always\nRestartSec=15\nTimeoutStopSec=30\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n')
+            run(['systemctl','daemon-reload']);run(['systemctl','enable','--now',name+'.service']);run(['systemctl','try-restart',name+'.service'],check=False)
+        elif Path('/run/openrc').exists():
+            script=f'#!/sbin/openrc-run\nsupervisor="supervise-daemon"\ncommand={shlex.quote(command[0])}\ncommand_args={shlex.quote(shlex.join(command[1:]))}\nrespawn_delay=15\nrespawn_max=0\n'
+            if worker:script+=f'command_user={shlex.quote(config["user"])}\ndirectory={shlex.quote(config["repo"])}\nexport HOME={shlex.quote(config["home"])}\n'
+            script+='depend() { need car-fleet; }\n'
+            save(Path('/etc/init.d')/name,script.encode());os.chmod(Path('/etc/init.d')/name,0o755)
+            run(['rc-update','add',name,'default']);run(['rc-service',name,'restart'],check=False)
+    save(STATE/'storage.json',{'phase':'configured-awaiting-cluster','master':ADDRESSES['tiny'],'mount':'/car-data','contributionBytes':capacity['bytes'],'replicaGoal':2})
+    return []
+
+
+def _has_user(name):
+    try:pwd.getpwnam(name);return True
+    except KeyError:return False
 
 
 def install_gps(config):
@@ -434,7 +513,7 @@ TimeoutStartSec=900
 ''')
     config=load(CONFIG,{})
     user=config.get('user','nobody');repo=config.get('repo','/nonexistent');home=config.get('home','/nonexistent')
-    for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway')]:
+    for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-data','control.car_data')]:
         unit(name+'.service',f'''[Unit]
 Description=Automatic resumable software link ({module})
 After=car-fleet.service
@@ -507,8 +586,8 @@ WantedBy=timers.target
 ''')
     run(['systemctl','daemon-reload'])
     run(['systemctl','disable','--now','car-duet-ethernet-'+role+'.timer'],check=False)
-    run(['systemctl','enable','--now','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service'])
-    run(['systemctl','restart','car-update-link.service','car-radio-adapter.service'])
+    run(['systemctl','enable','--now','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-data.service'])
+    run(['systemctl','restart','car-update-link.service','car-radio-adapter.service','car-data.service'])
     # Never force suspend the SSH session that installed an update. Arming is
     # automatic, but the once-per-boot timer starts on the next device boot.
     extras=['car-wake-first.timer','car-wake-retry.timer','car-wake-status.service'] if role=='pi' else ['car-boot-standby.timer']
@@ -552,7 +631,7 @@ depend() {{ need car-fleet; }}
         run(['rc-update','add','car-wake-status','default'])
         run(['rc-service','car-wake-status','restart'])
     cfg=load(CONFIG,{})
-    for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway')]:
+    for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-data','control.car_data')]:
         save(Path('/etc/init.d')/name,f'''#!/sbin/openrc-run
 name="Automatic resumable update transport"
 supervisor="supervise-daemon"
@@ -625,10 +704,10 @@ def install(role,repo,user,sources,offline=False,commit=None):
             previous=load(standby,{});previous['armed']=False;save(standby,previous)
     if not defaults.get('enabled',True):
         if Path('/run/systemd/system').exists():
-            for service in ['car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
+            for service in ['car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
                 run(['systemctl','disable','--now',service],check=False)
         elif Path('/run/openrc').exists():
-            for service in ['car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-fleet-boot','car-wake-status']:
+            for service in ['car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-data','car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount','car-fleet-boot','car-wake-status']:
                 run(['rc-update','del',service,'default'],check=False);run(['rc-service',service,'stop'],check=False)
         return {'provisioning':VERSION,'disabled':True,'missing':missing}
     if Path('/run/systemd/system').exists():
@@ -638,6 +717,7 @@ def install(role,repo,user,sources,offline=False,commit=None):
             install_gps(defaults)
     elif Path('/run/openrc').exists():openrc_units(role)
     else:raise ValueError('Automatic role setup needs systemd or OpenRC')
+    missing+=install_storage(defaults)
     save(STATE/'installed.json',{'provisioning':VERSION,'version':destination.name,'commit':defaults['commit'],'missing':missing})
     return {'provisioning':VERSION,'missing':missing,'role':role}
 

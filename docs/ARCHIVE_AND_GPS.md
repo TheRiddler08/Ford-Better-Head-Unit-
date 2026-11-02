@@ -1,8 +1,10 @@
 # Detailed vehicle archive and persistent GPS routes
 
 Open **Reports & GPS history** from the car dashboard (or `/records` through the
-Duet's existing proxy). This is a local, read-only archive; it does not send your
-vehicle data or locations to the home server or any map provider.
+Duet's existing proxy). The full archive stays local and read-only. The optional configured radio link
+now queues selected encrypted GPS samples and camera catalog details for home;
+see [storage and radio privacy](CAR_STORAGE_AND_RADIO_PRIVACY.md). No online map
+provider receives the archive.
 
 ## What is retained
 
@@ -156,7 +158,9 @@ fields remain available while replaying.
 ## Fixed-gateway coverage evidence
 
 The authenticated home control panel includes a coverage plot and audit totals.
-ChirpStack MQTT events can contribute observations through a decoded object:
+After decryption and application authentication, the home bridge converts a GPS
+status message into this internal object for coverage gating. An unencrypted
+ChirpStack decoder object is not accepted as evidence:
 
 ```json
 {"carGpsV1":{"lat":40.0,"lon":-75.0,"ts":1793100000,
@@ -185,9 +189,10 @@ negative RF measurements. No synthetic boundary is drawn across untested areas.
 The archive is persistent and cursor-paginated, with no automatic deletion.
 
 This adds the evidence consumer, audit and map; **it does not configure a real
-RAK3172 modem, produce that decoded telemetry, install ChirpStack, or detect the
-future RAK5146 role yet**. Until the modem sender and fresh gateway-role reporting
-are connected, the coverage plot correctly stays empty. Do not mistake a configured
+RAK3172 modem, install ChirpStack, or detect the
+future RAK5146 role yet**. The car now queues encrypted sampled GPS telemetry, with gateway mode explicitly
+unknown. Until the hardware modem and fresh gateway-role reporting are connected,
+the coverage plot correctly stays empty. Do not mistake a configured
 MQTT connection or a queued message for validated over-air delivery. Phase 1 uses
 the RAK3172-E on the Pi, Tiny USB GPS and a US915 fixed gateway; the future
 RAK5146 is a separate radio role. Match US915 sub-band/data-rate payload limits

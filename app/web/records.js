@@ -100,3 +100,17 @@ function replayNext(){
 }
 $('replayPlay').onclick=()=>{if(replayTimer){pauseReplay();return;}if(!points.length)return;if(Number($('replaySeek').value)>=points.length-1)$('replaySeek').value=0;replayPoint(Number($('replaySeek').value));replayNext();};
 $('replaySeek').oninput=()=>{pauseReplay();replayPoint(Number($('replaySeek').value));};
+
+let clipCursor='';
+$('loadClips').onclick=async()=>{
+  try{
+    const data=await api('/api/dashcam?after='+encodeURIComponent(clipCursor));
+    for(const clip of data.items){
+      const button=document.createElement('button');button.className='secondary';button.textContent=clip.name+' · '+(clip.size/1048576).toFixed(1)+' MiB · '+clip.id.split(':')[0];
+      button.onclick=()=>{const url='/api/dashcam/clip?id='+encodeURIComponent(clip.id);$('clipPlayer').src=url;$('clipDownload').href=url;$('clipDownload').textContent='Open / download recording';$('clipDownload').hidden=false;};$('clipList').append(button);
+    }
+    clipCursor=data.next;$('clipStatus').textContent=data.items.length+' recordings loaded'+(data.hasMore?' · more available':' · end of available recordings');
+  }catch(error){$('clipStatus').textContent=error.message;}
+};
+
+$('storageStatus').onclick=async()=>{try{$('storageDetail').textContent=JSON.stringify(await api('/api/car-storage'),null,2);}catch(error){$('storageDetail').textContent=error.message;}};

@@ -4,6 +4,16 @@ An offline-capable, read-only web interface for the existing Ubuntu/Python OBD2 
 
 ![Cockpit](https://img.shields.io/badge/touchscreen_UI-v2.0-55e6c1) ![Dependencies](https://img.shields.io/badge/python-stdlib_only-blue) ![Privacy](https://img.shields.io/badge/data-local_only-lightgrey)
 
+## Car storage, private radio and G980H recordings
+
+Normal device setup now configures a MooseFS shared archive at `/car-data` on
+supported Linux installations, while active GPS/OBD databases remain local.
+LoRaWAN application traffic uses public-key encryption through libsodium/PyNaCl;
+local GPS history remains readable. The recording library imports Botslab G980H
+four-channel files and preserves channel folders. Direct camera downloading is
+pending a verified protocol; LoRaWAN carries clip details, while full video uses
+Wi-Fi/Ethernet. See [setup, operation and validation limits](docs/CAR_STORAGE_AND_RADIO_PRIVACY.md).
+
 ## Touchscreen cockpit v2
 
 The default home screen now uses a purpose-built car-console layout optimized for the Lenovo's touch display and for 16:9 landscape screens:

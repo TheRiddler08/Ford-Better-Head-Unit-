@@ -26,3 +26,13 @@
   receipt journal across IP/radio. A broker TX receipt is not installation success.
   Keep actual modem/network provisioning explicitly pending when its details are
   unknown; a generic adapter boundary is not proof of an operational LoRaWAN link.
+
+- Local GPS history remains readable without encryption. All application data sent
+  over LoRaWAN must use established public/private-key encryption at the actual
+  radio boundary, with no plaintext downgrade; preserve existing authentication.
+- Shared car archives use an existing Linux distributed filesystem (MooseFS), not
+  a custom storage engine. Keep active SQLite/WAL files local, retain originals,
+  and never write archive data into an unmounted pool directory.
+- The camera is a Botslab G980H 4 Channel Dash Cam Set. Preserve supplied channel
+  folders and original filenames. Do not assume undocumented Wi-Fi/Bluetooth APIs
+  or claim video transfer over LoRaWAN when only catalog metadata is implemented.

@@ -35,6 +35,11 @@ def software():
     with LOCK:return Software(ROOT/'software')
 
 
+def radio_public_key():
+    from control.radio_crypto import identity
+    return bytes(identity(ROOT/"radio/private.key").public_key).hex()
+
+
 def radio_key():
     if not KEY_HEX:return software().key()
     try:
@@ -235,7 +240,9 @@ class Handler(BaseHTTPRequestHandler):
         if req.path=="/api/device/software/credentials":
             if not self.device_access():return
             service=software()
-            return self.response({"publicKey":service.public.read_text(),"linkKey":service.key().hex()})
+            try:radio=radio_public_key()
+            except ImportError:return self.fail("Radio encryption dependencies pending; run the normal home installer",503)
+            return self.response({"publicKey":service.public.read_text(),"linkKey":service.key().hex(),"radioPublicKey":radio})
         if req.path=="/api/device/layout":
             if not self.device_access():return
             return self.response(LayoutStore(ROOT/"layouts.sqlite3").get(DEVICE_NAME)["published"])
@@ -257,6 +264,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             name=parse_qs(req.query).get("device",["car-1"])[0]
             cfg_file,queue_file=paths(name)
+            if req.path=="/api/gps-relay":
+                from control.event_transfer import Events
+                return self.response({'items':Events(ROOT/'radio/catalog.sqlite3',radio_key()).catalog('gps')})
+            if req.path=="/api/dashcam":
+                from control.event_transfer import Events
+                return self.response({'items':Events(ROOT/'radio/catalog.sqlite3',radio_key()).catalog(),
+                                      'videoTransport':'Wi-Fi/Ethernet; LoRaWAN carries metadata only'})
             if req.path=="/api/coverage":
                 from control.coverage import report
                 after=int(parse_qs(req.query).get('after',['0'])[0])
@@ -291,6 +305,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 data=self.request_json();role=data["role"];service=software()
                 if role not in ("tiny","duet","pi"):raise ValueError("Invalid role")
+                if role=='pi' and 'radioPublicKey' in data:
+                    from control.radio_crypto import pin
+                    pin(ROOT/'radio/car.pub',data['radioPublicKey'])
                 service.receipts(DEVICE_NAME,role,data.get("receipts",[]))
                 if "sources" in data:service.inventory(DEVICE_NAME,role,data["sources"])
                 return self.response({"frames":service.outgoing(DEVICE_NAME,role)})

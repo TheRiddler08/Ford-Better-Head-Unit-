@@ -37,6 +37,15 @@ class Bridge:
         self.day=int(time.time()//86400)
         self.sent=0
 
+    def events(self):
+        from control.event_transfer import Events
+        return Events(ROOT/'radio/catalog.sqlite3',radio_key())
+
+    def cipher(self):
+        from control.radio_crypto import RadioBox
+        return RadioBox(ROOT/'radio/private.key',ROOT/'radio/car.pub',ROOT/'radio/sealed.sqlite3',b'D',
+                        int(os.getenv('CAR_RADIO_MAX_APP_BYTES','46')))
+
     def may_send(self):
         day=int(time.time()//86400)
         if day!=self.day:self.sent=0;self.day=day
@@ -44,28 +53,34 @@ class Bridge:
 
     def send_one(self):
         if not self.may_send():return
-        item=export_next(NAME)
+        event=self.events().outgoing(ack=True) if (ROOT/'radio/catalog.sqlite3').exists() else None
+        item=None if event else export_next(NAME)
         modern=None
-        if not item:
+        if not item and not event:
             frames=self.software.outgoing(NAME,limit=1,mark=False)
             if not frames:return
             modern=bytes.fromhex(frames[0])
-        frame=modern if modern else bytes.fromhex(item["frame_hex"])
+        frame=event or (modern if modern else bytes.fromhex(item["frame_hex"]))
         if not self.software.journal.budget('mqtt-downlinks',COOLDOWN,DAILY_LIMIT):return
+        cipher=self.cipher()
+        if not cipher.peer.exists():return # Never send application plaintext before enrollment.
+        encrypted=cipher.next(frame)
         topic=f"application/{APP}/device/{DEV_EUI}/command/down"
-        message={"confirmed":False,"fPort":FPORT,"data":base64.b64encode(frame).decode("ascii")}
+        message={"confirmed":False,"fPort":FPORT,"data":base64.b64encode(encrypted).decode("ascii")}
         info=self.client.publish(topic,json.dumps(message,separators=(",",":")),qos=1)
         if info.rc!=0:
             print("Broker rejected publish; keeping fragment queued",flush=True)
             return
+        self.last=time.monotonic();self.sent+=1
+        if not cipher.sent(frame):return
         # This acknowledges broker queueing, NOT successful over-air delivery.
+        if event:
+            self.events().sent(frame,ack=True);return
         if modern:
             self.software.journal.mark_sent(modern,radio_key(),"lorawan")
-            self.last=time.monotonic();self.sent+=1
             print("Queued resumable update fragment; awaiting durable device receipt",flush=True)
             return
         if mark_transmitted(NAME,item["revision"],item["index"]):
-            self.last=time.monotonic();self.sent+=1
             print(f"Queued fragment {item['index']+1} of revision {item['revision']} "
                   f"({len(frame)} bytes; {self.sent}/{DAILY_LIMIT} daily cap)",flush=True)
 
@@ -81,22 +96,23 @@ class Bridge:
         try:
             wire=json.loads(msg.payload)
             if not isinstance(wire,dict):raise ValueError('Invalid uplink event')
-            from control.coverage import ingest
-            registry_file=ROOT/'gateways.json'
-            try:
-                registry=json.loads(registry_file.read_text()) if registry_file.exists() else {}
-                ingest(ROOT/'coverage.sqlite3',wire,registry)
-            except (ValueError,TypeError,AttributeError,OSError) as exc:
-                print('Coverage evidence rejected: '+str(exc),flush=True)
             window=True
             from control.update_agent import atomic
             atomic(ROOT/'radio-status.json',json.dumps({'phase':'uplink-received','time':time.time()}).encode())
-            payload=base64.b64decode(wire.get("data",""),validate=True)
+            payload=self.cipher().accept(base64.b64decode(wire.get("data",""),validate=True))
+            if payload is None:return
             if payload[:1]==b'\x02':
                 from control.update_transfer import decode
                 _,short,*_=decode(payload,radio_key())
                 with self.software.journal.db() as db:row=db.execute('SELECT doc FROM jobs WHERE short=?',(short,)).fetchone()
                 if row:self.software.receipts(NAME,json.loads(row[0])['role'],[payload.hex()],transport='lorawan')
+            elif payload[:2]==b'\x01\x06':
+                sample=self.events().receive(payload)
+                if sample and sample.get('type')=='gps':
+                    from control.coverage import ingest
+                    registry_file=ROOT/'gateways.json'
+                    registry=json.loads(registry_file.read_text()) if registry_file.exists() else {}
+                    ingest(ROOT/'coverage.sqlite3',dict(wire,object={'carGpsV1':sample}),registry)
             elif len(payload)<=46 and payload:
                 result=self.assembler.accept(payload)
                 if result:
@@ -105,7 +121,7 @@ class Bridge:
                         ack_revision(NAME,packet["revision"])
                     elif result["kind"]=="chunk-request" and isinstance(packet,dict):
                         rewind_chunks(NAME,packet.get("sequence"),packet.get("missing"))
-        except (ValueError,TypeError,KeyError) as exc:
+        except (ValueError,TypeError,KeyError,ImportError) as exc:
             print("Ignored invalid application data in uplink: "+str(exc),flush=True)
         finally:
             if window and MODE=="A":self.send_one()

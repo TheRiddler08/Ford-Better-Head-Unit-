@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+FLEET_FILE = Path("/etc/car-dashboard/fleet.json")
 WEB_DIR = Path(__file__).resolve().parent / "web"
 DB_PATH = Path(os.environ.get("CAR_DB", str(Path.home() / "car-console/obd-data/vehicle.sqlite3"))).expanduser()
 HOST = os.environ.get("CAR_BIND", "127.0.0.1")
@@ -284,6 +285,15 @@ class Handler(BaseHTTPRequestHandler):
                 data=json.loads(Path('/etc/car-dashboard/home-assistant.json').read_text())
             except (OSError,ValueError):data={'installed':False,'enabled':False,'ready':False}
             return self.send_json(data)
+        if url.path=="/api/car-storage":
+            try:
+                cfg=json.loads(FLEET_FILE.read_text())
+                paths={"provisioning":Path('/var/lib/car-dashboard-fleet/storage.json'),
+                       "worker":Path(cfg['home'])/'.local/share/car-data/status.json'}
+                return self.send_json({name:json.loads(path.read_text()) if path.exists() else {'phase':'pending'} for name,path in paths.items()})
+            except (OSError,ValueError,KeyError) as exc:return self.send_json({'error':str(exc)},503)
+        if url.path in ("/api/dashcam","/api/dashcam/clip"):
+            return self.camera_request(url)
         if url.path.startswith("/api/report/"):
             return self.report_request(url)
         if url.path=="/layout-host":
@@ -401,6 +411,38 @@ class Handler(BaseHTTPRequestHandler):
         except (FileNotFoundError, sqlite3.Error, ValueError, TypeError) as exc:
             LOG.warning("Request %s failed: %s", url.path, exc)
             self.send_json({"error": str(exc)}, 503)
+
+    def camera_request(self,url):
+        from control import car_data
+        try:
+            config=json.loads(FLEET_FILE.read_text())
+            home=config['home'];role=config['role'];query=parse_qs(url.query)
+            if url.path=='/api/dashcam':return self.send_json(car_data.clips(home,role,query.get('after',[''])[0]))
+            path=car_data.clip_path(home,role,query.get('id',[''])[0])
+            size=path.stat().st_size;start=0;end=size-1
+            requested=self.headers.get('Range')
+            if requested:
+                match=re.fullmatch(r'bytes=(\d*)-(\d*)',requested)
+                if not match or not any(match.groups()):raise ValueError('Single byte range required')
+                first,last=match.groups()
+                if first:start=int(first);end=min(size-1,int(last)) if last else size-1
+                else:start=max(0,size-int(last))
+                if start>end or start>=size:
+                    self.send_response(416);self.send_header('Content-Range','bytes */'+str(size));self.send_header('Content-Length','0');self.end_headers();return
+            mime={'.mp4':'video/mp4','.mov':'video/quicktime','.mkv':'video/x-matroska','.ts':'video/mp2t'}[path.suffix]
+            with path.open('rb') as stream:
+                self.send_response(206 if requested else 200)
+                self.send_header('Content-Type',mime);self.send_header('Content-Length',str(end-start+1))
+                self.send_header('Accept-Ranges','bytes');self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
+                if requested:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
+                self.end_headers();stream.seek(start);remaining=end-start+1
+                while remaining:
+                    chunk=stream.read(min(65536,remaining))
+                    if not chunk:break
+                    self.wfile.write(chunk);remaining-=len(chunk)
+        except (OSError,ValueError,KeyError,TypeError) as exc:
+            if isinstance(exc,(BrokenPipeError,ConnectionResetError)):return
+            self.send_json({'error':str(exc)},404)
 
     def report_request(self, url):
         db = gps = None
