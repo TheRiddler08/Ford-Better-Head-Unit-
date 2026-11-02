@@ -36,3 +36,6 @@
 - The camera is a Botslab G980H 4 Channel Dash Cam Set. Preserve supplied channel
   folders and original filenames. Do not assume undocumented Wi-Fi/Bluetooth APIs
   or claim video transfer over LoRaWAN when only catalog metadata is implemented.
+- The G980H is temporary. A future secondary dashcam will use USB cameras and a
+  separate Raspberry Pi 5 with an AI HAT for onboard object detection. This is
+  notes-only until requested; see docs/FUTURE_USB_CAMERA_AI.md.

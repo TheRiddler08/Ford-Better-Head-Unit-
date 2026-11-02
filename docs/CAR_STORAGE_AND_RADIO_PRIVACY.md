@@ -108,6 +108,10 @@ coverage evidence gate; a plaintext ChirpStack decoder object is no longer trust
 
 ## Botslab G980H four-channel camera
 
+The G980H is temporary. A separate future USB-camera/Pi 5/AI HAT secondary
+dashcam is recorded in [the expansion notes](FUTURE_USB_CAMERA_AI.md); no AI or
+USB-camera capture is enabled by that plan.
+
 The user identified the model as the **G980H 4 Channel Dash Cam Set**.
 Wi-Fi/Bluetooth alone does not identify its recording-download API.
 Direct connection and automatic Wi-Fi downloading remain **pending a verified G980H
