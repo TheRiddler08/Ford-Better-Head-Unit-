@@ -42,3 +42,11 @@
 - Future AI may also use the home server for more advanced processing over a
   hotspot Internet connection, while local recording/detection continue offline.
   This remains a planning note, not authorization to enable video uploads now.
+
+- The spare take-along laptop is a ThinkBook 14-family machine, exact model/Linux
+  version unconfirmed. It connects to the central switch as the laptop role (.4),
+  can share Wi-Fi Internet with the car (gateway priority Pi, Duet, laptop), and
+  must remain portable,
+  and should request deep sleep after confirmed car power loss. Never infer car
+  shutdown from a missing network alone or globally disable normal personal-use
+  lid behaviour. See docs/SPARE_LAPTOP.md; hardware wake limitations stay pending.

@@ -11,7 +11,7 @@ from control.tailscale_agent import NoRedirect
 from control.update_transfer import Journal,digest,encode,APPLIED,ERROR,decode,canonical
 from control.patches import ALLOWED,DUET,UI,install_patch
 
-LAN={'tiny':'172.16.42.2','duet':'172.16.42.1','pi':'172.16.42.3'}
+LAN={'tiny':'172.16.42.2','duet':'172.16.42.1','pi':'172.16.42.3','laptop':'172.16.42.4'}
 PORT=8796
 
 
@@ -74,7 +74,7 @@ class Agent:
         if value not in radio:radio.append(value)
         atomic(self.radio_pending,json.dumps(radio).encode())
     def inventory(self):
-        if self.role=='pi':return []
+        if self.role in ('pi','laptop'):return []
         rows=[]
         for path in sorted(ALLOWED):
             if path.startswith('duet/')!=(self.role=='duet'):continue

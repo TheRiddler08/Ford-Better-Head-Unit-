@@ -17,6 +17,7 @@ git pull --ff-only
 bash install.sh duet   # Duet: display, courier, network and power role
 # On Tiny: bash install.sh tiny
 # On Pi:   bash install.sh pi
+# On spare laptop: bash install.sh laptop
 ```
 
 The existing `duet/prepare-update.sh`, `duet/install.sh`,
@@ -175,3 +176,5 @@ Wi-Fi failover, tablet suspend and firmware boot behavior still need validation
 on the actual devices.
 
 The normal role installer also enables the [resumable software link and activation services](RESUMABLE_UPDATES.md). They wait for home authentication/radio configuration when missing; they do not guess credentials or serial ports. Duet source checkouts now advance automatically after tests, and active display helpers restart with rollback.
+
+The removable spare laptop has a separate [.4 role and car-off sleep policy](SPARE_LAPTOP.md).

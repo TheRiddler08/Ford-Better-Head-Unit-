@@ -14,6 +14,12 @@ four-channel files and preserves channel folders. Direct camera downloading is
 pending a verified protocol; LoRaWAN carries clip details, while full video uses
 Wi-Fi/Ethernet. See [setup, operation and validation limits](docs/CAR_STORAGE_AND_RADIO_PRIVACY.md).
 
+## Spare laptop
+
+Use `bash install.sh laptop` for the removable ThinkBook-family spare. It joins
+the car network/archive and requests supported deep sleep after confirmed car
+power loss, with portable-use guards. See [laptop setup and hardware limits](docs/SPARE_LAPTOP.md).
+
 ## Touchscreen cockpit v2
 
 The default home screen now uses a purpose-built car-console layout optimized for the Lenovo's touch display and for 16:9 landscape screens:

@@ -304,7 +304,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self.device_access():return
             try:
                 data=self.request_json();role=data["role"];service=software()
-                if role not in ("tiny","duet","pi"):raise ValueError("Invalid role")
+                if role not in ("tiny","duet","pi","laptop"):raise ValueError("Invalid role")
                 if role=='pi' and 'radioPublicKey' in data:
                     from control.radio_crypto import pin
                     pin(ROOT/'radio/car.pub',data['radioPublicKey'])

@@ -40,7 +40,7 @@ class Software:
         configured=os.getenv('CAR_LINK_KEY','')
         return bytes.fromhex(configured) if configured else bytes.fromhex(self.keyfile.read_text())
     def inventory(self,device,role,rows):
-        if role not in ('tiny','duet','pi') or not isinstance(rows,list) or len(rows)>16:raise ValueError('Invalid inventory')
+        if role not in ('tiny','duet','pi','laptop') or not isinstance(rows,list) or len(rows)>16:raise ValueError('Invalid inventory')
         with self.journal.db() as db:
             for row in rows:
                 path=row.get('path');source=row.get('source')

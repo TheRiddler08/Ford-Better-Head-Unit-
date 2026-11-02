@@ -30,7 +30,7 @@ import time
 import zipfile
 from urllib.request import Request,urlopen
 
-ADDRESSES={'duet':'172.16.42.1','tiny':'172.16.42.2','pi':'172.16.42.3'}
+ADDRESSES={'duet':'172.16.42.1','tiny':'172.16.42.2','pi':'172.16.42.3','laptop':'172.16.42.4'}
 SUBNET='172.16.42.0/24'
 BROADCAST='172.16.42.255'
 PORT=8798
@@ -79,10 +79,10 @@ def eligible_peer(message,address,now):
 
 
 def elect(role,online,peers,now):
-    candidates={role} if online and role in ('pi','duet') else set()
+    candidates={role} if online and role in ('pi','duet','laptop') else set()
     for name,peer in peers.items():
-        if name in ('pi','duet') and peer.get('internet') is True and 0<=now-peer.get('seen',0)<=15:candidates.add(name)
-    return next((name for name in ('pi','duet') if name in candidates),None)
+        if name in ('pi','duet','laptop') and peer.get('internet') is True and 0<=now-peer.get('seen',0)<=15:candidates.add(name)
+    return next((name for name in ('pi','duet','laptop') if name in candidates),None)
 
 
 def devices():
@@ -218,8 +218,11 @@ def write_wake(config,nic,peers):
     role=config['role']
     if role=='pi':
         rows=[{'name':name,'mac':peer['mac'],'broadcast':BROADCAST,'interface':nic}
-              for name,peer in sorted(peers.items()) if name in ('tiny','duet')]
+              for name,peer in sorted(peers.items()) if name in ('tiny','duet','laptop')]
         save('/etc/car-dashboard/pi-wake.json',{'schema':1,'status':{'bind':ADDRESSES['pi'],'interface':nic},'targets':rows})
+    elif role=='laptop':
+        # Laptop sleeps only after a confirmed car-off transition, never at boot.
+        return 'car-off-monitor'
     else:
         # Enable automatically only when the installed driver reports the needed
         # capability. Unsupported hardware is status, not an installer lockout.
@@ -319,7 +322,7 @@ def publish(sources,base=BASE):
 def native_dependencies(offline=False,role=None):
     needed=list(REQUIRED)
     if role in ADDRESSES and shutil.which('apt-get'):needed+=['mfsmount','mfschunkserver','ffprobe']+(['mfsmaster'] if role=='tiny' else ['mfsmetalogger'])
-    if role in ('duet','tiny') and Path('/run/openrc').exists():needed.append('loginctl')
+    if role in ('duet','tiny','laptop') and Path('/run/openrc').exists():needed.append('loginctl')
     libraries=('cryptography','paho.mqtt.client','serial','nacl')
     missing=[name for name in needed if not shutil.which(name)]
     for library in libraries:
@@ -419,6 +422,38 @@ def install_storage(config):
 def _has_user(name):
     try:pwd.getpwnam(name);return True
     except KeyError:return False
+
+
+def install_laptop_power(config):
+    current=BASE/'fleet-current'
+    enabled=config.get('laptop_sleep',True)
+    if Path('/run/systemd/system').exists():
+        unit('car-laptop-power.service',f'''[Unit]
+Description=Spare laptop car-off deep sleep
+After=car-fleet.service systemd-logind.service
+[Service]
+ExecStart=/usr/bin/python3 -I {current}/standby.py laptop --config /etc/car-dashboard/fleet.json
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=10
+[Install]
+WantedBy=multi-user.target
+''')
+        run(['systemctl','daemon-reload'])
+        run(['systemctl','enable' if enabled else 'disable','--now','car-laptop-power.service'])
+        if enabled:run(['systemctl','try-restart','car-laptop-power.service'],check=False)
+    elif Path('/run/openrc').exists():
+        save('/etc/init.d/car-laptop-power',f'''#!/sbin/openrc-run
+supervisor="supervise-daemon"
+command="/usr/bin/python3"
+command_args="-I {current}/standby.py laptop --config /etc/car-dashboard/fleet.json"
+respawn_delay=10
+respawn_max=0
+depend() {{ need car-fleet; }}
+'''.encode())
+        os.chmod('/etc/init.d/car-laptop-power',0o755)
+        run(['rc-update','add' if enabled else 'del','car-laptop-power','default'])
+        run(['rc-service','car-laptop-power','restart' if enabled else 'stop'],check=False)
 
 
 def install_gps(config):
@@ -566,7 +601,7 @@ Unit=car-wake@{name}.service
 [Install]
 WantedBy=timers.target
 ''')
-    else:
+    elif role!='laptop':
         unit('car-boot-standby.service',f'''[Unit]
 Description=Automatic supported standby waiting for Pi
 After=car-fleet.service
@@ -584,14 +619,15 @@ AccuracySec=1
 [Install]
 WantedBy=timers.target
 ''')
+    if role=='laptop':install_laptop_power(config)
     run(['systemctl','daemon-reload'])
     run(['systemctl','disable','--now','car-duet-ethernet-'+role+'.timer'],check=False)
     run(['systemctl','enable','--now','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-data.service'])
     run(['systemctl','restart','car-update-link.service','car-radio-adapter.service','car-data.service'])
     # Never force suspend the SSH session that installed an update. Arming is
     # automatic, but the once-per-boot timer starts on the next device boot.
-    extras=['car-wake-first.timer','car-wake-retry.timer','car-wake-status.service'] if role=='pi' else ['car-boot-standby.timer']
-    run(['systemctl','enable',*extras])
+    extras=['car-wake-first.timer','car-wake-retry.timer','car-wake-status.service'] if role=='pi' else [] if role=='laptop' else ['car-boot-standby.timer']
+    if extras:run(['systemctl','enable',*extras])
     run(['systemctl','restart','car-fleet.service'])
     if role=='pi':run(['systemctl','restart','car-wake-status.service'])
 
@@ -631,6 +667,7 @@ depend() {{ need car-fleet; }}
         run(['rc-update','add','car-wake-status','default'])
         run(['rc-service','car-wake-status','restart'])
     cfg=load(CONFIG,{})
+    if role=='laptop':install_laptop_power(cfg)
     for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-data','control.car_data')]:
         save(Path('/etc/init.d')/name,f'''#!/sbin/openrc-run
 name="Automatic resumable update transport"
@@ -677,7 +714,7 @@ def install(role,repo,user,sources,offline=False,commit=None):
     missing=native_dependencies(offline or not config.get('enabled',True),role)
     destination=publish(sources)
     defaults={'schema':1,'role':role,'repo':str(repo),'user':user,'home':account.pw_dir,
-              'enabled':True,'boot_standby':True,'interface':None,'commit':commit,'auto_update':role=='pi','app_updates':True,'reboot_updates':True}
+              'enabled':True,'boot_standby':True,'interface':None,'commit':commit,'auto_update':role in ('pi','laptop'),'app_updates':True,'reboot_updates':True,'laptop_sleep':True,'laptop_sleep_delay':90}
     defaults.update(config)
     if commit:defaults['commit']=commit
     if role=='duet' and commit and not missing:advance_duet(defaults,commit)
@@ -704,10 +741,10 @@ def install(role,repo,user,sources,offline=False,commit=None):
             previous=load(standby,{});previous['armed']=False;save(standby,previous)
     if not defaults.get('enabled',True):
         if Path('/run/systemd/system').exists():
-            for service in ['car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
+            for service in ['car-laptop-power.service','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
                 run(['systemctl','disable','--now',service],check=False)
         elif Path('/run/openrc').exists():
-            for service in ['car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-data','car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount','car-fleet-boot','car-wake-status']:
+            for service in ['car-laptop-power','car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-data','car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount','car-fleet-boot','car-wake-status']:
                 run(['rc-update','del',service,'default'],check=False);run(['rc-service',service,'stop'],check=False)
         return {'provisioning':VERSION,'disabled':True,'missing':missing}
     if Path('/run/systemd/system').exists():
@@ -997,12 +1034,13 @@ def refresh_locked(config):
         if not signed:return
         commit,bare=signed
     else:
-        if config['role']=='pi' and config.get('auto_update',True):
+        if config['role'] in ('pi','laptop') and config.get('auto_update',True):
             status=load(STATUS,{})
             stamp=STATE/'last-fetch.json';last=load(stamp,{}).get('time',0)
-            if status.get('wifiInternet') and time.time()-last>900:
-                if git(config,'remote','get-url','origin')!=ORIGIN:raise ValueError('Unexpected Pi Git origin')
-                if git(config,'symbolic-ref','--short','HEAD')!='main' or git(config,'status','--porcelain'):raise ValueError('Pi checkout has local changes/branch; keeping them')
+            if (status.get('wifiInternet') or config['role']=='laptop') and time.time()-last>900:
+                save(stamp,{'time':time.time()})
+                if git(config,'remote','get-url','origin')!=ORIGIN:raise ValueError('Unexpected managed Git origin')
+                if git(config,'symbolic-ref','--short','HEAD')!='main' or git(config,'status','--porcelain'):raise ValueError('Managed checkout has local changes/branch; keeping them')
                 old=git(config,'rev-parse','HEAD')
                 git(config,'fetch','--no-tags','origin','main')
                 new=git(config,'rev-parse','FETCH_HEAD');git(config,'merge-base','--is-ancestor',old,new)
@@ -1011,7 +1049,7 @@ def refresh_locked(config):
                 git(config,'merge','--ff-only',new)
                 tests=subprocess.run(['runuser','-u',config['user'],'--','/usr/bin/python3','-B','-m','unittest','discover','-s','tests'],cwd=config['repo'],capture_output=True,timeout=300)
                 if tests.returncode:
-                    git(config,'reset','--keep',old);raise ValueError('Pi candidate tests failed; kept the previous version')
+                    git(config,'reset','--keep',old);raise ValueError('Managed candidate tests failed; kept the previous version')
                 save(stamp,{'time':time.time()})
         commit=git(config,'rev-parse','HEAD')
     if not re.fullmatch('[0-9a-f]{40}',commit):raise ValueError('Invalid source commit')
@@ -1029,6 +1067,7 @@ def refresh_locked(config):
 
 def boot(config):
     current=Path(__file__).resolve().parent
+    if config['role']=='laptop':return
     if config['role']!='pi':
         subprocess.run(['/usr/bin/python3','-I',str(current/'standby.py'),'boot'],check=False);return
     # OpenRC needs the same absolute boot deadlines as the systemd timers.

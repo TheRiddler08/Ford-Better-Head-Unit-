@@ -18,7 +18,7 @@ import tempfile
 import time
 from control.update_agent import atomic
 
-ROLES=('tiny','duet','pi')
+ROLES=('tiny','duet','pi','laptop')
 VIDEO={'.mp4','.mov','.mkv','.ts'}
 CAMERA={'manufacturer':'Botslab','model':'G980H','channels':4,
         'access':'pending-verified-download-protocol'}

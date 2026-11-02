@@ -22,7 +22,10 @@ jobs:
       - name: Duet proxy syntax
         run: python -m py_compile duet/proxy.py
       - name: Shell script syntax
-        run: bash -n deploy/*.sh duet/*.sh
+        run: |
+          for script in install.sh deploy/*.sh duet/*.sh laptop/*.sh pi/*.sh home_server/*.sh; do
+            bash -n "$script"
+          done
       - name: JavaScript syntax
         run: |
           node --check app/web/app.js
