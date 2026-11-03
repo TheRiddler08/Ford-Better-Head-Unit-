@@ -59,7 +59,7 @@ class EditableStarterTests(unittest.TestCase):
             (storage/'auth').write_bytes(b'owner secret unchanged')
             old=b'{"items":[{"id":"other"}]}'
             (storage/'lovelace_dashboards').write_bytes(old)
-            settings=root/'settings.json';settings.write_text(json.dumps({'repo':str(Path(__file__).resolve().parents[1]),'timezone':'UTC','enabled':True,'image':'fixture','backend':'http://127.0.0.1:8787/api/home-assistant/state'}))
+            settings=root/'settings.json';settings.write_text(json.dumps({'repo':str(Path(__file__).resolve().parents[1]),'timezone':'UTC','enabled':True,'image':'fixture','forkArchive':ha.FORK_ARCHIVE_SHA,'backend':'http://127.0.0.1:8787/api/home-assistant/state'}))
             def migrate(_):
                 for name in ha.STARTER_STORES:(storage/name).write_text('partial migration')
             with patch.object(ha,'BASE',base),patch.object(ha,'SETTINGS',settings),patch.object(ha,'service_active',return_value=True),patch.object(ha,'validate_config'),patch.object(ha,'migrate_starter',side_effect=migrate),patch.object(ha,'check_http',return_value=False),patch.object(ha,'run') as run:

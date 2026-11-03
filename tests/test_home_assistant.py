@@ -52,6 +52,23 @@ class HomeAssistantTests(unittest.TestCase):
             self.assertEqual(path.read_text(),'my custom configuration')
             self.assertEqual(auth.read_text(),'private auth placeholder')
 
+    def test_old_default_profile_upgrades_without_touching_native_layout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);config=root/'config';registry=root/'managed.json'
+            sync_assets(ROOT,config,'UTC',registry)
+            path=config/'configuration.yaml'
+            path.write_text(json.dumps({'default_config':{},'http':{'server_host':'127.0.0.1'}}))
+            hashes=json.loads(registry.read_text())
+            hashes['configuration.yaml']=hashlib.sha256(path.read_bytes()).hexdigest()
+            registry.write_text(json.dumps(hashes))
+            layout=config/'.storage/lovelace.car_starter'
+            layout.parent.mkdir();layout.write_text('owner edited dashboard')
+            changed,preserved=sync_assets(ROOT,config,'UTC',registry)
+            self.assertIn('configuration.yaml',changed)
+            self.assertEqual(preserved,[])
+            self.assertEqual(json.loads(path.read_text())['homeassistant']['name'],'Car Assistant')
+            self.assertEqual(layout.read_text(),'owner edited dashboard')
+
     def test_display_key_scope_only_and_idempotence(self):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'authorized_keys'

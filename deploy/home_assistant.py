@@ -2,6 +2,7 @@
 """Tiny Home Assistant bootstrap. Root-owned installed copy reconciles Git assets."""
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -11,12 +12,16 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from urllib.request import build_opener, ProxyHandler
 from zoneinfo import ZoneInfo
 
 IMAGE='ghcr.io/home-assistant/home-assistant:2026.10.4'
+# Release tooling pins the packaged source and production frontend here. The
+# root-owned manager never executes an unverified editable checkout as a build.
+FORK_ARCHIVE_SHA='71f65f1d111d5041e473fcf213bf82aef9085a08414ee404760f8aa47c24a175'
 NAME='car-home-assistant'
 BASE=Path('/var/lib/car-home-assistant')
 SETTINGS=Path('/etc/car-dashboard/home-assistant-settings.json')
@@ -31,7 +36,8 @@ def run(args,timeout=180):
     if args[0]=='docker':
         args.insert(1,'--host=unix:///var/run/docker.sock')
         environment=dict(os.environ)
-        for key in ('DOCKER_HOST','DOCKER_CONTEXT','DOCKER_TLS','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH'):environment.pop(key,None)
+        for key in ('DOCKER_HOST','DOCKER_CONTEXT','DOCKER_TLS','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH','BUILDX_BUILDER'):environment.pop(key,None)
+        if len(args)>2 and args[2]=='build':environment['BUILDX_BUILDER']='default'
     result=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout,env=environment)
     if result.returncode:
         if 'check_config' in args:raise RuntimeError('Home Assistant configuration check failed; inspect the private local HA log')
@@ -64,9 +70,10 @@ def dashboard():
 
 def configuration(timezone):
     ZoneInfo(timezone)
-    return {'default_config':{},'homeassistant':{'name':'Car','time_zone':timezone,'unit_system':'metric'},
+    return {'default_config':{},'homeassistant':{'name':'Car Assistant','time_zone':timezone,'unit_system':'metric'},
         'http':{'server_host':'127.0.0.1','server_port':8123,'ip_ban_enabled':True,'login_attempts_threshold':5},
         'car_console':{},'lovelace':{'mode':'storage'},
+        'logger':{'default':'warning','logs':{'homeassistant.bootstrap':'info'}},
         'recorder':{'purge_keep_days':10,'commit_interval':1}}
 
 
@@ -135,6 +142,73 @@ def image_id(image):
     return matches[0]
 
 
+def car_assistant_image(repo,base_image):
+    if not FORK_ARCHIVE_SHA:return base_image
+    archive=Path(repo)/'car_assistant/runtime.tar.gz'
+    if archive.is_symlink():raise ValueError('Refusing symlinked Car Assistant runtime')
+    with archive.open('rb') as source:raw=source.read(256*1024**2+1)
+    if len(raw)>256*1024**2:raise ValueError('Car Assistant archive exceeds size limit')
+    if hashlib.sha256(raw).hexdigest()!=FORK_ARCHIVE_SHA:
+        raise ValueError('Car Assistant runtime does not match the trusted installer')
+    if not re.fullmatch(r'(?:sha256:[0-9a-f]{64}|ghcr.io/home-assistant/home-assistant@sha256:[0-9a-f]{64})',base_image):
+        raise ValueError('Car Assistant requires an immutable verified base image')
+    base=json.loads(run(['docker','image','inspect',base_image]))[0]
+    base_id=base['Id']
+    if not re.fullmatch('sha256:[0-9a-f]{64}',base_id):raise ValueError('Unexpected Docker base identity')
+    if base.get('Architecture')!='amd64':raise ValueError('Car Assistant base must be amd64')
+    if base.get('Config',{}).get('Labels',{}).get('io.hass.version')!='2026.10.4':
+        raise ValueError('Car Assistant needs the carried Home Assistant 2026.10.4 dependency base; deliver a full runtime update')
+    identity=hashlib.sha256((FORK_ARCHIVE_SHA+base_id).encode()).hexdigest()
+    tag='car-assistant:'+identity
+    try:cached=json.loads(run(['docker','image','inspect',tag]))[0]
+    except RuntimeError as exc:
+        if 'No such' not in str(exc):raise
+    else:
+        labels=cached.get('Config',{}).get('Labels',{})
+        if labels.get('org.drive-console.source-sha256')!=FORK_ARCHIVE_SHA or labels.get('org.drive-console.base')!=base_id:
+            raise ValueError('Existing Car Assistant image has unexpected provenance')
+        return cached['Id']
+    with tempfile.TemporaryDirectory(prefix='car-assistant-build-') as temp:
+        temp=Path(temp);root=temp/'rootfs';root.mkdir()
+        total=0
+        # Extract the same immutable bytes that were hashed, not a reopened
+        # user-owned path that could change after verification.
+        with tarfile.open(fileobj=io.BytesIO(raw),mode='r:gz') as source:
+            for member in source:
+                path=Path(member.name)
+                if (not member.isfile() or path.is_absolute() or '..' in path.parts or
+                    not member.name.startswith(('usr/src/homeassistant/homeassistant/',
+                        'usr/local/lib/python3.14/site-packages/hass_frontend/','usr/share/car-assistant/'))):
+                    raise ValueError('Unsafe Car Assistant runtime member')
+                total+=member.size
+                if total>1024**3:raise ValueError('Car Assistant runtime exceeds size limit')
+                target=root/path;target.parent.mkdir(parents=True,exist_ok=True)
+                with source.extractfile(member) as src,target.open('wb') as dst:shutil.copyfileobj(src,dst)
+                target.chmod(0o644)
+        # BuildKit interprets a bare sha256 ID in FROM as a registry name. Give
+        # the already verified local image a deterministic local tag first.
+        base_tag='car-assistant-dependency-base:'+base_id[7:]
+        run(['docker','tag',base_id,base_tag])
+        recipe=('FROM '+base_tag+'\nCOPY rootfs/ /\nLABEL org.opencontainers.image.title="Car Assistant" '
+                'org.opencontainers.image.source="https://github.com/TheRiddler08/Ford-Better-Head-Unit-" '
+                'org.drive-console.source-sha256="'+
+                FORK_ARCHIVE_SHA+'" org.drive-console.base="'+base_id+'"\n')
+        (temp/'Dockerfile').write_text(recipe)
+        run(['docker','build','--pull=false','--network=none','--tag',tag,temp],timeout=1200)
+    return json.loads(run(['docker','image','inspect',tag]))[0]['Id']
+
+
+def ensure_car_assistant(settings):
+    # Older checkouts must remain bootstrappable by a newer receiver manager.
+    if not FORK_ARCHIVE_SHA or not (Path(settings['repo'])/'car_assistant/runtime.tar.gz').exists():return
+    if settings.get('forkArchive')==FORK_ARCHIVE_SHA:return
+    base=settings.get('baseImage',settings['image'])
+    candidate=car_assistant_image(settings['repo'],base)
+    upgrade_image(settings,candidate)
+    settings.update(baseImage=base,forkArchive=FORK_ARCHIVE_SHA)
+    save(SETTINGS,json.dumps(settings).encode(),0o600)
+
+
 def check_http(timeout=120,bridge_since=None):
     client=build_opener(ProxyHandler({}));end=time.monotonic()+timeout
     while True:
@@ -171,7 +245,8 @@ def service_active():
 
 def record_status(settings,ready,preserved=None):
     save(STATUS,json.dumps({'installed':True,'enabled':settings.get('enabled',True),'ready':ready,
-        'image':settings['image'],'ownerSetup':'Create your owner account in the Home Assistant first-run screen',
+        'image':settings['image'],'runtime':'Car Assistant' if settings.get('forkArchive') else 'Home Assistant',
+        'forkArchive':settings.get('forkArchive'),'ownerSetup':'Create your owner account in the Home Assistant first-run screen',
         'preservedFiles':preserved or []}).encode())
 
 
@@ -259,6 +334,7 @@ def reconcile():
     if not SETTINGS.exists():return
     settings=read_json(SETTINGS,{})
     if not settings.get('enabled',True):record_status(settings,False);return
+    ensure_car_assistant(settings)
     # Back up only managed assets. Never read or rewrite HA authentication storage.
     config=BASE/'config';registry=BASE/'managed.json'
     old={}
@@ -412,13 +488,22 @@ def install(repo,user,timezone,offline_image=None):
         else:
             run(['docker','pull',IMAGE],timeout=900)
             settings['image']=image_id(IMAGE)
+        base_image=settings['image']
+        settings['image']=car_assistant_image(repo,base_image)
+        if FORK_ARCHIVE_SHA:settings.update(baseImage=base_image,forkArchive=FORK_ARCHIVE_SHA)
         config=BASE/'config';config.mkdir(parents=True,exist_ok=True)
         if any(config.iterdir()) and not (BASE/'managed.json').exists():raise ValueError('Existing unmanaged HA configuration; refusing replacement')
         sync_assets(repo,config,timezone,BASE/'managed.json')
         validate_config(settings)
         create_container(settings)
-    elif offline_image and info['Image']!=offline_image:
-        upgrade_image(settings,offline_image)
+    elif offline_image or FORK_ARCHIVE_SHA:
+        if offline_image:base_image=offline_image
+        else:
+            run(['docker','pull',IMAGE],timeout=900)
+            base_image=image_id(IMAGE)
+        candidate=car_assistant_image(repo,base_image)
+        if info['Image']!=candidate:upgrade_image(settings,candidate)
+        if FORK_ARCHIVE_SHA:settings.update(baseImage=base_image,forkArchive=FORK_ARCHIVE_SHA)
     save(SETTINGS,json.dumps(settings).encode(),0o600)
     save('/usr/local/lib/car-dashboard/home_assistant.py',Path(__file__).read_bytes(),0o644)
     wrapper=b'#!/bin/sh\nset -eu\n[ "$#" -eq 0 ] || exit 2\nexec /usr/bin/python3 -I /usr/local/lib/car-dashboard/home_assistant.py reconcile\n'

@@ -1,0 +1,19 @@
+{
+  "core": {
+    "version": "2026.10.4",
+    "commit": "357cae5c598dfcd7a0ea7dc5b1facccd4ec6037b",
+    "archiveSha256": "09023dea97cfe7d37ae70f4cedcbd3c9177da79ad3d5f5dfc469ff425f8d6432"
+  },
+  "frontend": {
+    "version": "20260930.5",
+    "commit": "901c0a61ad44c7f52f50a986f6b5a81371f97a0a",
+    "archiveSha256": "10ed682625f838d46cce8ed3c29ab97c79e743f25ce973e687c7912b1a496c20",
+    "translations": {
+      "source": "home_assistant_frontend-20260930.5-py3-none-any.whl",
+      "sha256": "9cc03b3d2a43e93c6e57cc20b322c98cce61be7a35d7c1df1021e279d22d1f9b",
+      "locales": 66,
+      "format": "Reassembled unflattened published translation fragments"
+    }
+  },
+  "baseImage": "ghcr.io/home-assistant/home-assistant@sha256:23f4dfbb69ce76315dbc4de7915504f1c2dcecd7ca2648113a493a385972e133"
+}

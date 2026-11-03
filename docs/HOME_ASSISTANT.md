@@ -1,18 +1,58 @@
-# Home Assistant on the Tiny, Duet as touchscreen
+# Car Assistant on the Tiny, Duet as touchscreen
 
-The repository can install **Home Assistant Container 2026.10.4** alongside the
-existing Ubuntu dashboard, OBD recorder and GPS journal. The official image is
-pulled with normal TLS verification and pinned by its repository digest. This is
-Home Assistant Container, not Home Assistant OS or Supervised; it has no Supervisor
-app/add-on store. Ubuntu and the existing car services remain in place.
+The repository installs **Car Assistant**, our source fork of Home Assistant Core
+2026.10.4 and its matching 20260930.5 frontend. The copied source, licenses, revision
+pins and modifications are in [car_assistant](../car_assistant/README.md). It keeps
+the native dashboard editor/cards and existing accounts/layouts. Ubuntu, the
+original dashboard, OBD recorder and GPS journal remain in place.
+
+The pinned official Container image supplies Python/native dependencies. A verified
+source/frontend archive overlays it in a local derived image. It is not Home
+Assistant OS or Supervised; there is no Supervisor app/add-on store.
+
+## Offline startup
+
+The fork removes automation/script runtime setup, their configuration APIs and
+pages, cloud and voice/Assist runtime features and pages, and area/room/floor
+management pages and write APIs. New accounts no longer create household rooms.
+Shared read-only registries, schemas and imported libraries remain for existing
+cards/devices; saved data is preserved. The unneeded Internet alerts lookup is
+also removed. Other integration implementations/defaults remain available,
+including Bluetooth/discovery; unsupported hardware permissions may still report
+warnings. Scenes, helpers, history, maps and normal dashboard editing remain.
+
+The runtime is applied through normal installation and signed courier updates.
+Tiny builds it from the carried dependency base without Internet or Node tooling.
+An older receiver first installs the carried base, then its refreshed manager
+reconciles the fork on the usual timer. A failed build leaves the running image
+alone; failed replacement readiness restores the previous container/configuration.
+Edited `configuration.yaml` files are preserved and reported rather than replaced;
+native dashboard layouts and accounts are untouched. There is no fixed startup
+time guarantee: Docker, storage, integrations and the Duet tunnel affect it.
+Bootstrap timing is logged at INFO level so later startup reports include the
+initialization duration without enabling verbose logging for every integration.
+
+For diagnosis, inspect `journalctl -b -u car-home-assistant` and the container
+logs. `homeassistant_alerts` DNS failures indicate an unnecessary Internet check
+under the previous defaults. A message that pending HTTP configuration was not
+confirmed within five minutes describes Home Assistant's HTTP safety rollback
+and restart, not a normal five-minute boot delay. Keep that safeguard; confirm
+intentional HTTP changes through Home Assistant rather than editing auth/storage.
+
+`tests/native_offline_startup.py` validates the packaged fork on an internal Docker
+LAN with no Internet route and a fresh disposable `/config`: frontend readiness,
+owner onboarding, live car entities, native dashboard saving, disabled feature
+domains and read-only area registry behavior. An internal LAN keeps the multicast
+interface expected by the retained discovery integrations.
 
 ## Recommended: only Duet connects to Internet
 
 Use [one-device automatic updates](ONE_DEVICE_UPDATES.md) to carry the Home Assistant
 image and signed Ubuntu dependencies from Duet. Tiny can be offline for its first
 HA installation and later updates. The signed courier also upgrades its managed
-bootstrap automatically after the initial authorization. HA stable releases are
-resolved on Duet and digest-locked per bundle, with backup/health validation on Tiny.
+bootstrap automatically after the initial authorization. The dependency base is
+pinned to the fork's tested version and digest-locked per bundle, with backup/health
+validation on Tiny. It must not follow upstream `stable` independently of the fork.
 
 The manual installer below is an alternative when Tiny itself has Internet.
 

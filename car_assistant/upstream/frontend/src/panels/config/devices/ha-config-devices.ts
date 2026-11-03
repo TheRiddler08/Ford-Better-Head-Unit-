@@ -1,0 +1,116 @@
+import type { PropertyValues } from "lit";
+import { customElement, property, state } from "lit/decorators";
+import type { ConfigEntry } from "../../../data/config_entries";
+import { getConfigEntries } from "../../../data/config_entries";
+import type { IntegrationManifest } from "../../../data/integration";
+import { fetchIntegrationManifests } from "../../../data/integration";
+import type { RouterOptions } from "../../../layouts/hass-router-page";
+import { HassRouterPage } from "../../../layouts/hass-router-page";
+import type { HomeAssistant } from "../../../types";
+import "./ha-config-device-page";
+import "./ha-config-devices-dashboard";
+
+@customElement("ha-config-devices")
+class HaConfigDevices extends HassRouterPage {
+  @property({ attribute: false }) public hass!: HomeAssistant;
+
+  @property({ type: Boolean }) public narrow = false;
+
+  @property({ attribute: "is-wide", type: Boolean }) public isWide = false;
+
+  protected routerOptions: RouterOptions = {
+    defaultPage: "dashboard",
+    routes: {
+      dashboard: {
+        tag: "ha-config-devices-dashboard",
+        cache: true,
+      },
+      device: {
+        tag: "ha-config-device-page",
+      },
+    },
+  };
+
+  @state() private _configEntries?: ConfigEntry[];
+
+  @state() private _configEntriesFailed = false;
+
+  @state() private _manifests: IntegrationManifest[] = [];
+
+  public connectedCallback(): void {
+    super.connectedCallback();
+    this.addEventListener("reload-config-entries", this._reloadConfigEntries);
+  }
+
+  public disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this.removeEventListener(
+      "reload-config-entries",
+      this._reloadConfigEntries
+    );
+  }
+
+  protected willUpdate(changedProps: PropertyValues<this>) {
+    super.willUpdate(changedProps);
+
+    if (!this.hasUpdated) {
+      this._loadData();
+    }
+  }
+
+  protected updatePageEl(pageEl) {
+    pageEl.hass = this.hass;
+
+    if (this._currentPage === "device") {
+      pageEl.deviceId = this.routeTail.path.substr(1);
+      pageEl.entries = this._configEntries ?? [];
+    } else {
+      pageEl.entries = this._configEntries;
+      pageEl.entriesFailed = this._configEntriesFailed;
+    }
+
+    pageEl.manifests = this._manifests;
+    pageEl.narrow = this.narrow;
+    pageEl.isWide = this.isWide;
+    pageEl.route = this.routeTail;
+  }
+
+  private async _loadData() {
+    await Promise.all([
+      this._loadConfigEntries(),
+      fetchIntegrationManifests(this.hass)
+        .then((manifests) => {
+          this._manifests = manifests;
+        })
+        .catch(() => {
+          // The pages remain usable without integration manifests.
+        }),
+    ]);
+  }
+
+  private _reloadConfigEntries = () => {
+    this._loadConfigEntries();
+  };
+
+  private async _loadConfigEntries() {
+    this._configEntriesFailed = false;
+    this._configEntries = undefined;
+
+    try {
+      this._configEntries = await getConfigEntries(this.hass);
+    } catch {
+      this._configEntriesFailed = true;
+      this._configEntries = [];
+    }
+  }
+}
+
+declare global {
+  interface HASSDomEvents {
+    "reload-config-entries": undefined;
+  }
+
+  interface HTMLElementTagNameMap {
+    "ha-config-devices": HaConfigDevices;
+  }
+}

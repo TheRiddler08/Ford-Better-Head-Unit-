@@ -55,3 +55,10 @@
   its URL, existing cards and user edits; managed YAML is only a seed template.
   One-time migration must not reset accounts or other dashboards, and later
   updates must not reseed an edited/deleted starter.
+
+- The dashboard runtime is the Car Assistant source fork in `car_assistant/`.
+  Keep the native editor/cards and saved accounts/layouts. Automations, scripts,
+  cloud, voice and area/room management are intentionally disabled; retain shared
+  read-compatible registries/libraries. Rebuild the production frontend/runtime
+  and update its trusted installer pin whenever fork source changes. Never enable
+  upstream stable-image updates independently of the pinned fork/dependency base.

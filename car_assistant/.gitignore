@@ -1,0 +1,5 @@
+upstream/frontend/node_modules/
+upstream/frontend/hass_frontend/
+upstream/frontend/build/
+upstream/frontend/gallery/build/
+upstream/frontend/.pnpm-store/
