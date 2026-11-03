@@ -44,3 +44,9 @@ prints that role setup is deferred. This is expected: the signed courier bundle
 updates Git before provisioning the current networking/GPS/application features.
 It must not try to read new role source files from the old Git commit or execute
 unverified working-tree replacements. No additional manual role setup is needed.
+
+Offline APT uses its normal acquisition phase against the carried, signed
+`file:` repository; `--no-download` can otherwise leave a relative package
+basename for dpkg. This does not enable Internet package sources. Already
+installed root packages are preserved with `--no-upgrade`, avoiding unnecessary
+desktop-package upgrades and their version-locked reverse dependencies.

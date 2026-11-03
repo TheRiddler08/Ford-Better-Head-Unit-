@@ -106,7 +106,12 @@ Acquire::Check-Valid-Until "true";
         environment=dict(os.environ,APT_CONFIG=str(config),DEBIAN_FRONTEND='noninteractive')
         # All sources are local files. No direct or proxy Internet route is used.
         run(['apt-get','update'],environment)
-        run(['apt-get','--no-download','-y','install',*ROOT_PACKAGES],environment,timeout=1200)
+        # APT must run its local file acquisition to resolve archive filenames.
+        # --no-download can hand dpkg a bare basename when an archive is not
+        # already in the cache. Only the verified file: repository is enabled.
+        # Avoid upgrading existing desktop packages and their version-locked
+        # reverse dependencies merely to bootstrap the car services.
+        run(['apt-get','--no-upgrade','-y','install',*ROOT_PACKAGES],environment,timeout=1200)
 
 
 def os_version(path='/etc/os-release'):
