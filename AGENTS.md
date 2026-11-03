@@ -50,3 +50,8 @@
   and should request deep sleep after confirmed car power loss. Never infer car
   shutdown from a missing network alone or globally disable normal personal-use
   lid behaviour. See docs/SPARE_LAPTOP.md; hardware wake limitations stay pending.
+
+- Car starter must be an editable native Home Assistant storage dashboard. Preserve
+  its URL, existing cards and user edits; managed YAML is only a seed template.
+  One-time migration must not reset accounts or other dashboards, and later
+  updates must not reseed an edited/deleted starter.

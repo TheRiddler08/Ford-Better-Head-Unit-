@@ -58,7 +58,7 @@ def dashboard():
     cards += [{'type':'gauge','name':name,'entity':entity,'min':low,'max':high} for name,entity,low,high in gauges]
     cards += [{'type':'entities','title':'Vehicle status','entities':['binary_sensor.car_obd_connection','binary_sensor.car_gps_fix',
         'sensor.car_raw_fuel_level','sensor.car_engine_load','sensor.car_throttle','sensor.car_intake_temperature','device_tracker.car_location']},
-        {'type':'markdown','content':'## Make it yours\nUse **Overview → Edit dashboard → Take control** for the native visual editor. This Car starter is a read-only YAML example.\n\n[Original dashboard and full archive on the Duet](http://127.0.0.1:8877/cockpit.html) · [Archive](http://127.0.0.1:8877/records)'}]
+        {'type':'markdown','content':'## Make it yours\nEdit **Car starter** using its pencil / edit dashboard control. Your changes are saved in Home Assistant and preserved during updates.\n\n[Original dashboard and full archive on the Duet](http://127.0.0.1:8877/cockpit.html) · [Archive](http://127.0.0.1:8877/records)'}]
     return {'title':'Car starter','views':[{'title':'Drive','path':'drive','icon':'mdi:car','cards':cards}]}
 
 
@@ -66,8 +66,7 @@ def configuration(timezone):
     ZoneInfo(timezone)
     return {'default_config':{},'homeassistant':{'name':'Car','time_zone':timezone,'unit_system':'metric'},
         'http':{'server_host':'127.0.0.1','server_port':8123,'ip_ban_enabled':True,'login_attempts_threshold':5},
-        'car_console':{},'lovelace':{'mode':'storage','dashboards':{'car-starter':{'mode':'yaml','title':'Car starter',
-            'icon':'mdi:car','show_in_sidebar':True,'filename':'car-dashboard.yaml'}}},
+        'car_console':{},'lovelace':{'mode':'storage'},
         'recorder':{'purge_keep_days':10,'commit_interval':1}}
 
 
@@ -182,6 +181,80 @@ def validate_config(settings):
          '-m','homeassistant','--script','check_config','--config','/config'],timeout=300)
 
 
+# Runs inside the pinned HA image while the real HA instance is stopped. Use HA's
+# own Store API/schema; never read owner accounts, tokens, or other auth storage.
+STARTER_MIGRATION = r'''
+import asyncio,json
+from pathlib import Path
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
+from homeassistant.util.yaml import load_yaml_dict
+from homeassistant.components.lovelace.dashboard import DashboardsCollection
+
+async def migrate():
+    hass=HomeAssistant('/config')
+    marker=Store(hass,1,'car_console_starter_migration')
+    if await marker.async_load():
+        print(json.dumps({'starterDashboard':'already-migrated'}));return
+    config=load_yaml_dict('/config/configuration.yaml')
+    if 'car-starter' in config.get('lovelace',{}).get('dashboards',{}):
+        raise RuntimeError('Custom configuration.yaml still declares car-starter in YAML; preserved without changing it')
+    registry=Store(hass,1,'lovelace_dashboards')
+    data=await registry.async_load() or {'items':[]}
+    if not isinstance(data.get('items'),list):raise RuntimeError('Unexpected dashboard registry')
+    existing=next((item for item in data['items'] if item.get('url_path')=='car-starter'),None)
+    if existing:
+        await marker.async_save({'completed':True,'preservedExisting':True})
+        print(json.dumps({'starterDashboard':'preserved-existing-editable'}));return
+    if any(item.get('id')=='car_starter' for item in data['items']):
+        raise RuntimeError('Dashboard ID car_starter belongs to another URL; preserving existing dashboards')
+    seed=load_yaml_dict('/config/car-dashboard.yaml')
+    if not isinstance(seed.get('views'),list):raise RuntimeError('Invalid starter dashboard template')
+    dashboard=Store(hass,1,'lovelace.car_starter')
+    saved=await dashboard.async_load()
+    # Recover a previous interrupted migration without replacing saved edits.
+    if not saved or saved.get('config') is None:await dashboard.async_save({'config':seed})
+    item=DashboardsCollection.CREATE_SCHEMA({'url_path':'car-starter','mode':'storage',
+        'title':'Car starter','icon':'mdi:car','show_in_sidebar':True,'require_admin':False})
+    data['items'].append(dict(item,id='car_starter'))
+    await registry.async_save(data)
+    await marker.async_save({'completed':True})
+    print(json.dumps({'starterDashboard':'editable'}))
+
+asyncio.run(migrate())
+'''
+STARTER_STORES=('lovelace_dashboards','lovelace.car_starter','car_console_starter_migration')
+
+
+def starter_pending():
+    directory=BASE/'config/.storage'
+    marker=directory/'car_console_starter_migration'
+    if directory.is_symlink() or marker.is_symlink():raise ValueError('Refusing symlinked dashboard storage')
+    return not marker.exists()
+
+
+def starter_snapshot():
+    result={}
+    for key in STARTER_STORES:
+        path=BASE/'config/.storage'/key
+        if path.is_symlink():raise ValueError('Refusing symlinked dashboard storage')
+        result[key]=path.read_bytes() if path.exists() else None
+    return result
+
+
+def restore_starter(snapshot):
+    for key,raw in snapshot.items():
+        path=BASE/'config/.storage'/key
+        if raw is None:path.unlink(missing_ok=True)
+        else:save(path,raw,0o600)
+
+
+def migrate_starter(settings):
+    run(['docker','run','--rm','--pull=never','--network','none',
+         '--volume',str(BASE/'config')+':/config','--entrypoint','python3',
+         settings['image'],'-c',STARTER_MIGRATION],timeout=120)
+
+
 def reconcile():
     if not SETTINGS.exists():return
     settings=read_json(SETTINGS,{})
@@ -194,16 +267,21 @@ def reconcile():
         if target.is_symlink() or not target.resolve().is_relative_to(config.resolve()):raise ValueError('Unsafe HA config path: '+name)
         if target.exists():old[name]=target.read_bytes()
     previous=registry.read_bytes() if registry.exists() else None
+    pending=starter_pending()
     changed,preserved=sync_assets(settings['repo'],config,settings['timezone'],registry)
     active=service_active()
-    restarted=False
+    restarted=False;storage_before=None
     bridge_since=time.time()-15
     try:
-        if changed:
+        if changed or pending:
             validate_config(settings)
             if active:
                 restarted=True
                 run(['systemctl','stop','car-home-assistant.service'])
+            if pending:
+                storage_before=starter_snapshot()
+                migrate_starter(settings)
+            if active:
                 (BASE/'config/car-console-health.json').unlink(missing_ok=True)
                 bridge_since=time.time()
                 run(['systemctl','start','car-home-assistant.service'])
@@ -211,6 +289,9 @@ def reconcile():
         if active and not ready:raise RuntimeError('Home Assistant did not become ready')
         record_status(settings,ready,preserved)
     except Exception:
+        if storage_before is not None:
+            if active and restarted:run(['systemctl','stop','car-home-assistant.service'])
+            restore_starter(storage_before)
         for relative in changed:
             if relative in old:save(config/relative,old[relative],0o600)
             else:(config/relative).unlink(missing_ok=True)

@@ -111,11 +111,25 @@ measurements become **unavailable**, not zero or current-looking old readings.
 GPS with an old timestamp is unavailable. Unsupported car sensors remain unavailable
 until the recorder actually supplies them.
 
-**Overview** uses Home Assistant's native storage dashboard. Open its edit menu
-and choose **Take control** when offered to use the native visual card editor.
-An additional **Car starter** dashboard is preconfigured with gauges, connection
-status and the remaining entities. That starter is a managed, read-only YAML
-example; Overview and dashboards you create through the UI remain editable.
+**Car starter** is an editable native storage dashboard, preconfigured with gauges,
+connection status and the remaining entities. Open **Car starter** from the sidebar,
+then its pencil / **Edit dashboard** control to add, remove, move or edit cards.
+Overview in newer HA versions may offer only personalization/summaries; use Car
+starter for the full card editor.
+
+Existing managed YAML starters are migrated once, at the same `car-starter` URL,
+using Home Assistant's Store API while HA is stopped. The template's cards/layout
+are retained. The dashboard registry and this dashboard's storage are snapshotted
+for rollback; other dashboards and owner/authentication storage are preserved.
+Once migrated, updates do not reseed or overwrite your edited dashboard, or
+recreate it after you deliberately delete it. The YAML file remains a template
+for fresh installations, not the live dashboard.
+
+If you have hand-edited `configuration.yaml` so it still declares the old
+`lovelace.dashboards.car-starter` YAML entry, that custom configuration is preserved
+and migration reports the conflict instead of rewriting unrelated settings.
+Remove just that old YAML dashboard declaration and rerun normal reconciliation
+when intentionally converting such a customized installation.
 
 The original HTML/CSS/JS builder remains a separate tool; its custom projects are
 not automatically converted into Home Assistant cards. The original dashboard and
@@ -148,8 +162,9 @@ validation restores managed assets; a rejected config does not stop a working HA
 instance. A failed restart restores the previous managed assets and restarts again.
 
 User-edited configuration is preserved and listed in the installation status.
-Native `.storage` dashboards, owner accounts, tokens and history are never rewritten
-by asset reconciliation. If you customize `configuration.yaml`, keep its
+Native dashboard edits, owner accounts, tokens and history are preserved. The
+one-time Car starter migration adds only its native dashboard and registry entry;
+it never opens authentication storage. If you customize `configuration.yaml`, keep its
 `car_console:` entry to retain automatic car entities. A deliberately stopped HA
 service is not resurrected by reconciliation. In this standalone/manual mode the helper/image are stable bootstrap components.
 The full signed courier is the automated alternative: it updates its managed
