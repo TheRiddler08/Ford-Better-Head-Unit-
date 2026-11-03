@@ -1,5 +1,6 @@
 """Verified offline Home Assistant dependencies, installed only by Tiny receiver."""
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -130,6 +131,108 @@ def docker(*args,timeout=600):
     return run(['docker','--host=unix:///var/run/docker.sock',*args],environment,timeout)
 
 
+class DockerSocketConnection(http.client.HTTPConnection):
+    """Read only the local engine, regardless of ambient Docker endpoint settings."""
+    def __init__(self,path='/var/run/docker.sock'):
+        super().__init__('localhost',timeout=1200);self.path=path
+    def connect(self):
+        import socket
+        self.sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout);self.sock.connect(self.path)
+
+
+def verify_saved_config(stream,info,expected):
+    """Bind Docker's selected image to the exact signed OCI config digest.
+
+    Docker 29/containerd reports a manifest ID, not the config ID. Its standard
+    save stream contains both content-addressed blobs. Stop once the cryptographic
+    binding is established; do not buffer/extract video-sized image layers.
+    """
+    config_names={expected[7:]+'.json','blobs/sha256/'+expected[7:]}
+    manifest_name='blobs/sha256/'+info['Id'][7:]
+    config=None;bound=False;count=0
+    with tarfile.open(fileobj=stream,mode='r|') as archive:
+        for entry in archive:
+            count+=1
+            if count>8192:raise ValueError('Docker export has too many entries')
+            name=entry.name.removeprefix('./')
+            if name not in config_names|{manifest_name}:continue
+            if not entry.isfile() or entry.size>4*1024*1024:raise ValueError('Invalid Docker image metadata')
+            with archive.extractfile(entry) as source:raw=source.read()
+            if name in config_names:
+                if 'sha256:'+hashlib.sha256(raw).hexdigest()!=expected:raise ValueError('Saved image configuration digest mismatch')
+                config=json.loads(raw)
+                if not isinstance(config,dict):raise ValueError('Invalid saved image configuration')
+            elif name==manifest_name:
+                if 'sha256:'+hashlib.sha256(raw).hexdigest()!=info['Id']:raise ValueError('Saved image manifest digest mismatch')
+                manifest=json.loads(raw)
+                if not isinstance(manifest,dict) or manifest.get('config',{}).get('digest')!=expected:
+                    raise ValueError('Selected Docker manifest does not reference expected config')
+                bound=True
+            if config is not None and bound:
+                if config.get('architecture')!='amd64' or config.get('os')!='linux':raise ValueError('Saved image platform mismatch')
+                if config.get('rootfs',{}).get('diff_ids')!=info.get('RootFS',{}).get('Layers',[]):raise ValueError('Saved image layers do not match selected Docker image')
+                return
+    raise ValueError('Docker export does not prove the expected image configuration')
+
+
+def verify_engine_config(info,expected,socket_path='/var/run/docker.sock'):
+    connection=DockerSocketConnection(socket_path);response=None
+    try:
+        connection.request('GET','/images/'+info['Id']+'/get')
+        response=connection.getresponse()
+        if response.status!=200:raise RuntimeError('Docker image verification export failed: '+response.read(4096).decode(errors='replace'))
+        verify_saved_config(response,info,expected)
+    finally:
+        if response is not None:response.close()
+        connection.close()
+
+
+def image_proofs(path):
+    if path is None:return {}
+    path=Path(path)
+    if not path.exists():return {}
+    stat=path.stat()
+    if path.is_symlink() or stat.st_uid!=os.geteuid() or stat.st_mode&0o022:raise ValueError('Unsafe image proof cache')
+    try:
+        value=json.loads(path.read_text())
+        return value if isinstance(value,dict) else {}
+    except ValueError:return {}
+
+
+def record_image_proof(path,proofs):
+    if path is None:return
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    parent=path.parent.stat()
+    if path.parent.is_symlink() or parent.st_uid!=os.geteuid() or parent.st_mode&0o022:raise ValueError('Unsafe image proof directory')
+    with tempfile.NamedTemporaryFile(mode='w',dir=path.parent,delete=False) as stream:
+        json.dump(proofs,stream);stream.flush();os.fsync(stream.fileno());pending=Path(stream.name)
+    pending.chmod(0o600);os.replace(pending,path)
+
+
+def ensure_offline_image(image,archive,proof_cache=Path('/var/lib/car-dashboard/verified-image-configs.json'),socket_path='/var/run/docker.sock'):
+    expected=image['imageId'];reference=image['reference']
+    if not re.fullmatch('sha256:[0-9a-f]{64}',expected):raise ValueError('Invalid Home Assistant config identity')
+    if not re.fullmatch(r'ghcr.io/home-assistant/home-assistant:20[0-9]{2}\.[0-9]{1,2}\.[0-9]+',reference):raise ValueError('Only pinned official Home Assistant tags are supported')
+    proofs=image_proofs(proof_cache)
+    def inspect(candidate):
+        info=json.loads(docker('image','inspect',candidate))[0]
+        if info.get('Architecture')!='amd64' or info.get('Os')!='linux':raise ValueError('Loaded image platform mismatch')
+        actual=info.get('Id','')
+        if not re.fullmatch('sha256:[0-9a-f]{64}',actual):raise ValueError('Invalid Docker image identity')
+        if actual!=expected and proofs.get(actual)!=expected:
+            verify_engine_config(info,expected,socket_path)
+            proofs[actual]=expected;record_image_proof(proof_cache,proofs)
+        return actual
+    for candidate in (expected,reference):
+        try:return inspect(candidate)
+        except (RuntimeError,ValueError,KeyError,IndexError):pass
+    docker('load','--input',archive,timeout=1200)
+    # The reference locates the just-loaded image. Export hashing, not the tag,
+    # establishes its identity; the manager receives an immutable engine ID.
+    return inspect(reference)
+
+
 def configure_power_safety(directory='/etc/systemd/system'):
     """Best-effort flushes, never a claim that it is safe to remove power."""
     units={
@@ -189,18 +292,13 @@ def install(stage,runtime,repo,user,home_assistant_manager,update_lock_fd=None):
         install_packages(temp/'repository')
     run(['systemctl','enable','--now','docker.service'])
     image=runtime['image']
-    if not re.fullmatch('sha256:[0-9a-f]{64}',image['imageId']):raise ValueError('Invalid Home Assistant image identity')
-    try:info=json.loads(docker('image','inspect',image['imageId']))[0]
-    except RuntimeError:
-        docker('load','--input',stage/'ha-image.tar.gz',timeout=1200)
-        info=json.loads(docker('image','inspect',image['imageId']))[0]
-    if info['Id']!=image['imageId'] or info['Architecture']!='amd64' or info['Os']!='linux':raise ValueError('Loaded image does not match verified Tiny image')
+    engine_id=ensure_offline_image(image,stage/'ha-image.tar.gz')
     timezone=Path('/etc/timezone').read_text().strip() if Path('/etc/timezone').exists() else 'UTC'
     args=['/usr/bin/python3','-I',home_assistant_manager,'install','--repo',repo,'--user',user,'--timezone',timezone,
-          '--offline-image',image['imageId']]
+          '--offline-image',engine_id]
     if update_lock_fd is not None:args+=['--update-lock-fd',str(update_lock_fd)]
     run(args,timeout=1800,pass_fds=() if update_lock_fd is None else (update_lock_fd,))
-    return {'homeAssistant':'ready','imageId':image['imageId'],'ubuntu':version,'internetRequiredOnTiny':False}
+    return {'homeAssistant':'ready','imageId':image['imageId'],'dockerImageId':engine_id,'ubuntu':version,'internetRequiredOnTiny':False}
 
 
 if __name__=='__main__':

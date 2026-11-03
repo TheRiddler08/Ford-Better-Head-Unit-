@@ -50,3 +50,17 @@ Offline APT uses its normal acquisition phase against the carried, signed
 basename for dpkg. This does not enable Internet package sources. Already
 installed root packages are preserved with `--no-upgrade`, avoiding unnecessary
 desktop-package upgrades and their version-locked reverse dependencies.
+
+Docker 29's containerd image store can expose a manifest digest as the image ID,
+while older Docker versions expose the image configuration digest. The receiver
+keeps the signed configuration digest as the integrity pin. For containerd it
+streams the local Docker save API, hashes the selected manifest/configuration,
+checks the manifest-to-config binding and the selected image's platform/layer
+IDs, then passes Docker's immutable engine ID to the Home Assistant manager.
+A matching tag alone is never sufficient. A protected local proof cache avoids
+exporting unchanged images on subsequent updates. No extra image copy is written
+to disk and no image registry connection is needed on Tiny.
+
+The optional `tests/native_docker_identity.py --socket /path/to/disposable/docker.sock`
+regression test exercises loading, verification and stopped-container creation
+against an explicitly isolated daemon. It refuses the production default socket.
