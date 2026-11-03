@@ -202,3 +202,26 @@ Automated validation used the actual official 2026.10.4 image, its configuration
 checker, authenticated REST/WebSocket APIs, synthetic OBD data and a simulated GPS
 feed. Real Tiny systemd/apt operations, the physical Duet tunnel and real GPS/OBD
 hardware still need checking on your machines.
+
+### Duet waiting for the Home Assistant SSH tunnel
+
+An SSH connection opened before HA setup retains the old `permitopen` limits,
+even after the installer adds port 8123 to its display key. The current proxy
+reconnects its owned display tunnel automatically when Tiny reports HA ready but
+the local forward fails, at most once per minute. This does not signal sshd,
+Tailscale, administrator sessions or arbitrary SSH clients. The existing launcher
+reconnect loop opens a fresh authenticated session with the updated permissions.
+
+For an already-running older proxy, after pulling current code on Duet you can
+request the same narrowly scoped recovery from an SSH terminal:
+
+```sh
+python3 duet/proxy.py --refresh-ha-tunnel
+```
+
+This uses the desktop user's account; no sudo or graphical-session variables are
+needed. A nonzero `displayTunnelsReconnecting` count means reconnection was
+requested, not proof HA has loaded. If the count is zero or waiting continues,
+inspect `~/.local/state/drive-console/kiosk.log` and the response from
+`http://127.0.0.1:8878/manifest.json`; the port may be absent or occupied by another
+application. Key restrictions and host-key verification remain enabled.

@@ -47,7 +47,7 @@ PROXY_PID=$!
     # SSH exits nonzero while the Tiny reboots or its interface has no carrier.
     # Keep retrying even with errexit enabled for the rest of this launcher.
     if ssh -F /dev/null -N -T \
-      -o BatchMode=yes -o StrictHostKeyChecking=yes \
+      -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
       -o ExitOnForwardFailure=yes -o ConnectTimeout=5 \
       -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
       -o ConnectionAttempts=1 \

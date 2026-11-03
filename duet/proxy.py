@@ -10,6 +10,11 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import os
+from pathlib import Path
+import signal
+import time
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -32,6 +37,47 @@ if(r.ok)location.replace('/');}catch(e){}},2000)</script></body></html>"""
 
 
 START_HTML=b"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Car dashboard</title><style>body{background:#081422;color:#eaf5ff;font:20px system-ui;padding:10vh 8vw}a{display:inline-block;color:#8dddff;padding:18px;border:1px solid #37546c;border-radius:12px;margin:12px 12px 12px 0}p{color:#a4bbd0}</style><h1>Car dashboard</h1><p id="status">Connecting to the Tiny...</p><a href="/cockpit.html">Open standard dashboard / Recovery</a><a href="/records">Reports and GPS archive</a><script>async function check(){try{const r=await fetch('/__start-status',{cache:'no-store'});const data=await r.json();document.getElementById('status').textContent=data.message;if(data.target){location.replace(data.target);return;}}catch(_){}setTimeout(check,3000);}check();</script></html>"""
+
+
+_HA_REFRESH_AT=None
+_HA_REFRESH_LOCK=threading.Lock()
+
+
+def refresh_ha_tunnel(upstream_port=8788,force=False,proc=Path('/proc')):
+    """Reconnect only this user's managed display SSH client, never sshd/Tailscale.
+
+    SSH key permitopen changes apply on new connections, not existing sessions.
+    The launcher's existing reconnect loop restarts the selected client.
+    """
+    global _HA_REFRESH_AT
+    with _HA_REFRESH_LOCK:
+        now=time.monotonic()
+        if not force and _HA_REFRESH_AT is not None and now-_HA_REFRESH_AT<60:return 0
+        _HA_REFRESH_AT=now
+        key=os.fsencode(str(Path.home()/'.ssh/drive-console-duet'))
+        forward=f'127.0.0.1:{upstream_port}:127.0.0.1:8787'.encode()
+        count=0
+        for entry in proc.iterdir():
+            if not entry.name.isdigit() or int(entry.name)==os.getpid():continue
+            fd=None
+            try:
+                if entry.stat().st_uid!=os.getuid():continue
+                # A pidfd, where supported, prevents signalling a reused PID.
+                if hasattr(os,'pidfd_open') and hasattr(signal,'pidfd_send_signal'):
+                    try:fd=os.pidfd_open(int(entry.name))
+                    except OSError:fd=None # Older kernels may expose Python's API without the syscall.
+                raw=(entry/'cmdline').read_bytes();argv=raw.rstrip(b'\0').split(b'\0')
+                if not argv or Path(os.fsdecode(argv[0])).name!='ssh' or b'-N' not in argv:continue
+                if not any(argv[i:i+2]==[b'-i',key] for i in range(len(argv)-1)):continue
+                if not any(argv[i:i+2]==[b'-L',forward] for i in range(len(argv)-1)):continue
+                if fd is not None:signal.pidfd_send_signal(fd,signal.SIGTERM)
+                elif (entry/'cmdline').read_bytes()==raw:os.kill(int(entry.name),signal.SIGTERM)
+                else:continue
+                count+=1
+            except (OSError,ValueError):continue
+            finally:
+                if fd is not None:os.close(fd)
+        return count
 
 
 def fetch_upstream(host, port, path, method="GET", body=None, content_type=None):
@@ -86,14 +132,22 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except (ValueError,UnicodeError):settings={}
             if not isinstance(settings,dict):settings={}
             if code==200 and settings.get('installed') and settings.get('enabled'):
-                conn=http.client.HTTPConnection('127.0.0.1',8878,timeout=2)
+                conn=None
                 try:
+                    conn=http.client.HTTPConnection('127.0.0.1',8878,timeout=2)
                     conn.request('GET','/manifest.json');response=conn.getresponse()
                     manifest=json.loads(response.read(65536))
-                    if response.status==200 and isinstance(manifest,dict) and 'home assistant' in str(manifest.get('name','')).lower():
+                    names=' '.join(str(manifest.get(key,'')) for key in ('name','short_name')) if isinstance(manifest,dict) else ''
+                    if response.status==200 and 'homeassistant' in names.lower().replace(' ',''):
                         return {'target':'http://127.0.0.1:8878/lovelace','message':'Home Assistant is ready'}
+                    if response.status==200:
+                        return {'target':None,'message':'Port 8878 is responding but was not identified as Home Assistant. Check the kiosk log.'}
                 except (OSError,ValueError,http.client.HTTPException):pass
-                finally:conn.close()
+                finally:
+                    if conn is not None:conn.close()
+                if settings.get('ready') is True:
+                    refreshed=refresh_ha_tunnel(self.upstream_port)
+                    if refreshed:return {'target':None,'message':'Refreshing the Home Assistant SSH tunnel; retrying automatically.'}
                 return {'target':None,'message':'Waiting for Home Assistant and its SSH tunnel. Recovery is available below.'}
             if code in (200,404):return {'target':'/','message':'Opening the standard dashboard'}
         except (OSError,TimeoutError,http.client.HTTPException,ValueError):pass
@@ -204,7 +258,12 @@ def main():
     parser = argparse.ArgumentParser(description="Duet offline-capable USB head unit proxy")
     parser.add_argument("--port", type=int, default=8877)
     parser.add_argument("--upstream-port", type=int, default=8788)
+    parser.add_argument("--refresh-ha-tunnel",action="store_true",help="Reconnect only your managed display SSH tunnel; safe from an SSH terminal")
     args = parser.parse_args()
+    if args.refresh_ha_tunnel:
+        count=refresh_ha_tunnel(args.upstream_port,force=True)
+        print(json.dumps({"displayTunnelsReconnecting":count,"message":"The kiosk reconnect loop should restore forwarding in a few seconds" if count else "No owned managed display SSH tunnel was found; inspect kiosk.log"}))
+        return
     handler = type("ConfiguredProxy", (ProxyHandler,),
                    {"local_port": args.port, "upstream_port": args.upstream_port})
     with ThreadingHTTPServer(("127.0.0.1", args.port), handler) as server:
