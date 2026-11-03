@@ -65,14 +65,30 @@ fi
 echo 'Tiny receiver installed. Pin the Tiny host key on Duet before first delivery.'
 echo 'No networking, recorder, database, or dashboard source was changed by this bootstrap.'
 
-# Apply role defaults during the existing local pairing operation as well. The
-# copied bootstrap supports an old Tiny checkout with no new fleet sources yet.
+# A copied receiver bootstrap can be newer than Tiny's checkout. Install the
+# receiver first; the signed full bundle advances Git before provisioning roles.
+# Do not run new role installers against missing files in an old source tree.
 FLEET_BASE=/usr/local/lib/car-dashboard/fleet-bootstrap
 if [[ -f "$SOURCE_DIR/fleet.py" ]]; then
  if [[ -f "$SOURCE_DIR/wake.py" && -f "$SOURCE_DIR/standby.py" ]]; then POWER_SOURCE="$SOURCE_DIR"
  else POWER_SOURCE="$SOURCE_DIR/../power"; fi
- sudo install -d -m 0755 "$FLEET_BASE"
- sudo install -o root -g root -m 0644 "$SOURCE_DIR/fleet.py" "$FLEET_BASE/fleet.py"
- sudo install -o root -g root -m 0644 "$POWER_SOURCE/wake.py" "$POWER_SOURCE/standby.py" "$FLEET_BASE/"
- sudo /usr/bin/python3 -I "$FLEET_BASE/fleet.py" install --role tiny --repo "$REPO" --user "$USER_NAME" --source "$FLEET_BASE" --commit "$(git -C "$REPO" rev-parse HEAD)" --offline
+ if python3 - "$REPO" "$SOURCE_DIR" "$POWER_SOURCE" <<'PYROLE'
+from pathlib import Path
+import subprocess,sys
+repo,source,power=map(Path,sys.argv[1:])
+for path,local in [('deploy/fleet.py',source/'fleet.py'),('power/wake.py',power/'wake.py'),('power/standby.py',power/'standby.py')]:
+    result=subprocess.run(['git','-C',str(repo),'show','HEAD:'+path],capture_output=True)
+    if result.returncode or not local.is_file() or local.read_bytes()!=result.stdout:
+        raise SystemExit(1)
+raise SystemExit(0)
+PYROLE
+ then
+  sudo install -d -m 0755 "$FLEET_BASE"
+  sudo install -o root -g root -m 0644 "$SOURCE_DIR/fleet.py" "$FLEET_BASE/fleet.py"
+  sudo install -o root -g root -m 0644 "$POWER_SOURCE/wake.py" "$POWER_SOURCE/standby.py" "$FLEET_BASE/"
+  sudo /usr/bin/python3 -I "$FLEET_BASE/fleet.py" install --role tiny --repo "$REPO" --user "$USER_NAME" --source "$FLEET_BASE" --commit "$(git -C "$REPO" rev-parse HEAD)" --offline
+ else
+  echo 'Tiny checkout is older than the receiver bootstrap; role setup is deferred.'
+  echo 'Receiver pairing is ready. The signed courier update will advance Git and apply current role/GPS settings automatically.'
+ fi
 fi

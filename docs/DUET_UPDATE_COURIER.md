@@ -38,3 +38,9 @@ CAR_ADMIN_IDENTITY="$HOME/.ssh/my-admin-key" bash duet/setup-offline-updates.sh 
 Do not select the display or courier identity. SSH and sudo may prompt separately
 for the Tiny's normal password. Failed bootstrap phases now report their names;
 background downloads are not cancelled by a pairing failure.
+
+When the copied receiver is newer than Tiny's checkout, pairing deliberately
+prints that role setup is deferred. This is expected: the signed courier bundle
+updates Git before provisioning the current networking/GPS/application features.
+It must not try to read new role source files from the old Git commit or execute
+unverified working-tree replacements. No additional manual role setup is needed.
