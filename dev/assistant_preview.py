@@ -125,7 +125,7 @@ def start():
     if info:
         if info['State']['Running']:docker('stop','--time','30',NAME)
         docker('rm',NAME)  # Only this managed preview; its named volume is retained.
-    docker('run','--rm','--pull=never','--network=none','--volume',VOLUME+':/config',
+    docker('run','--rm','--interactive','--pull=never','--network=none','--volume',VOLUME+':/config',
         '--entrypoint','python3',image,'-c',INITIALIZE,
         data=json.dumps({'files':files,'migration':ha.STARTER_MIGRATION}).encode())
     docker('create','--name',NAME,'--label',LABEL+'=true','--label',REVISION_LABEL+'='+revision,'--pull=never',

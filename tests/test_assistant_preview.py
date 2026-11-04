@@ -53,6 +53,8 @@ class AssistantPreviewTests(unittest.TestCase):
         self.assertEqual(create[create.index('--volume')+1],preview.VOLUME+':/config')
         initialize=next((args,kw) for args,kw in calls if args[0]=='run')
         self.assertIn('--network=none',initialize[0])
+        # Docker must forward the JSON stdin used to initialize the volume.
+        self.assertIn('--interactive',initialize[0])
         payload=json.loads(initialize[1]['data'])
         self.assertEqual(json.loads(payload['files']['configuration.yaml'])['http']['server_host'],'0.0.0.0')
         launch.assert_called_once_with()
