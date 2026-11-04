@@ -29,24 +29,53 @@ It publishes port 18123 on host loopback. Its container HTTP listener uses 0.0.0
 so Docker's port mapping can reach it. Car networking, power services, Tailscale,
 updates and attached vehicle hardware are not configured on the WSL machine.
 
-## Edit the original car design
+## Edit each dashboard tab
 
-Drive Console uses the original dark palette, artwork, clock/music column, central
-offline map, truck/gauges/metrics column, rail and bottom launcher. Click the pencil
-at the top right to enter the native Home Assistant editor, then **Edit** beneath
-any widget. Change headings, colors, units, entity bindings and layout placement;
-use the normal native controls to add, reorder or delete cards. **Save**, then
-**Done** returns to the full car screen. Assistant menu opens regular HA settings.
+Drive Console now has separate native Home/Drive, Navigation, Media, Vehicle,
+Health, Updates and Settings views. The top tabs, sidebar and bottom launcher
+navigate to real dashboard URLs, such as `/drive-console/navigation`. Each view
+has its own saved cards and settings; changing Navigation does not change Home.
 
-The existing Car starter and its edits remain available in the Assistant sidebar.
-The new `/drive-console` dashboard is seeded once; later updates preserve edits or
-a deliberate deletion. Its small local JS module is versioned separately from the
-runtime, so updating it reuses the built Car Assistant image.
+Click the pencil, select the tab to edit, then:
 
-Local music uses files selected in this browser; it does not upload them. Offline
-map tiles and the Health/Updates/report pages use the existing Duet car services
-on localhost port 8877, which are absent from an isolated WSL preview. The map
-widget's tile folder URL is editable for another display/tunnel configuration.
+- Edit its **Page settings** card for cockpit/grid layout, columns, spacing,
+  colors, typography, header, sidebar, tabs, bottom launcher and custom page CSS.
+- Edit individual widgets for labels, colors, size, entity bindings, units, gauge
+  ranges/precision, map text/zoom, music controls, vehicle imagery and custom CSS.
+- Use the normal HA controls to add, move, duplicate or delete cards, badges and
+  views. Native cards work alongside the Drive Console widgets.
+
+**Save**, then **Done** returns to the car screen. A small pencil remains available
+if you hide the header. On short landscape screens, compact bottom controls keep
+the volume row visible; that option is configurable per page.
+
+Sidebar and launcher item lists accept objects such as:
+
+```yaml
+- label: Navigation
+  icon: mdi:map
+  page: navigation
+- label: Reports
+  icon: mdi:chart-box
+  url: http://127.0.0.1:8877/records
+  new_tab: true
+```
+
+Leave a list blank to follow the native tabs automatically. Use an empty list to
+show no items. Page CSS targets its header/sidebar/launcher; widget CSS targets
+that widget's shadow DOM. Editing appearance does not add unsupported vehicle
+controls or fabricate unavailable sensor readings.
+
+The update adds missing default tabs once, keeps your existing Home/Drive cards
+and custom pages, and backs up the pre-upgrade dashboard in its private storage.
+Later module updates preserve edits and deliberately deleted tabs. Car starter,
+accounts and other dashboards remain intact. Refresh the browser after updating
+to load the latest versioned module; no runtime image rebuild is required.
+
+Local music stays in the browser. Local tiles and the full health/update/report
+service use the existing car backend on port 8877. Health and Updates are editable
+native tabs with explicit buttons to those services, not automatic redirects.
+The backend remains unavailable in an isolated WSL preview.
 
 ## Repeat startup measurements
 

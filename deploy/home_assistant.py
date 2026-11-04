@@ -78,12 +78,28 @@ def configuration(timezone):
 
 
 def classic_dashboard():
-    widgets=[('clock','left'),('media','left'),('map','map'),('vehicleArt','right'),
-             ('gauges','right'),('metrics','right')]
-    cards=[dict(type='custom:drive-console-widget',widget=kind,placement=placement)
-           for kind,placement in widgets]
-    return {'title':'Drive Console','views':[{'title':'Drive','path':'drive','icon':'mdi:car',
-        'type':'custom:drive-console-layout','cards':cards}]}
+    def widget(kind,**options):return dict(type='custom:drive-console-widget',widget=kind,**options)
+    def page(title,path,cards,layout='grid'):
+        return {'title':title,'path':path,'type':'custom:drive-console-layout','show_icon_and_title':True,
+            'cards':[widget('page',page_layout=layout),*cards]}
+    home=[widget(kind,placement=placement) for kind,placement in
+          [('clock','left'),('media','left'),('map','map'),('vehicleArt','right'),('gauges','right'),('metrics','right')]]
+    return {'title':'Drive Console','views':[
+        page('Home','drive',home,'cockpit'),
+        page('Navigation','navigation',[widget('map',min_height=520),widget('status')]),
+        page('Media','media',[widget('media',min_height=420),widget('text',title='Local music',
+            body='Choose audio files from this device. Playback stays in this browser; files are not uploaded.')]),
+        page('Vehicle','vehicle',[widget('vehicleArt'),widget('gauges'),widget('metrics'),widget('status')]),
+        page('Health','health',[widget('status'),{'type':'entities','title':'Car connections',
+            'entities':['binary_sensor.car_obd_connection','binary_sensor.car_gps_fix','sensor.car_ecu_voltage']},
+            widget('link',title='Full system health',body='Open the car service for system reports and diagnostics.',
+                button_label='Open diagnostics',url='http://127.0.0.1:8877/cockpit.html#diagnostics')]),
+        page('Updates','updates',[widget('status'),widget('link',title='Car updates',
+            body='View download, delivery and installation progress in the car update service.',
+            button_label='Open update status',url='http://127.0.0.1:8877/cockpit.html#updates')]),
+        page('Settings','settings',[widget('text',title='Make each tab yours',body=
+            'Use the pencil to edit this tab. Edit its Page settings card for layout, colors, navigation, header and bottom controls. Add, move, edit or remove any card. Each tab saves its own configuration.'),
+            widget('link',title='Assistant settings',button_label='Open Assistant settings',url='/config',new_tab=False)])]}
 
 
 def classic_resource(repo):
@@ -108,7 +124,7 @@ def classic_resource(repo):
     if source.count('const ORIGINAL = null;')!=1:raise ValueError('Unexpected Drive Console module template')
     module=source.replace('const ORIGINAL = null;','const ORIGINAL = '+json.dumps(original)+';').encode()
     digest=hashlib.sha256(module).hexdigest()
-    return module,{'schema':1,'url':'/local/drive-console.js?v='+digest[:20],'sha256':digest}
+    return module,{'schema':1,'dashboardSchema':2,'url':'/local/drive-console.js?v='+digest[:20],'sha256':digest}
 
 
 def managed_files(repo,timezone):
@@ -361,7 +377,29 @@ async def migrate_classic():
     elif item.get('url')!=url:item['url']=url;updated=True
     if updated:await resources.async_save(data)
     if previous.get('completed'):
-        if previous.get('resource')!=url:await marker.async_save(dict(previous,resource=url))
+        # Add native tabs once to our original single-page dashboard. Never
+        # replace an existing page/card, or recreate a deleted dashboard/tab.
+        if previous.get('dashboardSchema',1)<2 and not previous.get('preservedExisting'):
+            registry=await Store(hass,1,'lovelace_dashboards').async_load() or {'items':[]}
+            owned=next((row for row in registry['items'] if row.get('id')=='drive_console' and row.get('url_path')=='drive-console'),None)
+            store=Store(hass,1,'lovelace.drive_console')
+            saved=await store.async_load() if owned else None
+            if saved and isinstance(saved.get('config',{}).get('views'),list):
+                import copy
+                backup=Store(hass,1,'car_console_tabs_backup')
+                if await backup.async_load() is None:await backup.async_save(copy.deepcopy(saved))
+                views=saved['config']['views']
+                paths={view.get('path') for view in views}
+                for view in views:
+                    if view.get('type')=='custom:drive-console-layout' and isinstance(view.get('cards'),list):
+                        if not any(card.get('widget')=='page' for card in view['cards']):
+                            view['cards'].append({'type':'custom:drive-console-widget','widget':'page',
+                                'page_layout':'cockpit' if view.get('path')=='drive' else 'grid'})
+                seed=load_yaml_dict('/config/drive-console-dashboard.yaml')
+                views.extend(copy.deepcopy(view) for view in seed['views'] if view.get('path') not in paths and view.get('path')!='drive')
+                await store.async_save(saved)
+        if previous.get('resource')!=url or previous.get('dashboardSchema',1)<2:
+            await marker.async_save(dict(previous,resource=url,dashboardSchema=2))
         return
     registry=Store(hass,1,'lovelace_dashboards')
     dashboards=await registry.async_load() or {'items':[]}
@@ -377,14 +415,14 @@ async def migrate_classic():
             'title':'Drive Console','icon':'mdi:car','show_in_sidebar':True,'require_admin':False})
         dashboards['items'].append(dict(item,id='drive_console'))
         await registry.async_save(dashboards)
-    await marker.async_save({'completed':True,'resource':url,'preservedExisting':existing is not None})
+    await marker.async_save({'completed':True,'resource':url,'preservedExisting':existing is not None,'dashboardSchema':2})
     print(json.dumps({'driveConsole':'editable','url':'/drive-console'}))
 
 asyncio.run(migrate_classic())
 '''
 DASHBOARD_MIGRATION=STARTER_MIGRATION+'\n'+CLASSIC_MIGRATION
 STARTER_STORES=('lovelace_dashboards','lovelace.car_starter','car_console_starter_migration',
-    'lovelace.drive_console','car_console_classic_migration','lovelace_resources')
+    'lovelace.drive_console','car_console_classic_migration','lovelace_resources','car_console_tabs_backup')
 
 
 def starter_pending():
@@ -399,7 +437,9 @@ def starter_pending():
     if resource_path.is_symlink():raise ValueError('Refusing symlinked dashboard resource metadata')
     metadata=read_json(resource_path,{})
     stored=read_json(classic,{})
-    return not stored.get('data',{}).get('completed') or stored.get('data',{}).get('resource')!=metadata.get('url')
+    return (not stored.get('data',{}).get('completed')
+        or stored.get('data',{}).get('resource')!=metadata.get('url')
+        or stored.get('data',{}).get('dashboardSchema',1)<metadata.get('dashboardSchema',1))
 
 
 def starter_snapshot():

@@ -37,7 +37,8 @@ class ClassicDashboardTests(unittest.TestCase):
         self.assertEqual(state['lovelace_dashboards']['items'][-1]['mode'],'storage')
         config=state['lovelace.drive_console']['config']
         self.assertEqual(config['views'][0]['type'],'custom:drive-console-layout')
-        self.assertEqual(len(config['views'][0]['cards']),6)
+        self.assertEqual(len(config['views'][0]['cards']),7)
+        self.assertEqual([view['path'] for view in config['views']],['drive','navigation','media','vehicle','health','updates','settings'])
         self.assertTrue(all(card['type']=='custom:drive-console-widget' for card in config['views'][0]['cards']))
 
     def test_module_updates_preserve_dashboard_edits_and_deliberate_deletion(self):
@@ -50,6 +51,33 @@ class ClassicDashboardTests(unittest.TestCase):
         self.migrate(state,url='/local/drive-console.js?v=later')
         self.assertEqual(state['lovelace_dashboards']['items'],[])
         self.assertNotIn('lovelace.drive_console',state)
+
+    def test_single_page_upgrade_keeps_edits_and_adds_independent_tabs_once(self):
+        old={'type':'custom:drive-console-widget','widget':'clock','title':'My edited clock'}
+        home={'title':'My home','path':'drive','type':'custom:drive-console-layout','cards':[old]}
+        navigation={'title':'My navigation','path':'navigation','cards':[{'type':'markdown','content':'Keep this page'}]}
+        before={'config':{'views':[copy.deepcopy(home),copy.deepcopy(navigation)]}}
+        state={'lovelace_dashboards':{'items':[{'id':'drive_console','url_path':'drive-console'}]},
+               'lovelace.drive_console':copy.deepcopy(before),
+               'car_console_classic_migration':{'completed':True,'resource':'/local/drive-console.js?v=old'}}
+        self.migrate(state)
+        views=state['lovelace.drive_console']['config']['views']
+        self.assertEqual(views[0]['cards'][0],old)
+        self.assertEqual(views[1],navigation)
+        self.assertEqual(state['car_console_tabs_backup'],before)
+        self.assertEqual(sum(view['path']=='navigation' for view in views),1)
+        views[:]=[view for view in views if view['path']!='media']
+        views[0]['cards'][0]['title']='Later home edit'
+        self.migrate(state,url='/local/drive-console.js?v=next')
+        self.assertFalse(any(view['path']=='media' for view in state['lovelace.drive_console']['config']['views']))
+        self.assertEqual(state['lovelace.drive_console']['config']['views'][0]['cards'][0]['title'],'Later home edit')
+
+    def test_seed_cards_are_independent_across_pages(self):
+        config=ha.classic_dashboard()
+        home=config['views'][0]['cards']
+        navigation=config['views'][1]['cards']
+        next(card for card in navigation if card['widget']=='map')['title']='Navigation only'
+        self.assertNotIn('title',next(card for card in home if card['widget']=='map'))
 
     def test_generated_module_reuses_original_art_and_is_versioned_by_content(self):
         module,metadata=ha.classic_resource(ROOT)

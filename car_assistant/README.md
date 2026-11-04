@@ -50,6 +50,9 @@ and the isolated persistent test configuration.
 dashboard. Local custom widgets reuse `app/web/cockpit.html` artwork and CSS,
 rendering clock, music, offline map, truck art, driving gauges and metrics. The
 view fills the display while driving; its pencil switches to the native editor.
+Each main section is now a separate native HA view with its own cards and Page
+settings editor for layout, header, sidebar, launcher and appearance. Widget
+editors expose content, bindings, units, ranges, imagery and advanced CSS.
 The existing Car starter is preserved as a separate dashboard. Updates seed the
 new layout once and update only the versioned local module, preserving card edits,
 other resources, accounts and deliberate dashboard deletion.

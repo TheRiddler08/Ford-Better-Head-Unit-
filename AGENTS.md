@@ -84,3 +84,8 @@
   Reuse the legacy artwork/CSS through local editable widgets, preserve the
   separate Car starter and all user edits, and never reseed an edited/deleted
   Drive Console. Keep its resource versioned and preserve unrelated resources.
+
+- Drive Console sections must remain independent native HA views/tabs, not hidden
+  sections of one shared layout or automatic links to legacy pages. Keep per-view
+  Page settings and widget editors functional, preserve old cards/custom views on
+  schema upgrades, and never recreate deliberately deleted views on later updates.

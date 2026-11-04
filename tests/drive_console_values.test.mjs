@@ -4,7 +4,7 @@ import test from 'node:test';
 globalThis.HTMLElement=class {};
 globalThis.customElements={define(){}};
 globalThis.window={};
-const {number,display,temperature}=await import('../home_assistant/drive_console.js');
+const {number,display,temperature,targetView,currentPage,editorSchema,WIDGET_DEFAULTS}=await import('../home_assistant/drive_console.js');
 test('missing, stale and disconnected values never become a fabricated zero',()=>{
   for(const value of ['unavailable','unknown','',undefined,null,'NaN','Infinity']){
     assert.equal(number({connected:true,states:{speed:{state:value}}},'speed'),null);
@@ -23,4 +23,20 @@ test('HA temperature conversion is respected without converting Fahrenheit twice
   assert.equal(temperature(212,'°F','C'),100);
   assert.equal(temperature(273.15,'K','C'),0);
   assert.equal(temperature(null,'°C','F'),null);
+});
+
+test('native tabs are selected by their actual saved path without restoring removed pages',()=>{
+  const views=[{title:'My home',path:'my-home'},{title:'My map',path:'gps'}];
+  assert.equal(targetView(views,'gps'),views[1]);
+  assert.equal(targetView(views,'home'),views[0]);
+  assert.equal(targetView(views,'health'),undefined);
+});
+test('page appearance and navigation controls live in the page card',()=>{
+  const one={widget:'page',type:'custom:drive-console-widget',background_color:'red'};
+  assert.equal(currentPage({cards:[one]}),one);
+  assert.deepEqual(currentPage({cards:[]}),{});
+  const names=schema=>schema.flatMap(field=>[field.name,...(field.schema?names(field.schema):[])]);
+  for(const key of ['show_tabs','show_header','show_rail','show_dock','navigation_items','dock_items','page_layout','custom_css'])assert.ok(names(editorSchema('page')).includes(key));
+  assert.equal(WIDGET_DEFAULTS.page.show_tabs,true);
+  for(const kind of ['clock','media','map','vehicleArt','gauges','metrics','value','text','link'])assert.ok(names(editorSchema(kind)).includes('custom_css'));
 });

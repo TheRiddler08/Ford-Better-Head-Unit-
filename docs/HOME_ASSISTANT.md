@@ -126,11 +126,23 @@ original car interface with local native custom cards, not an embedded recovery
 page: clock and local music on the left, offline map in the center, truck artwork,
 gauges and metrics on the right, with the original rail and bottom launcher.
 
-The pencil at the top right opens the native HA card editor. Each widget has an
-**Edit** control; headings, accent colors, units, bound entities and placement can
-be changed visually. Native card add/reorder/delete and YAML editing remain
+Each main section is a separate native HA view: Home/Drive, Navigation, Media,
+Vehicle, Health, Updates and Settings. Top tabs, sidebar and launcher navigate to
+those views, and each view owns its own card configuration. There are no hidden
+shared sections masquerading as independent pages.
+
+The pencil opens the native HA editor for the active tab. Select another tab in
+the editor to edit it separately. Its **Page settings** card controls layout,
+columns, spacing, colors, typography, header/sidebar/tab visibility, bottom controls
+and navigation items. Individual widgets expose appearance, content, units,
+entity bindings, ranges, map/player options, artwork and advanced CSS. Native
+add/reorder/delete/duplicate, badges, other card types and YAML editing remain
 available. Save a widget, then click **Done** to return to the driving screen.
-The Assistant-menu button opens normal HA settings.
+
+The single-page upgrade preserves existing cards and custom pages, adds missing
+default tabs once, and saves a private pre-upgrade snapshot. Subsequent updates
+never restore deleted tabs. New tab cards are independent copies, not shared
+references. Refresh an already-open browser after installing the new local module.
 
 The existing Car starter, accounts and any edits stay intact. Drive Console is a
 separate storage dashboard seeded once; updating its assets does not overwrite

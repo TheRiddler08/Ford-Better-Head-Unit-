@@ -66,7 +66,7 @@ def main():
             if args.classic:
                 page.locator('hui-masonry-view').wait_for(timeout=10000)
                 page.screenshot(path=args.screenshot.replace('.png','-editor.png'))
-                page.get_by_role('button',name='Edit',exact=True).first.click()
+                page.locator('hui-card-options').filter(has=page.locator('drive-console-widget[data-widget=clock]')).get_by_role('button',name='Edit',exact=True).click()
                 editor=page.locator('drive-console-widget-editor')
                 editor.get_by_role('textbox',name='Heading',exact=True).fill('MY TEST DRIVE')
                 page.get_by_role('button',name='Save',exact=True).click()
@@ -74,6 +74,34 @@ def main():
                 page.locator('drive-console-widget').get_by_text('MY TEST DRIVE',exact=True).wait_for()
                 page.reload(wait_until='domcontentloaded')
                 page.locator('drive-console-widget').get_by_text('MY TEST DRIVE',exact=True).wait_for(timeout=10000)
+                layout=page.locator('drive-console-layout')
+                for name,path in [('Navigation','navigation'),('Media','media'),('Vehicle','vehicle'),('Health','health'),('Updates','updates'),('Settings','settings')]:
+                    layout.get_by_role('tab',name=name,exact=True).click()
+                    page.wait_for_url('**/drive-console/'+path)
+                    page.locator('drive-console-layout').get_by_role('tab',name=name,exact=True).wait_for()
+                layout.get_by_role('tab',name='Navigation',exact=True).click()
+                page.wait_for_url('**/drive-console/navigation')
+                layout.get_by_role('button',name='Edit dashboard',exact=True).click()
+                page.locator('hui-card-options').filter(has=page.locator('drive-console-widget[data-widget=map]')).get_by_role('button',name='Edit',exact=True).click()
+                page.locator('drive-console-widget-editor').get_by_role('textbox',name='Heading',exact=True).fill('NAVIGATION ONLY')
+                page.get_by_role('button',name='Save',exact=True).click()
+                page.locator('hui-card-options').filter(has=page.locator('drive-console-widget[data-widget=page]')).get_by_role('button',name='Edit',exact=True).click()
+                page.locator('drive-console-widget-editor').get_by_text('Page colors and typography',exact=True).click()
+                page.locator('drive-console-widget-editor').get_by_role('textbox',name='Background color',exact=True).fill('#142238')
+                page.get_by_role('button',name='Save',exact=True).click()
+                page.get_by_role('button',name='Done',exact=True).click()
+                layout.get_by_text('NAVIGATION ONLY',exact=True).wait_for()
+                assert layout.evaluate("el=>el.style.getPropertyValue('--bg')")=='#142238'
+                page.reload(wait_until='domcontentloaded')
+                layout.get_by_text('NAVIGATION ONLY',exact=True).wait_for(timeout=10000)
+                assert layout.evaluate("el=>el.style.getPropertyValue('--bg')")=='#142238'
+                layout.get_by_role('tab',name='Home',exact=True).click()
+                page.wait_for_url('**/drive-console/drive')
+                layout.get_by_text('MY TEST DRIVE',exact=True).wait_for()
+                assert layout.get_by_text('NAVIGATION ONLY',exact=True).count()==0
+                assert layout.evaluate("el=>el.style.getPropertyValue('--bg')")==''
+                page.screenshot(path=args.screenshot.replace('.png','-tabs.png'))
+
 
             assert 'recorder/info' not in requests, 'Startup still waits on the recorder'
             print(f'PASS: saved native dashboard visible in {marker[0]/1000:.2f}s; native editor opened with recorder/info withheld')
