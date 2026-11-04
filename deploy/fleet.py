@@ -131,9 +131,15 @@ def wifi_uplink():
         if not state.startswith('100'):continue
         # Bind the probe to Wi-Fi, so a peer's shared Internet cannot advertise
         # itself back as a new uplink and create a routing loop. Keep TLS/proxy trust.
-        result=run(['curl','--ipv4','--interface',nic,'--head','--silent','--show-error','--output','/dev/null',
-                    '--connect-timeout','3','--max-time','5','https://github.com/'],timeout=7,check=False)
-        if result.returncode==0:
+        online=False
+        # DNS can still point at a disconnected car gateway after a hotspot or
+        # Ethernet change. The numeric fallback keeps TLS verification and the
+        # configured proxy, but needs no destination-host DNS resolution.
+        for url in ('https://github.com/','https://1.1.1.1/cdn-cgi/trace'):
+            result=run(['curl','--ipv4','--interface',nic,'--head','--silent','--show-error','--output','/dev/null',
+                        '--connect-timeout','3','--max-time','5',url],timeout=7,check=False)
+            if result.returncode==0:online=True;break
+        if online:
             text=run(['nmcli','-g','IP4.DNS','device','show',nic])
             dns=[]
             for line in text.splitlines():
@@ -146,7 +152,7 @@ def wifi_uplink():
 
 
 class Sharing:
-    def __init__(self):self.gateway_state=None;self.route_state=None;self.dns=None
+    def __init__(self):self.gateway_state=None;self.route_state=None;self.route_checked=0;self.dns=None
     def firewall(self,lan,wan,control=True):
         # Scope all rules to our chains and car subnet. No flush ruleset, global
         # DROP policy changes, DHCP service, or edits to Docker/Tailscale chains.
@@ -173,20 +179,37 @@ class Sharing:
             args=['iptables','-w','5','-t',table]
             if run([*args,'-C',parent,*scope,'-j',chain],check=False).returncode:
                 run([*args,'-I',parent,'1',*scope,'-j',chain])
+    def route_ready(self,nic,gateway):
+        try:
+            routes=json.loads(run(['ip','-j','-4','route','show','default','dev',nic,'proto','242']))
+            if not any(row.get('gateway')==gateway and row.get('metric')==50 for row in routes):return False
+            if shutil.which('resolvectl'):
+                dns=run(['resolvectl','dns',nic]).split(':',1)[-1].split()
+                domains=run(['resolvectl','domain',nic]).split(':',1)[-1].split()
+                default=run(['resolvectl','default-route',nic]).split(':',1)[-1].strip().lower()
+                return gateway in dns and '~.' in domains and default=='yes'
+            return gateway in run(['nmcli','-g','IP4.DNS','device','show',nic]).splitlines()
+        except (ValueError,TypeError,RuntimeError,subprocess.SubprocessError):return False
+
     def route(self,nic,gateway):
         desired=(nic,gateway)
-        if desired==self.route_state:return
+        same=desired==self.route_state
+        if same:
+            if gateway is None:return
+            if time.monotonic()-self.route_checked<10:return
+            if self.route_ready(nic,gateway):self.route_checked=time.monotonic();return
         previous=self.route_state[0] if self.route_state else nic
-        removed=run(['ip','-4','route','del','default','dev',previous,'proto','242','metric','50'],check=False)
-        if removed.returncode==0 or (self.route_state and self.route_state[1]):
-            if shutil.which('resolvectl'):run(['resolvectl','revert',previous],check=False)
-            else:run(['nmcli','device','modify',previous,'ipv4.dns','','ipv4.dns-priority','0'],check=False)
+        if not same:
+            removed=run(['ip','-4','route','del','default','dev',previous,'proto','242','metric','50'],check=False)
+            if removed.returncode==0 or (self.route_state and self.route_state[1]):
+                if shutil.which('resolvectl'):run(['resolvectl','revert',previous],check=False)
+                else:run(['nmcli','device','modify',previous,'ipv4.dns','','ipv4.dns-priority','0'],check=False)
         if gateway:
             run(['ip','-4','route','replace','default','via',gateway,'dev',nic,'proto','242','metric','50'])
             if shutil.which('resolvectl'):
                 run(['resolvectl','dns',nic,gateway]);run(['resolvectl','domain',nic,'~.']);run(['resolvectl','default-route',nic,'yes'])
             else:run(['nmcli','device','modify',nic,'ipv4.dns',gateway,'ipv4.ignore-auto-dns','yes','ipv4.dns-priority','-50'])
-        self.route_state=desired
+        self.route_state=desired;self.route_checked=time.monotonic()
     def apply(self,nic,wan,servers,role,winner,online):
         desired=(nic,wan,tuple(servers)) if winner==role and wan else (nic,None,())
         if desired!=self.gateway_state:
@@ -753,7 +776,7 @@ depend() {{ need car-fleet; }}
     run(['rc-service','car-fleet','restart']);run(['rc-service','car-fleet-refresh','start'])
 
 
-def install(role,repo,user,sources,offline=False,commit=None):
+def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False):
     if os.geteuid()!=0:raise ValueError('Use the normal device installer, which requests sudo once')
     if role not in ADDRESSES:raise ValueError('Unknown role')
     account=pwd.getpwnam(user)
@@ -768,6 +791,10 @@ def install(role,repo,user,sources,offline=False,commit=None):
               'enabled':True,'boot_standby':True,'interface':None,'commit':commit,'auto_update':role in ('pi','laptop'),'app_updates':True,'reboot_updates':True,'laptop_sleep':True,'laptop_sleep_delay':90,'pi_storage_client':True}
     defaults.update(config)
     if commit:defaults['commit']=commit
+    installed=load(STATE/'installed.json',{})
+    configuration_hash=hashlib.sha256(json.dumps(defaults,sort_keys=True).encode()).hexdigest()
+    reconfigure=(not retry_missing or installed.get('configurationHash')!=configuration_hash or
+        installed.get('version')!=destination.name or installed.get('commit')!=defaults['commit'])
     if role=='duet' and commit and not missing:advance_duet(defaults,commit)
     save(CONFIG,defaults)
     STATE.mkdir(parents=True,exist_ok=True)
@@ -799,15 +826,16 @@ def install(role,repo,user,sources,offline=False,commit=None):
                 run(['rc-update','del',service,'default'],check=False);run(['rc-service',service,'stop'],check=False)
         return {'provisioning':VERSION,'disabled':True,'missing':missing}
     if Path('/run/systemd/system').exists():
-        systemd_units(role)
-        if role=='tiny':
+        if reconfigure:systemd_units(role)
+        if role=='tiny' and reconfigure:
             install_app_updates(defaults)
             install_gps(defaults)
-    elif Path('/run/openrc').exists():openrc_units(role)
+    elif Path('/run/openrc').exists():
+        if reconfigure:openrc_units(role)
     else:raise ValueError('Automatic role setup needs systemd or OpenRC')
     install_pi_storage_policy(defaults)
     missing+=install_storage(defaults)
-    save(STATE/'installed.json',{'provisioning':VERSION,'version':destination.name,'commit':defaults['commit'],'missing':missing})
+    save(STATE/'installed.json',{'provisioning':VERSION,'version':destination.name,'commit':defaults['commit'],'missing':missing,'configurationHash':configuration_hash})
     return {'provisioning':VERSION,'missing':missing,'role':role}
 
 
@@ -1107,12 +1135,13 @@ def refresh_locked(config):
     if not re.fullmatch('[0-9a-f]{40}',commit):raise ValueError('Invalid source commit')
     if config['role']!='duet' and not approved_root_source(config,commit):raise ValueError('Checkout tip is not independently verified for root role updates')
     installed=load(STATE/'installed.json',{})
-    if installed.get('commit')==commit and not installed.get('missing'):return
+    configuration_hash=hashlib.sha256(json.dumps(config,sort_keys=True).encode()).hexdigest()
+    if installed.get('commit')==commit and not installed.get('missing') and installed.get('configurationHash')==configuration_hash:return
     if config.get('commit'):git(config,'merge-base','--is-ancestor',config['commit'],commit,bare=bare)
     sources={name:source_bytes(config,commit,source,bare=bare) for name,source in SOURCES.items()}
     destination=publish(sources)
     args=['/usr/bin/python3','-I',str(destination/'fleet.py'),'install','--role',config['role'],'--repo',config['repo'],
-          '--user',config['user'],'--source',str(destination),'--commit',commit]
+          '--user',config['user'],'--source',str(destination),'--commit',commit,'--retry-missing']
     if config['role']=='tiny':args+=['--offline']
     subprocess.run(args,check=True,timeout=900)
 
@@ -1134,6 +1163,7 @@ def main():
     parser.add_argument('action',choices=['install','run','refresh','refresh-loop','boot','status'])
     parser.add_argument('--role',choices=ADDRESSES);parser.add_argument('--repo');parser.add_argument('--user')
     parser.add_argument('--source');parser.add_argument('--commit');parser.add_argument('--offline',action='store_true')
+    parser.add_argument('--retry-missing',action='store_true',help='Retry pending setup without restarting unchanged role services')
     args=parser.parse_args()
     settings=load(CONFIG,{})
     if settings.get('role')=='pi' and settings.get('pi_storage_client',True):
@@ -1143,7 +1173,7 @@ def main():
     if args.action=='install':
         if not all((args.role,args.repo,args.user,args.source)):raise ValueError('Install requires role/repo/user/source')
         sources={name:(Path(args.source)/name).read_bytes() for name in SOURCES}
-        print(json.dumps(install(args.role,args.repo,args.user,sources,args.offline,args.commit)));return
+        print(json.dumps(install(args.role,args.repo,args.user,sources,args.offline,args.commit,args.retry_missing)));return
     config=load(CONFIG,{})
     if config.get('role') not in ADDRESSES:raise ValueError('Install a device role first')
     if not config.get('enabled',True):return

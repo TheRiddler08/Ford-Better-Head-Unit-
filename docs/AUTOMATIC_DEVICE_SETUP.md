@@ -87,7 +87,8 @@ handles saved credentials and reconnects. The role service then:
 
 1. Tests actual IPv4 HTTPS access bound to each Wi-Fi interface, retaining TLS
    verification. Traffic already shared by a peer cannot be advertised back as a
-   fresh Wi-Fi uplink.
+   fresh Wi-Fi uplink. If destination DNS fails, a numeric HTTPS fallback avoids
+   depending on a disconnected car DNS gateway; TLS and proxy settings remain.
 2. Advertises gateway readiness on the physical Ethernet LAN. Pi wins when both
    uplinks are usable; Duet takes over when Pi's uplink disappears. Peer readiness
    expires after 15 seconds; probe/advertisement intervals add a few seconds to
@@ -98,7 +99,21 @@ handles saved credentials and reconnects. The role service then:
 4. Sets a tagged car default route/DNS on devices without working local Wi-Fi,
    withdrawing it when it is no longer needed. Existing Wi-Fi profiles and
    Tailscale settings are not rewritten. Tailscale's more-specific DNS domains
-   remain separate on systemd-resolved systems.
+   remain separate on systemd-resolved systems. While using a shared gateway,
+   route/DNS state is checked every ten seconds and repaired after NetworkManager
+   resets it during Ethernet reconnects, even if the elected gateway is unchanged.
+
+Pending optional storage packages are retried without restarting unchanged
+network/wake/worker services. Earlier versions reapplied the whole role every
+30 seconds when MooseFS tools were missing, briefly dropping NAT and DNS each
+time. Changed code/configuration still applies, and manually re-running the role
+installer explicitly repairs/restarts its services.
+
+`wifiInternet: true` with `gateway: duet` means Duet has selected its own Wi-Fi
+uplink. It does not prove a client has an Internet route or that an additional
+firewall permits forwarding. An empty `peers` map means no valid car Ethernet
+announcements have been received; check the physical switch and peer role services.
+Missing MooseFS tools affect shared storage, not the basic Wi-Fi sharing path.
 
 There is **no DHCP server** on either role and no NetworkManager `shared` profile,
 so Pi and Duet cannot hand out competing leases. During brief peer-discovery gaps,
