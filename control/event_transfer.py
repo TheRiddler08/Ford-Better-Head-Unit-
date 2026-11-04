@@ -20,7 +20,9 @@ class Events:
           CREATE TABLE IF NOT EXISTS received(id TEXT PRIMARY KEY,doc TEXT,ts REAL);
           CREATE TABLE IF NOT EXISTS replies(id TEXT PRIMARY KEY,frames TEXT,cursor INTEGER DEFAULT 0);
         ''')
-    def db(self):return sqlite3.connect(self.path,timeout=10)
+    def db(self):
+        from control.storage_policy import bounded_db
+        return bounded_db(sqlite3.connect(self.path,timeout=10))
     def enqueue(self,ident,doc):
         if len(canonical(doc))>800:raise ValueError('Catalog message exceeds radio budget')
         with closing(self.db()) as db,db:db.execute('INSERT OR IGNORE INTO jobs(id,doc) VALUES(?,?)',(ident,json.dumps(doc)))

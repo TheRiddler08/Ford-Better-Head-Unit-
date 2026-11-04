@@ -3,7 +3,7 @@
 No distributed filesystem or camera protocol is implemented here. Packaged
 MooseFS owns chunking/replication. Active SQLite files stay on local disks.
 """
-from contextlib import closing
+from contextlib import closing, contextmanager
 import hashlib
 import json
 import os
@@ -24,6 +24,38 @@ CAMERA={'manufacturer':'Botslab','model':'G980H','channels':4,
         'access':'pending-verified-download-protocol'}
 OBJECT=re.compile(r'^[0-9a-f]{64}\.(?:mp4|mov|mkv|ts|sqlite3|json|gpx|geojson|txt)$')
 RESERVE=2*1024**3
+
+
+@contextmanager
+def shared_objects(mount,role):
+    """Pin the real FUSE mount so a disconnect cannot write into the SD mountpoint."""
+    if role not in ROLES:raise ValueError('Unknown car role')
+    fd=os.open(mount,os.O_RDONLY|os.O_DIRECTORY)
+    opened=[fd]
+    try:
+        info=Path('/proc/self/fdinfo/'+str(fd)).read_text()
+        ident=next(line.split()[1] for line in info.splitlines() if line.startswith('mnt_id:'))
+        valid=any(line.split()[0]==ident and line.split(' - ',1)[1].split()[0] in ('fuse.mfs','fuse.moosefs')
+                  for line in Path('/proc/self/mountinfo').read_text().splitlines())
+        if not valid:raise ValueError('Shared archive unavailable; Pi will not use SD for bulk data')
+        for name in (role,'objects'):
+            try:os.mkdir(name,dir_fd=fd)
+            except FileExistsError:pass
+            fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);opened.append(fd)
+            child=Path('/proc/self/fdinfo/'+str(fd)).read_text()
+            child_id=next(line.split()[1] for line in child.splitlines() if line.startswith('mnt_id:'))
+            if child_id!=ident:raise ValueError('Archive directory leaves the shared filesystem')
+        yield Path('/proc/self/fd')/str(fd)
+    finally:
+        for descriptor in reversed(opened):os.close(descriptor)
+
+
+def shared_goal(target):
+    if not shutil.which('mfssetgoal'):raise ValueError('MooseFS replication tool missing')
+    fd=os.open(target,os.O_RDONLY|os.O_DIRECTORY)
+    try:
+        subprocess.run(['mfssetgoal','2','/proc/self/fd/'+str(fd)],pass_fds=(fd,),capture_output=True,check=True,timeout=15)
+    finally:os.close(fd)
 
 
 def mounted(path):
@@ -67,10 +99,12 @@ def copy_verified(source,target):
 
 
 class Store:
-    def __init__(self,state,role,mount='/car-data'):
+    def __init__(self,state,role,mount='/car-data',storage_client=None):
         if role not in ROLES:raise ValueError('Unknown car role')
         self.state=Path(state);self.state.mkdir(parents=True,exist_ok=True)
-        self.role=role;self.mount=Path(mount);self.objects=self.state/'objects';self.objects.mkdir(exist_ok=True)
+        self.role=role;self.mount=Path(mount);self.objects=self.state/'objects'
+        self.storage_client=role=='pi' if storage_client is None else storage_client
+        if not self.storage_client:self.objects.mkdir(exist_ok=True)
         with closing(self.db()) as db,db:db.executescript('''
           CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY,name TEXT,kind TEXT,size INTEGER,
             created REAL,metadata TEXT,archived INTEGER DEFAULT 0);
@@ -78,7 +112,8 @@ class Store:
           CREATE TABLE IF NOT EXISTS checkpoints(name TEXT PRIMARY KEY,stamp REAL);
         ''')
     def db(self):
-        db=sqlite3.connect(self.state/'library.sqlite3',timeout=10);db.row_factory=sqlite3.Row
+        from control.storage_policy import bounded_db
+        db=bounded_db(sqlite3.connect(self.state/'library.sqlite3',timeout=10));db.row_factory=sqlite3.Row
         db.execute('PRAGMA journal_mode=WAL');db.execute('PRAGMA synchronous=FULL');return db
     def add(self,path,kind,metadata=None):
         path=Path(path)
@@ -86,12 +121,20 @@ class Store:
         if not OBJECT.fullmatch(ident):raise ValueError('Unsupported archive type')
         with closing(self.db()) as db:
             if db.execute('SELECT 1 FROM objects WHERE id=?',(ident,)).fetchone():return ident
-        if shutil.disk_usage(self.state).free<path.stat().st_size+RESERVE:raise ValueError('Local archive reserve reached')
-        copy_verified(path,self.objects/ident)
         info={'name':path.name,'kind':kind,'size':path.stat().st_size,'created':time.time(),**(metadata or {})}
-        atomic(self.objects/(ident+'.json'),json.dumps(info).encode())
-        with closing(self.db()) as db,db:db.execute('INSERT OR IGNORE INTO objects(id,name,kind,size,created,metadata) VALUES(?,?,?,?,?,?)',
-            (ident,info['name'],kind,info['size'],info['created'],json.dumps(info)))
+        if self.storage_client:
+            with shared_objects(self.mount,self.role) as target:
+                if shutil.disk_usage(target).free<path.stat().st_size+RESERVE:raise ValueError('Shared archive reserve reached')
+                shared_goal(target)
+                copy_verified(path,target/ident)
+                if (target/(ident+'.json')).is_symlink():raise ValueError('Refusing symlinked archive metadata')
+                atomic(target/(ident+'.json'),json.dumps(info).encode())
+        else:
+            if shutil.disk_usage(self.state).free<path.stat().st_size+RESERVE:raise ValueError('Local archive reserve reached')
+            copy_verified(path,self.objects/ident)
+            atomic(self.objects/(ident+'.json'),json.dumps(info).encode())
+        with closing(self.db()) as db,db:db.execute('INSERT OR IGNORE INTO objects(id,name,kind,size,created,metadata,archived) VALUES(?,?,?,?,?,?,?)',
+            (ident,info['name'],kind,info['size'],info['created'],json.dumps(info),int(self.storage_client)))
         return ident
     def ingest_camera(self,inbox,now=None):
         now=time.time() if now is None else now;inbox=Path(inbox).resolve()
@@ -117,6 +160,7 @@ class Store:
                                     'cameraTime':info.get('format',{}).get('tags',{}).get('creation_time')})
             with closing(self.db()) as db,db:db.execute('UPDATE seen SET done=1 WHERE path=?',(str(path),))
     def snapshot(self,path,name,interval=3600):
+        if self.storage_client:raise ValueError('Pi bulk snapshots belong on Tiny; no local SD spool')
         path=Path(path)
         if not path.is_file():return
         with closing(self.db()) as db:
@@ -133,6 +177,16 @@ class Store:
         with closing(self.db()) as db,db:db.execute('INSERT OR REPLACE INTO checkpoints VALUES(?,?)',(name,time.time()))
     def archive(self):
         if not mounted(self.mount):return 'waiting-for-moosefs'
+        if self.storage_client:
+            with closing(self.db()) as db:rows=db.execute('SELECT id FROM objects WHERE archived=0 ORDER BY created LIMIT 20').fetchall()
+            if rows:
+                with shared_objects(self.mount,self.role) as target:
+                    shared_goal(target)
+                    for row in rows:
+                        ident=row['id'];copy_verified(self.objects/ident,target/ident)
+                        copy_verified(self.objects/(ident+'.json'),target/(ident+'.json'))
+                        with closing(self.db()) as db,db:db.execute('UPDATE objects SET archived=1 WHERE id=?',(ident,))
+            return 'shared-client-connected-no-sd-contribution'
         target=self.mount/self.role/'objects'
         target.mkdir(parents=True,exist_ok=True)
         # Standard MooseFS replication goal; no hand-written chunk placement.
@@ -229,8 +283,9 @@ def radio_catalog(store,home,role):
 
 def main():
     config=json.loads(Path('/etc/car-dashboard/fleet.json').read_text());home=Path(config['home']);role=config['role']
-    store=Store(home/'.local/share/car-data',role)
-    inbox=home/'car-console/dashcam-inbox';inbox.mkdir(parents=True,exist_ok=True)
+    store=Store(home/'.local/share/car-data',role,storage_client=role=='pi' and config.get('pi_storage_client',True))
+    inbox=home/'car-console/dashcam-inbox'
+    if not store.storage_client:inbox.mkdir(parents=True,exist_ok=True)
     from control.update_agent import PORT,LAN
     receiver=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);receiver.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     receiver.bind(('',PORT));receiver.setblocking(False)
@@ -238,7 +293,7 @@ def main():
         status={'camera':CAMERA,'inbox':str(inbox)}
         try:
             status['storage']=store.archive()
-            store.ingest_camera(inbox)
+            if not store.storage_client:store.ingest_camera(inbox)
             from control.event_transfer import Events
             key=home/'.config/car-dashboard/update-link.key'
             if key.exists():

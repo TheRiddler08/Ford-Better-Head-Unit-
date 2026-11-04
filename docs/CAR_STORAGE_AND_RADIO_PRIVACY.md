@@ -19,9 +19,10 @@ or cryptographic primitive.
 
 ## Storage layout and operation
 
-Tiny is the MooseFS master at `172.16.42.2`. Tiny, Duet and Pi contribute chunk
-storage and mount the shared filesystem at `/car-data`. Duet and Pi run MooseFS
-metaloggers for metadata backup; this is **not automatic master failover**.
+Tiny is the MooseFS master at `172.16.42.2`. Tiny and Duet contribute chunk storage
+and mount it at `/car-data`; Duet also runs the metadata backup. Pi defaults to a
+mount-only client for its 8 GB card, without chunks or a metalogger. See the
+[Pi small-card policy](PI_SMALL_CARD.md). This is **not automatic master failover**.
 With Tiny unavailable the shared mount can be unavailable. Recording on a running
 computer continues on its own local disk.
 

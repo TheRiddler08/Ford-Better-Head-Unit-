@@ -52,7 +52,8 @@ class RadioBox:
         ''')
     def db(self):
         # Closing is explicit at call sites; sqlite context alone only commits.
-        return sqlite3.connect(self.path,timeout=15)
+        from control.storage_policy import bounded_db
+        return bounded_db(sqlite3.connect(self.path,timeout=15))
     def frames(self,raw):
         if not raw or len(raw)>512:raise ValueError('Application radio message too large')
         peer=PublicKey(self.peer.read_bytes()) # Missing pin fails closed.

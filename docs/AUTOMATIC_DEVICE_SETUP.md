@@ -26,6 +26,11 @@ role installer. You do not need to switch commands to get the defaults. Pi's
 `pi/install.sh` is its lightweight role installer; it does not install Tiny's
 Home Assistant container or vehicle recorders on Pi.
 
+Pi defaults to a mount-only storage client for its 8 GB microSD card: bulk data
+goes to the Tiny/Duet MooseFS pool, with no SD archive contribution or metadata
+backup. See [Pi small-card storage](PI_SMALL_CARD.md) for bounded durable state,
+RAM logs, offline behavior and update commands.
+
 An old, unpaired Tiny gets its receiver and role bootstrap through the existing
 Duet reconnect/pairing script. Tiny does not need Internet. The full signed courier
 bundle carries the native Ubuntu networking dependencies too. An old receiver

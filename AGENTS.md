@@ -62,3 +62,9 @@
   read-compatible registries/libraries. Rebuild the production frontend/runtime
   and update its trusted installer pin whenever fork source changes. Never enable
   upstream stable-image updates independently of the pinned fork/dependency base.
+
+- Car Pi 4 has an 8 GB microSD. Default to client-only MooseFS storage, no chunk
+  contribution or metadata backup, no camera ingestion, and direct remote bulk
+  writes with no unmounted-SD fallback. Keep small bounded durable journals local;
+  never move active SQLite/WAL files onto MooseFS. Preserve existing data and
+  apply this policy through normal Pi installation/automatic role updates.

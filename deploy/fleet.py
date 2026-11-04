@@ -282,7 +282,10 @@ def daemon(config):
                         try:valid=eligible_peer(json.loads(data),peer[0],time.monotonic())
                         except (ValueError,TypeError):continue
                         if valid and valid['role']!=config['role']:peers[valid['role']]=valid
-                save(STATE/'peers.json',peers)
+                checkpoint=peers
+                if config['role']=='pi' and config.get('pi_storage_client',True):
+                    checkpoint={role:{'role':role,'mac':peer['mac'],'seen':0,'internet':False} for role,peer in peers.items()}
+                save(STATE/'peers.json',checkpoint)
                 winner=elect(config['role'],bool(wan),peers,time.monotonic())
                 sharing.apply(nic,wan,servers,config['role'],winner,bool(wan));healthy=True
                 mode=None
@@ -321,7 +324,9 @@ def publish(sources,base=BASE):
 
 def native_dependencies(offline=False,role=None):
     needed=list(REQUIRED)
-    if role in ADDRESSES and shutil.which('apt-get'):needed+=['mfsmount','mfschunkserver','ffprobe']+(['mfsmaster'] if role=='tiny' else ['mfsmetalogger'])
+    pi_client=role=='pi' and load(CONFIG,{}).get('pi_storage_client',True)
+    if role in ADDRESSES and shutil.which('apt-get'):
+        needed+=['mfsmount','mfssetgoal'] if pi_client else ['mfsmount','mfschunkserver','ffprobe']+(['mfsmaster'] if role=='tiny' else ['mfsmetalogger'])
     if role in ('duet','tiny','laptop') and Path('/run/openrc').exists():needed.append('loginctl')
     libraries=('cryptography','paho.mqtt.client','serial','nacl')
     missing=[name for name in needed if not shutil.which(name)]
@@ -333,7 +338,9 @@ def native_dependencies(offline=False,role=None):
     if shutil.which('apt-get'):
         run(['apt-get','update'],timeout=300)
         env=dict(os.environ,DEBIAN_FRONTEND='noninteractive')
-        subprocess.run(['apt-get','install','-y','--no-install-recommends','network-manager','iproute2','iptables','dnsmasq-base','curl','ethtool','python3-cryptography','python3-paho-mqtt','python3-serial','python3-nacl','moosefs-master','moosefs-chunkserver','moosefs-client','moosefs-metalogger','ffmpeg'],env=env,check=True,timeout=600)
+        packages=['network-manager','iproute2','iptables','dnsmasq-base','curl','ethtool','python3-cryptography','python3-paho-mqtt','python3-serial','python3-nacl','moosefs-client']
+        if not pi_client:packages+=['moosefs-master','moosefs-chunkserver','moosefs-metalogger','ffmpeg']
+        subprocess.run(['apt-get','install','-y','--no-install-recommends',*packages],env=env,check=True,timeout=600)
     elif shutil.which('apk'):
         run(['apk','add','networkmanager','iproute2','iptables','dnsmasq','curl','ethtool','elogind','py3-cryptography','py3-paho-mqtt','py3-pyserial','py3-pynacl'],timeout=600)
     remaining=[name for name in needed if not shutil.which(name)]
@@ -347,6 +354,47 @@ def native_dependencies(offline=False,role=None):
 def unit(name,content):save(Path('/etc/systemd/system')/name,content.encode())
 
 
+def install_pi_storage_client(config):
+    """A small-card Pi mounts the pool but contributes no chunks or backups."""
+    for service in ('car-storage-chunks','car-storage-metadata','car-storage-master'):
+        if Path('/run/systemd/system').exists():run(['systemctl','disable','--now',service+'.service'],check=False)
+        elif Path('/run/openrc').exists():
+            run(['rc-update','del',service,'default'],check=False);run(['rc-service',service,'stop'],check=False)
+    executable=shutil.which('mfsmount')
+    if not executable:
+        save(STATE/'storage.json',{'phase':'pending-packages','mode':'client-only','missing':['mfsmount'],'contributionBytes':0})
+        return ['storage:mfsmount']
+    mount=Path('/car-data');mount.mkdir(mode=0o755,exist_ok=True)
+    if not mount.is_mount() and any(mount.iterdir()):
+        save(STATE/'storage.json',{'phase':'pending-nonempty-mountpoint','mode':'client-only','contributionBytes':0})
+        return ['storage:nonempty-mountpoint']
+    command=[executable,'-f','-H',ADDRESSES['tiny'],'-o','allow_other,nosuid,nodev,noexec',str(mount)]
+    if Path('/run/systemd/system').exists():
+        unit('car-storage-mount.service','[Unit]\nDescription=Pi shared-storage client (no SD contribution)\nAfter=car-fleet.service\n[Service]\nExecStart='+shlex.join(command)+'\nRestart=always\nRestartSec=15\nTimeoutStopSec=30\n[Install]\nWantedBy=multi-user.target\n')
+        run(['systemctl','daemon-reload']);run(['systemctl','enable','--now','car-storage-mount.service'])
+        run(['systemctl','try-restart','car-storage-mount.service'],check=False)
+    elif Path('/run/openrc').exists():
+        path=Path('/etc/init.d/car-storage-mount')
+        save(path,('#!/sbin/openrc-run\nsupervisor="supervise-daemon"\ncommand='+shlex.quote(executable)+'\ncommand_args='+shlex.quote(shlex.join(command[1:]))+'\nrespawn_delay=15\ndepend() { need car-fleet; }\n').encode())
+        path.chmod(0o755);run(['rc-update','add','car-storage-mount','default']);run(['rc-service','car-storage-mount','restart'],check=False)
+    save(STATE/'storage.json',{'phase':'configured-awaiting-cluster','mode':'client-only',
+        'master':ADDRESSES['tiny'],'mount':'/car-data','contributionBytes':0,'bulkOffline':'defer-no-sd-fallback'})
+    return []
+
+
+def install_pi_storage_policy(config):
+    if config['role']!='pi' or not config.get('pi_storage_client',True):return
+    if Path('/run/systemd/system').exists():
+        path=Path('/etc/systemd/journald.conf.d/60-car-pi-storage.conf')
+        content=b'[Journal]\nStorage=volatile\nRuntimeMaxUse=32M\nRuntimeMaxFileSize=4M\n'
+        changed=not path.exists() or path.read_bytes()!=content
+        save(path,content)
+        if changed:run(['systemctl','restart','systemd-journald.service'],check=False)
+    if shutil.which('apt-get'):
+        save('/etc/apt/apt.conf.d/80-car-pi-storage',b'APT::Keep-Downloaded-Packages "false";\nBinary::apt-get::APT::Keep-Downloaded-Packages "false";\n')
+        run(['apt-get','clean'],check=False)
+
+
 def install_storage(config):
     """Configure packaged MooseFS, without formatting disks or relocating live DBs."""
     role=config['role'];base=Path('/var/lib/car-storage');cfg=Path('/etc/car-dashboard/storage')
@@ -356,6 +404,7 @@ def install_storage(config):
             elif Path('/run/openrc').exists():
                 run(['rc-update','del',service,'default'],check=False);run(['rc-service',service,'stop'],check=False)
         save(STATE/'storage.json',{'phase':'disabled'});return []
+    if role=='pi' and config.get('pi_storage_client',True):return install_pi_storage_client(config)
     needed=['mfsmount','mfschunkserver']+(['mfsmaster'] if role=='tiny' else ['mfsmetalogger'])
     missing=[name for name in needed if not shutil.which(name)]
     if missing:
@@ -549,6 +598,7 @@ TimeoutStartSec=900
     config=load(CONFIG,{})
     user=config.get('user','nobody');repo=config.get('repo','/nonexistent');home=config.get('home','/nonexistent')
     for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-data','control.car_data')]:
+        limits='Environment=CAR_STATE_DB_LIMIT_BYTES=16777216\n' if role=='pi' and config.get('pi_storage_client',True) else ''
         unit(name+'.service',f'''[Unit]
 Description=Automatic resumable software link ({module})
 After=car-fleet.service
@@ -556,7 +606,7 @@ After=car-fleet.service
 User={user}
 SupplementaryGroups=dialout
 Environment=HOME={home}
-WorkingDirectory={repo}
+{limits}WorkingDirectory={repo}
 ExecStart=/usr/bin/python3 -m {module}
 Restart=always
 RestartSec=10
@@ -669,6 +719,7 @@ depend() {{ need car-fleet; }}
     cfg=load(CONFIG,{})
     if role=='laptop':install_laptop_power(cfg)
     for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-data','control.car_data')]:
+        limits='export CAR_STATE_DB_LIMIT_BYTES=16777216\n' if role=='pi' and cfg.get('pi_storage_client',True) else ''
         save(Path('/etc/init.d')/name,f'''#!/sbin/openrc-run
 name="Automatic resumable update transport"
 supervisor="supervise-daemon"
@@ -677,7 +728,7 @@ command_args="-m {module}"
 command_user="{cfg.get('user','nobody')}"
 directory="{cfg.get('repo','/nonexistent')}"
 export HOME="{cfg.get('home','/nonexistent')}"
-respawn_delay=10
+{limits}respawn_delay=10
 respawn_max=0
 output_log="/var/log/{name}.log"
 error_log="/var/log/{name}.log"
@@ -714,7 +765,7 @@ def install(role,repo,user,sources,offline=False,commit=None):
     missing=native_dependencies(offline or not config.get('enabled',True),role)
     destination=publish(sources)
     defaults={'schema':1,'role':role,'repo':str(repo),'user':user,'home':account.pw_dir,
-              'enabled':True,'boot_standby':True,'interface':None,'commit':commit,'auto_update':role in ('pi','laptop'),'app_updates':True,'reboot_updates':True,'laptop_sleep':True,'laptop_sleep_delay':90}
+              'enabled':True,'boot_standby':True,'interface':None,'commit':commit,'auto_update':role in ('pi','laptop'),'app_updates':True,'reboot_updates':True,'laptop_sleep':True,'laptop_sleep_delay':90,'pi_storage_client':True}
     defaults.update(config)
     if commit:defaults['commit']=commit
     if role=='duet' and commit and not missing:advance_duet(defaults,commit)
@@ -754,6 +805,7 @@ def install(role,repo,user,sources,offline=False,commit=None):
             install_gps(defaults)
     elif Path('/run/openrc').exists():openrc_units(role)
     else:raise ValueError('Automatic role setup needs systemd or OpenRC')
+    install_pi_storage_policy(defaults)
     missing+=install_storage(defaults)
     save(STATE/'installed.json',{'provisioning':VERSION,'version':destination.name,'commit':defaults['commit'],'missing':missing})
     return {'provisioning':VERSION,'missing':missing,'role':role}
@@ -1077,12 +1129,16 @@ def boot(config):
 
 
 def main():
+    global STATUS
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action',choices=['install','run','refresh','refresh-loop','boot','status'])
     parser.add_argument('--role',choices=ADDRESSES);parser.add_argument('--repo');parser.add_argument('--user')
     parser.add_argument('--source');parser.add_argument('--commit');parser.add_argument('--offline',action='store_true')
     args=parser.parse_args()
-    if args.action=='status':print(json.dumps({'installed':load(STATE/'installed.json',{}),'status':load(STATUS,{})},indent=2));return
+    settings=load(CONFIG,{})
+    if settings.get('role')=='pi' and settings.get('pi_storage_client',True):
+        STATUS=Path('/run/car-dashboard/fleet-status.json')
+    if args.action=='status':print(json.dumps({'installed':load(STATE/'installed.json',{}),'status':load(STATUS,{}),'storage':load(STATE/'storage.json',{})},indent=2));return
     if os.geteuid()!=0:raise SystemExit('Use the device installer as your normal user; sudo is required once')
     if args.action=='install':
         if not all((args.role,args.repo,args.user,args.source)):raise ValueError('Install requires role/repo/user/source')

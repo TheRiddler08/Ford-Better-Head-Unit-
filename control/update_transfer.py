@@ -14,6 +14,7 @@ import sqlite3
 import struct
 import time
 import zlib
+from control.storage_policy import bounded_db
 
 HEADER=struct.Struct('>BB8sHH')
 MANIFEST,DATA,ACK,APPLIED,ERROR=range(5)
@@ -93,7 +94,7 @@ class Journal:
         self.path.chmod(0o600)
     @contextmanager
     def db(self):
-        db=sqlite3.connect(self.path,timeout=20)
+        db=bounded_db(sqlite3.connect(self.path,timeout=20))
         db.execute('PRAGMA journal_mode=WAL');db.execute('PRAGMA synchronous=FULL')
         try:
             with db:yield db

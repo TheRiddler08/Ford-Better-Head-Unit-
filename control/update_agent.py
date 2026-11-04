@@ -17,6 +17,8 @@ PORT=8796
 
 def atomic(path,data):
     import tempfile
+    from control.storage_policy import guard_state_file
+    guard_state_file(path,len(data))
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
     if path.exists() and path.read_bytes()==data:return
     with tempfile.NamedTemporaryFile(dir=path.parent,delete=False) as file:
@@ -227,6 +229,7 @@ def main():
                 agent=Agent(config);stamp=current;last_ip=0
             phase='connected' if time.monotonic()<agent.ip_ok_until else 'waiting-home-or-receiving-radio';detail=None
             try:agent.radio(receiver)
+            except sqlite3.Error:phase='waiting-local-state-space';detail='SQLite state storage unavailable or full'
             except (OSError,ValueError):phase='waiting-radio-or-trust'
             if time.monotonic()-last_ip>10:
                 try:agent.exchange();phase='connected'
