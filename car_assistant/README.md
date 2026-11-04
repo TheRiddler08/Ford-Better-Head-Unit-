@@ -36,6 +36,14 @@ matching official frontend wheel and included in the source build. Generated
 third-party license notices are included in the runtime. No translation-account
 token is required to rebuild it.
 
+## Quick WSL2/Linux preview
+
+Run `python3 dev/assistant_preview.py start` from the repository root with Docker
+Desktop WSL integration enabled, then open `http://localhost:18123/car-starter`.
+Use `python3 dev/assistant_preview.py measure` for repeat container-start timing.
+See [the WSL preview guide](../docs/WSL_PREVIEW.md) for owner setup, browser timing
+and the isolated persistent test configuration.
+
 ## Dashboard-first startup
 
 The native frontend no longer waits on `recorder/info` or a history database

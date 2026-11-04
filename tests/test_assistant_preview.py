@@ -1,0 +1,61 @@
+import io
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from dev import assistant_preview as preview
+
+
+class AssistantPreviewTests(unittest.TestCase):
+    def test_preview_asset_refresh_preserves_owner_files_and_local_edits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            auth=root/'.storage/auth';auth.parent.mkdir();auth.write_text('private fixture account')
+            files={'configuration.yaml':'initial config','custom_components/car_console/sensor.py':'old sensor'}
+            def initialize():
+                payload=json.dumps({'files':files,'migration':'pass'})
+                with patch.dict(os.environ,{'CAR_PREVIEW_CONFIG':temp}),patch('sys.stdin',io.StringIO(payload)):
+                    exec(preview.INITIALIZE,{})
+            initialize()
+            (root/'configuration.yaml').write_text('owner edited config')
+            files.update({'configuration.yaml':'new config','custom_components/car_console/sensor.py':'new sensor'})
+            initialize()
+            self.assertEqual((root/'configuration.yaml').read_text(),'owner edited config')
+            self.assertEqual((root/'custom_components/car_console/sensor.py').read_text(),'new sensor')
+            self.assertEqual(auth.read_text(),'private fixture account')
+
+    def test_preview_cannot_stop_an_unmanaged_container(self):
+        record=[{'Config':{'Labels':None},'State':{'Running':True}}]
+        with patch.object(preview,'docker',return_value=json.dumps(record).encode()):
+            with self.assertRaisesRegex(ValueError,'another application'):preview.existing()
+
+    def test_current_running_preview_does_not_download_or_rebuild_for_start(self):
+        _,revision=preview.profile()
+        info={'Config':{'Labels':{preview.REVISION_LABEL:revision}},'State':{'Running':True}}
+        with patch.object(preview,'existing',return_value=info),patch.object(preview,'docker') as docker:
+            preview.start()
+        docker.assert_not_called()
+
+    def test_start_builds_isolated_preview_with_loopback_port_and_no_host_mounts(self):
+        calls=[]
+        def docker(*args,**kwargs):
+            calls.append((args,kwargs))
+            if args[:2]==('volume','inspect'):raise RuntimeError('get car-assistant-preview-config: no such volume')
+            return b'{}'
+        with patch.object(preview,'existing',return_value=None),patch.object(preview,'docker',side_effect=docker),patch.object(preview.ha,'car_assistant_image',return_value='sha256:fixture'),patch.object(preview,'launch') as launch:
+            preview.start()
+        create=next(args for args,_ in calls if args[0]=='create')
+        self.assertIn('127.0.0.1:18123:8123',create)
+        self.assertNotIn('--network=host',create)
+        self.assertEqual(create[create.index('--volume')+1],preview.VOLUME+':/config')
+        initialize=next((args,kw) for args,kw in calls if args[0]=='run')
+        self.assertIn('--network=none',initialize[0])
+        payload=json.loads(initialize[1]['data'])
+        self.assertEqual(json.loads(payload['files']['configuration.yaml'])['http']['server_host'],'0.0.0.0')
+        launch.assert_called_once_with()
+
+
+if __name__=='__main__':unittest.main()
