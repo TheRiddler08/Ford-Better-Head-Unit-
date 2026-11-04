@@ -118,9 +118,33 @@ CSV exports and recovery remain on Duet port 8877. If 8878 is occupied by anothe
 application, the old display tunnel remains usable; stop that unrelated listener
 before using HA. No router port forwarding or public HTTP exposure is required.
 
+## Original car layout: Drive Console
+
+Open **Drive Console** in the sidebar, or `/drive-console` on the Assistant port.
+The default Duet launcher and WSL preview open this dashboard. It recreates the
+original car interface with local native custom cards, not an embedded recovery
+page: clock and local music on the left, offline map in the center, truck artwork,
+gauges and metrics on the right, with the original rail and bottom launcher.
+
+The pencil at the top right opens the native HA card editor. Each widget has an
+**Edit** control; headings, accent colors, units, bound entities and placement can
+be changed visually. Native card add/reorder/delete and YAML editing remain
+available. Save a widget, then click **Done** to return to the driving screen.
+The Assistant-menu button opens normal HA settings.
+
+The existing Car starter, accounts and any edits stay intact. Drive Console is a
+separate storage dashboard seeded once; updating its assets does not overwrite
+edits or recreate a deliberately deleted dashboard. Other custom card resources
+are retained. Its local JS/CSS/artwork is carried through the same automatic
+update and preview paths as the integration, without new third-party dependencies.
+
+Music stays in the display browser. The offline map uses existing local tiles;
+Health, Updates and reports open the existing car service through port 8877.
+Those services and live telemetry remain unavailable in an isolated WSL preview.
+
 ## Dashboard-first startup and timing
 
-The current Car Assistant build opens the native saved Car starter layout first.
+The current Car Assistant build opens the native saved Drive Console layout first.
 It no longer waits for database migrations, GPS/OBD data or the reporting service.
 Unavailable car readings stay unavailable until fresh data arrives. Maps, history
 and other cards finish loading afterward; history and accounts are preserved.

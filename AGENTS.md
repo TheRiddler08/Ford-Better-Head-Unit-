@@ -79,3 +79,8 @@
   ready; never substitute fabricated or stale live readings. Do not gate the
   entire frontend on history migrations or restore heavyweight home discovery
   defaults. Preserve authentication and explicit integration settings.
+
+- The original dark car design is the native `/drive-console` storage dashboard.
+  Reuse the legacy artwork/CSS through local editable widgets, preserve the
+  separate Car starter and all user edits, and never reseed an edited/deleted
+  Drive Console. Keep its resource versioned and preserve unrelated resources.

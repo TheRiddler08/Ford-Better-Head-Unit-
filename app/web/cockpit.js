@@ -443,6 +443,8 @@ function main(){
   attach();
   try{setTheme(localStorage.getItem("driveconsole-theme")||"night");setUnits(localStorage.getItem("driveconsole-units")||"us");}
   catch(_){setTheme("night");setUnits("us");}
+  const initialView=location.hash.slice(1);
+  if(['home','navigation','media','vehicle','diagnostics','updates','settings'].includes(initialView))show(initialView);
   clock();pollOBD();pollGPS();watchBuild();watchCustomLayout();loadPreferences();
   setInterval(clock,15000);
   setInterval(renderRoutines,60000);

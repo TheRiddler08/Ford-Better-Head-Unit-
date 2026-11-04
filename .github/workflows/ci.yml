@@ -34,6 +34,8 @@ jobs:
           node --check app/web/cockpit.js
           node --check app/web/records.js
           node --check control/web/panel.js
+          node --check home_assistant/drive_console.js
+          node --test tests/drive_console_values.test.mjs
   car-assistant:
     runs-on: ubuntu-latest
     steps:

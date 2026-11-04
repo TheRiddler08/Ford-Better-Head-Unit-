@@ -37,13 +37,13 @@ class HomeAssistantTests(unittest.TestCase):
         self.assertEqual(data['lovelace']['mode'],'storage')
         self.assertEqual(data['recorder']['commit_interval'],1)
         self.assertIn('car_console',data)
-        self.assertEqual(len(managed_files(ROOT,'UTC')),10)
+        self.assertEqual(len(managed_files(ROOT,'UTC')),13)
 
     def test_repeatable_managed_assets_preserve_edits_and_auth(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);config=root/'config';registry=root/'managed.json'
             first,preserved=sync_assets(ROOT,config,'UTC',registry)
-            self.assertEqual(len(first),10)
+            self.assertEqual(len(first),13)
             self.assertEqual(sync_assets(ROOT,config,'UTC',registry),([],[]))
             auth=config/'.storage/auth';auth.parent.mkdir();auth.write_text('private auth placeholder')
             path=config/'configuration.yaml';path.write_text('my custom configuration')
@@ -87,6 +87,7 @@ class HomeAssistantTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);repo=root/'repo';repo.mkdir()
             shutil.copytree(ROOT/'home_assistant',repo/'home_assistant')
+            shutil.copytree(ROOT/'app/web',repo/'app/web')
             base=root/'installed';config=base/'config';registry=base/'managed.json'
             sync_assets(repo,config,'UTC',registry)
             old=(config/'custom_components/car_console/manifest.json').read_bytes()

@@ -39,10 +39,25 @@ token is required to rebuild it.
 ## Quick WSL2/Linux preview
 
 Run `python3 dev/assistant_preview.py start` from the repository root with Docker
-Desktop WSL integration enabled, then open `http://localhost:18123/car-starter`.
+Desktop WSL integration enabled, then open `http://localhost:18123/drive-console`.
 Use `python3 dev/assistant_preview.py measure` for repeat container-start timing.
 See [the WSL preview guide](../docs/WSL_PREVIEW.md) for owner setup, browser timing
 and the isolated persistent test configuration.
+
+## Original Drive Console design
+
+`/drive-console` recreates the original dashboard as a native editable storage
+dashboard. Local custom widgets reuse `app/web/cockpit.html` artwork and CSS,
+rendering clock, music, offline map, truck art, driving gauges and metrics. The
+view fills the display while driving; its pencil switches to the native editor.
+The existing Car starter is preserved as a separate dashboard. Updates seed the
+new layout once and update only the versioned local module, preserving card edits,
+other resources, accounts and deliberate dashboard deletion.
+
+The module template is `home_assistant/drive_console.js`, materialized by the
+verified manager into `/config/www/drive-console.js`. It needs no external card
+repository or Internet imports. This is frontend asset work; it does not require
+rebuilding the unchanged Core/frontend runtime archive.
 
 ## Dashboard-first startup
 
@@ -57,7 +72,7 @@ reports dashboard/entity readiness separately from `backendReady`.
 The Tiny container starts after Docker, independently of `car-dashboard.service`,
 and has increased relative CPU shares among competing containers. The Duet polls
 startup twice a second, bounds its reporting-status request to 250 ms, and can open
-`/car-starter` even while that reporter is unavailable. Chromium uses its dedicated
+`/drive-console` even while that reporter is unavailable. Chromium uses its dedicated
 persistent profile so saved login and frontend assets survive browser exits. The
 launcher requests a fresh entry document after updates, retaining hashed asset
 caches and authentication.

@@ -40,7 +40,7 @@ class HATunnelRecoveryTests(unittest.TestCase):
         connection=MagicMock();connection.getresponse.return_value=response
         with patch.object(proxy,'fetch_upstream',side_effect=TimeoutError('reporter still starting')) as fetch,patch.object(proxy.http.client,'HTTPConnection',return_value=connection):
             status=handler.start_status()
-        self.assertEqual(status['target'],'http://127.0.0.1:8878/car-starter')
+        self.assertEqual(status['target'],'http://127.0.0.1:8878/drive-console')
         self.assertEqual(fetch.call_args.kwargs['timeout'],.25)
         connection.close.assert_called_once()
 

@@ -79,7 +79,7 @@ def launch():
                 if response.status==200 and ('homeassistant' in identity or 'carassistant' in identity):
                     elapsed=time.monotonic()-started
                     print(f'Frontend HTTP ready in {elapsed:.2f} seconds from container start.')
-                    print('Open http://localhost:18123/car-starter in your Windows browser.')
+                    print('Open http://localhost:18123/drive-console in your Windows browser.')
                     print('First run: create a separate test owner account. GPS/OBD data stays unavailable.')
                     return elapsed
         except (OSError,URLError,ValueError):pass
@@ -104,7 +104,7 @@ def start():
     files,revision=profile()
     info=existing()
     if info and info['State']['Running'] and info['Config']['Labels'].get(REVISION_LABEL)==revision:
-        print('Preview is already running: http://localhost:18123/car-starter')
+        print('Preview is already running: http://localhost:18123/drive-console')
         print('Use the measure command for a stop/start timing run.')
         return
     docker('info')
@@ -127,7 +127,7 @@ def start():
         docker('rm',NAME)  # Only this managed preview; its named volume is retained.
     docker('run','--rm','--interactive','--pull=never','--network=none','--volume',VOLUME+':/config',
         '--entrypoint','python3',image,'-c',INITIALIZE,
-        data=json.dumps({'files':files,'migration':ha.STARTER_MIGRATION}).encode())
+        data=json.dumps({'files':files,'migration':ha.DASHBOARD_MIGRATION}).encode())
     docker('create','--name',NAME,'--label',LABEL+'=true','--label',REVISION_LABEL+'='+revision,'--pull=never',
         '--publish','127.0.0.1:18123:8123','--volume',VOLUME+':/config',
         '--security-opt','no-new-privileges=true','--env','TZ=America/New_York',image)
@@ -145,7 +145,7 @@ def main():
             if not info:raise ValueError('Preview not installed yet; run this script with start first')
             if args.action=='status':
                 print(json.dumps({'running':info['State']['Running'],'image':info['Image'],
-                    'url':URL+'/car-starter','configVolume':VOLUME},indent=2))
+                    'url':URL+'/drive-console','configVolume':VOLUME},indent=2))
             else:
                 if info['State']['Running']:docker('stop','--time','30',NAME)
                 if args.action=='measure':launch()

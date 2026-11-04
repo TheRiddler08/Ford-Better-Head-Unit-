@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, build_opener, ProxyHandler
 
 sys.path.insert(0, '/src')
-from deploy.home_assistant import managed_files, STARTER_MIGRATION, FORK_ARCHIVE_SHA
+from deploy.home_assistant import managed_files, DASHBOARD_MIGRATION, FORK_ARCHIVE_SHA
 from app.ha_bridge import snapshot
 import aiohttp
 
@@ -42,7 +42,7 @@ for name, raw in managed_files('/src', 'UTC').items():
     path = root / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
-exec(STARTER_MIGRATION)
+exec(DASHBOARD_MIGRATION)
 
 async def removed_setup_resolves_waiters():
     from homeassistant.core import HomeAssistant

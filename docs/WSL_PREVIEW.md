@@ -14,12 +14,12 @@ python3 dev/assistant_preview.py start
 ```
 
 The helper downloads the pinned dependency image once, verifies and builds the
-packaged Car Assistant fork, seeds its native editable Car starter dashboard, then
+packaged Car Assistant fork, seeds its native editable Drive Console dashboard, then
 starts it. The first download/build can take several minutes and is excluded from
 the printed startup timing. No frontend/Node build or Python package installation
 is needed on WSL. The same command also works on a Linux Docker installation.
 
-Open **http://localhost:18123/car-starter** in your Windows browser. Create a
+Open **http://localhost:18123/drive-console** in your Windows browser. Create a
 separate test owner account using the normal first-run screens. Confirm the
 preview's HTTP settings if prompted. The exact native editor and cards are
 available; GPS/OBD show unavailable because the car's reporting service is absent.
@@ -28,6 +28,25 @@ The preview creates only a labeled Docker container and named configuration volu
 It publishes port 18123 on host loopback. Its container HTTP listener uses 0.0.0.0
 so Docker's port mapping can reach it. Car networking, power services, Tailscale,
 updates and attached vehicle hardware are not configured on the WSL machine.
+
+## Edit the original car design
+
+Drive Console uses the original dark palette, artwork, clock/music column, central
+offline map, truck/gauges/metrics column, rail and bottom launcher. Click the pencil
+at the top right to enter the native Home Assistant editor, then **Edit** beneath
+any widget. Change headings, colors, units, entity bindings and layout placement;
+use the normal native controls to add, reorder or delete cards. **Save**, then
+**Done** returns to the full car screen. Assistant menu opens regular HA settings.
+
+The existing Car starter and its edits remain available in the Assistant sidebar.
+The new `/drive-console` dashboard is seeded once; later updates preserve edits or
+a deliberate deletion. Its small local JS module is versioned separately from the
+runtime, so updating it reuses the built Car Assistant image.
+
+Local music uses files selected in this browser; it does not upload them. Offline
+map tiles and the Health/Updates/report pages use the existing Duet car services
+on localhost port 8877, which are absent from an isolated WSL preview. The map
+widget's tile folder URL is editable for another display/tunnel configuration.
 
 ## Repeat startup measurements
 
@@ -41,7 +60,7 @@ This stops and starts the existing container, keeping the test account and layou
 It prints time from the container-start request until the frontend manifest answers
 HTTP. It does not download, rebuild, reset accounts or erase dashboards.
 
-For navigation-to-visible-dashboard timing, refresh the browser on Car starter,
+For navigation-to-visible-dashboard timing, refresh the browser on Drive Console,
 then open its developer console (F12) and run:
 
 ```js

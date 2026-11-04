@@ -146,7 +146,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             names=' '.join(str(manifest.get(key,'')) for key in ('name','short_name')) if isinstance(manifest,dict) else ''
             identity=names.lower().replace(' ','')
             if response.status==200 and ('homeassistant' in identity or 'carassistant' in identity):
-                return {'target':'http://127.0.0.1:8878/car-starter','message':'Car Assistant dashboard is ready'}
+                return {'target':'http://127.0.0.1:8878/drive-console','message':'Car Assistant dashboard is ready'}
             if response.status==200:
                 return {'target':None,'message':'Port 8878 was not identified as Car Assistant. Check the kiosk log.'}
         except (OSError,ValueError,http.client.HTTPException):pass

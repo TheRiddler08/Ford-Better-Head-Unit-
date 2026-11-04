@@ -1,0 +1,86 @@
+import copy
+from contextlib import redirect_stdout
+import io
+import json
+from pathlib import Path
+import sys
+import types
+import unittest
+from unittest.mock import patch
+from deploy import home_assistant as ha
+
+ROOT=Path(__file__).resolve().parents[1]
+
+
+class ClassicDashboardTests(unittest.TestCase):
+    def migrate(self,state,url='/local/drive-console.js?v=fixture'):
+        modules={name:types.ModuleType(name) for name in ('homeassistant','homeassistant.core','homeassistant.helpers','homeassistant.helpers.storage','homeassistant.util','homeassistant.util.yaml','homeassistant.components','homeassistant.components.lovelace','homeassistant.components.lovelace.dashboard')}
+        class Store:
+            def __init__(self,hass,version,key):self.key=key
+            async def async_load(self):return copy.deepcopy(state.get(self.key))
+            async def async_save(self,value):state[self.key]=copy.deepcopy(value)
+        modules['homeassistant.core'].HomeAssistant=lambda path:object()
+        modules['homeassistant.helpers.storage'].Store=Store
+        modules['homeassistant.util.yaml'].load_yaml_dict=lambda path:({'url':url} if path.endswith('resource.json') else ha.classic_dashboard())
+        modules['homeassistant.components.lovelace.dashboard'].DashboardsCollection=types.SimpleNamespace(CREATE_SCHEMA=lambda data:data)
+        with patch.dict(sys.modules,modules),redirect_stdout(io.StringIO()):exec(ha.CLASSIC_MIGRATION,{})
+
+    def test_creates_native_storage_dashboard_without_touching_starter_or_owner(self):
+        state={'auth':'owner sentinel','lovelace.car_starter':{'config':{'title':'Edited existing starter'}},
+               'lovelace_dashboards':{'items':[{'id':'car_starter','url_path':'car-starter'}]},
+               'lovelace_resources':{'items':[{'id':'other','url':'/local/other.js','type':'module'}]}}
+        before=copy.deepcopy(state)
+        self.migrate(state)
+        self.assertEqual(state['auth'],before['auth'])
+        self.assertEqual(state['lovelace.car_starter'],before['lovelace.car_starter'])
+        self.assertEqual(state['lovelace_resources']['items'][0],before['lovelace_resources']['items'][0])
+        self.assertEqual(state['lovelace_dashboards']['items'][-1]['mode'],'storage')
+        config=state['lovelace.drive_console']['config']
+        self.assertEqual(config['views'][0]['type'],'custom:drive-console-layout')
+        self.assertEqual(len(config['views'][0]['cards']),6)
+        self.assertTrue(all(card['type']=='custom:drive-console-widget' for card in config['views'][0]['cards']))
+
+    def test_module_updates_preserve_dashboard_edits_and_deliberate_deletion(self):
+        state={};self.migrate(state)
+        state['lovelace.drive_console']['config']['views'][0]['cards'][0]['title']='My custom heading'
+        self.migrate(state,url='/local/drive-console.js?v=new')
+        self.assertEqual(state['lovelace.drive_console']['config']['views'][0]['cards'][0]['title'],'My custom heading')
+        self.assertEqual(state['lovelace_resources']['items'][0]['url'],'/local/drive-console.js?v=new')
+        state['lovelace_dashboards']['items']=[];del state['lovelace.drive_console']
+        self.migrate(state,url='/local/drive-console.js?v=later')
+        self.assertEqual(state['lovelace_dashboards']['items'],[])
+        self.assertNotIn('lovelace.drive_console',state)
+
+    def test_generated_module_reuses_original_art_and_is_versioned_by_content(self):
+        module,metadata=ha.classic_resource(ROOT)
+        self.assertNotIn(b'const ORIGINAL = null;',module)
+        self.assertIn(b'truck-art',module)
+        self.assertIn(b'YOUR LOCAL HEAD UNIT',module)
+        import hashlib
+        self.assertEqual(metadata['sha256'],hashlib.sha256(module).hexdigest())
+        self.assertIn(metadata['sha256'][:20],metadata['url'])
+
+    def test_reconcile_tracks_resource_versions_without_reseeding_deleted_dashboards(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp);storage=base/'config/.storage';storage.mkdir(parents=True)
+            (storage/'car_console_starter_migration').write_text('{}')
+            metadata=base/'config/drive-console-resource.json'
+            metadata.write_text(json.dumps({'url':'/local/drive-console.js?v=one'}))
+            marker=storage/'car_console_classic_migration'
+            marker.write_text(json.dumps({'data':{'completed':True,'resource':'/local/drive-console.js?v=one'}}))
+            with patch.object(ha,'BASE',base):
+                self.assertFalse(ha.starter_pending())
+                metadata.write_text(json.dumps({'url':'/local/drive-console.js?v=two'}))
+                self.assertTrue(ha.starter_pending())
+
+    def test_existing_drive_console_and_conflicting_resource_are_preserved(self):
+        config={'views':[{'title':'Custom'}]}
+        state={'lovelace_dashboards':{'items':[{'id':'personal','url_path':'drive-console'}]},'lovelace.personal':{'config':config}}
+        self.migrate(state)
+        self.assertEqual(state['lovelace.personal']['config'],config)
+        self.assertNotIn('lovelace.drive_console',state)
+        conflict={'lovelace_resources':{'items':[{'id':'drive_console_local','url':'/local/other.js','type':'module'}]}}
+        before=copy.deepcopy(conflict)
+        with self.assertRaises(ValueError):self.migrate(conflict)
+        self.assertEqual(conflict,before)

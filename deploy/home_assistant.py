@@ -77,6 +77,40 @@ def configuration(timezone):
         'recorder':{'purge_keep_days':10,'commit_interval':1}}
 
 
+def classic_dashboard():
+    widgets=[('clock','left'),('media','left'),('map','map'),('vehicleArt','right'),
+             ('gauges','right'),('metrics','right')]
+    cards=[dict(type='custom:drive-console-widget',widget=kind,placement=placement)
+           for kind,placement in widgets]
+    return {'title':'Drive Console','views':[{'title':'Drive','path':'drive','icon':'mdi:car',
+        'type':'custom:drive-console-layout','cards':cards}]}
+
+
+def classic_resource(repo):
+    repo=Path(repo).resolve()
+    def read(name):
+        path=repo/name
+        if not path.resolve().is_relative_to(repo):raise ValueError('Drive Console asset escapes checkout')
+        if path.stat().st_size>2*1024**2:raise ValueError('Drive Console asset exceeds size limit')
+        return path.read_text()
+    html=read('app/web/cockpit.html')
+    def fragment(pattern):
+        match=re.search(pattern,html,re.S)
+        if not match:raise ValueError('Original Drive Console artwork is missing')
+        return match.group(0)
+    widgets={kind:fragment(r'<section[^>]*data-widget="'+kind+r'".*?</section>')
+             for kind in ('clock','media','map','vehicleArt','gauges','metrics')}
+    css=read('app/web/cockpit.css').replace(':root{',':host{').replace('html[data-theme="day"]',':host([data-theme="day"])').replace('html{',':host{').replace('body{',':host{')
+    original={'css':css,'widgets':widgets,'rail':fragment(r'<nav class="rail".*?</nav>'),
+              'header':fragment(r'<header class="topbar".*?</header>'),
+              'footer':fragment(r'<footer class="dock".*?</footer>')}
+    source=read('home_assistant/drive_console.js')
+    if source.count('const ORIGINAL = null;')!=1:raise ValueError('Unexpected Drive Console module template')
+    module=source.replace('const ORIGINAL = null;','const ORIGINAL = '+json.dumps(original)+';').encode()
+    digest=hashlib.sha256(module).hexdigest()
+    return module,{'schema':1,'url':'/local/drive-console.js?v='+digest[:20],'sha256':digest}
+
+
 def managed_files(repo,timezone):
     repo=Path(repo).resolve();result={}
     for name in ASSETS:
@@ -85,6 +119,10 @@ def managed_files(repo,timezone):
         result['custom_components/car_console/'+name]=source.read_bytes()
     result['configuration.yaml']=(json.dumps(configuration(timezone),indent=2)+'\n').encode()
     result['car-dashboard.yaml']=(json.dumps(dashboard(),indent=2)+'\n').encode()
+    module,resource=classic_resource(repo)
+    result['www/drive-console.js']=module
+    result['drive-console-resource.json']=(json.dumps(resource)+'\n').encode()
+    result['drive-console-dashboard.yaml']=(json.dumps(classic_dashboard(),indent=2)+'\n').encode()
     return result
 
 
@@ -298,14 +336,70 @@ async def migrate():
 
 asyncio.run(migrate())
 '''
-STARTER_STORES=('lovelace_dashboards','lovelace.car_starter','car_console_starter_migration')
+CLASSIC_MIGRATION = r'''
+import asyncio,json
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
+from homeassistant.util.yaml import load_yaml_dict
+from homeassistant.components.lovelace.dashboard import DashboardsCollection
+
+async def migrate_classic():
+    hass=HomeAssistant('/config')
+    metadata=load_yaml_dict('/config/drive-console-resource.json')
+    url=metadata['url']
+    if not url.startswith('/local/drive-console.js?v='):raise ValueError('Unexpected local Drive Console resource')
+    marker=Store(hass,1,'car_console_classic_migration')
+    previous=await marker.async_load() or {}
+    resources=Store(hass,1,'lovelace_resources')
+    data=await resources.async_load() or {'items':[]}
+    item=next((row for row in data['items'] if row.get('id')=='drive_console_local'),None)
+    if item is not None and not item.get('url','').startswith('/local/drive-console.js?v='):
+        raise ValueError('Drive Console resource ID belongs to another resource')
+    updated=False
+    if item is None:
+        data['items'].append({'id':'drive_console_local','type':'module','url':url});updated=True
+    elif item.get('url')!=url:item['url']=url;updated=True
+    if updated:await resources.async_save(data)
+    if previous.get('completed'):
+        if previous.get('resource')!=url:await marker.async_save(dict(previous,resource=url))
+        return
+    registry=Store(hass,1,'lovelace_dashboards')
+    dashboards=await registry.async_load() or {'items':[]}
+    existing=next((row for row in dashboards['items'] if row.get('url_path')=='drive-console'),None)
+    if existing is None:
+        if any(row.get('id')=='drive_console' for row in dashboards['items']):
+            raise ValueError('Drive Console ID belongs to another dashboard')
+        store=Store(hass,1,'lovelace.drive_console')
+        saved=await store.async_load()
+        if not saved or saved.get('config') is None:
+            await store.async_save({'config':load_yaml_dict('/config/drive-console-dashboard.yaml')})
+        item=DashboardsCollection.CREATE_SCHEMA({'url_path':'drive-console','mode':'storage',
+            'title':'Drive Console','icon':'mdi:car','show_in_sidebar':True,'require_admin':False})
+        dashboards['items'].append(dict(item,id='drive_console'))
+        await registry.async_save(dashboards)
+    await marker.async_save({'completed':True,'resource':url,'preservedExisting':existing is not None})
+    print(json.dumps({'driveConsole':'editable','url':'/drive-console'}))
+
+asyncio.run(migrate_classic())
+'''
+DASHBOARD_MIGRATION=STARTER_MIGRATION+'\n'+CLASSIC_MIGRATION
+STARTER_STORES=('lovelace_dashboards','lovelace.car_starter','car_console_starter_migration',
+    'lovelace.drive_console','car_console_classic_migration','lovelace_resources')
 
 
 def starter_pending():
     directory=BASE/'config/.storage'
     marker=directory/'car_console_starter_migration'
     if directory.is_symlink() or marker.is_symlink():raise ValueError('Refusing symlinked dashboard storage')
-    return not marker.exists()
+    if not marker.exists():return True
+    classic=directory/'car_console_classic_migration'
+    if classic.is_symlink():raise ValueError('Refusing symlinked dashboard storage')
+    if not classic.exists():return True
+    resource_path=BASE/'config/drive-console-resource.json'
+    if resource_path.is_symlink():raise ValueError('Refusing symlinked dashboard resource metadata')
+    metadata=read_json(resource_path,{})
+    stored=read_json(classic,{})
+    return not stored.get('data',{}).get('completed') or stored.get('data',{}).get('resource')!=metadata.get('url')
 
 
 def starter_snapshot():
@@ -327,7 +421,7 @@ def restore_starter(snapshot):
 def migrate_starter(settings):
     run(['docker','run','--rm','--pull=never','--network','none',
          '--volume',str(BASE/'config')+':/config','--entrypoint','python3',
-         settings['image'],'-c',STARTER_MIGRATION],timeout=120)
+         settings['image'],'-c',DASHBOARD_MIGRATION],timeout=120)
 
 
 def reconcile():
@@ -345,6 +439,7 @@ def reconcile():
     previous=registry.read_bytes() if registry.exists() else None
     pending=starter_pending()
     changed,preserved=sync_assets(settings['repo'],config,settings['timezone'],registry)
+    pending=pending or 'drive-console-resource.json' in changed
     active=service_active()
     restarted=False;storage_before=None
     bridge_since=time.time()-15

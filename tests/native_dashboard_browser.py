@@ -15,6 +15,7 @@ from playwright.sync_api import sync_playwright
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('fixture',type=Path)
+    parser.add_argument('--classic',action='store_true')
     parser.add_argument('--url',default='http://127.0.0.1:18123')
     parser.add_argument('--browser',default='/usr/bin/chromium')
     parser.add_argument('--screenshot',default='/tmp/car-dashboard-first.png')
@@ -43,11 +44,11 @@ def main():
                 route.on_message(send)
                 server.on_message(route.send)
             page.route_web_socket('**/api/websocket',route_websocket)
-            page.goto(args.url+'/car-starter',wait_until='domcontentloaded')
+            page.goto(args.url+('/drive-console' if args.classic else '/car-starter'),wait_until='domcontentloaded')
             page.locator('hui-root').wait_for(timeout=30000)
-            page.locator('hui-gauge-card').first.wait_for(timeout=10000)
+            page.locator('drive-console-widget' if args.classic else 'hui-gauge-card').first.wait_for(timeout=10000)
             page.wait_for_function('!document.getElementById("ha-launch-screen")',timeout=10000)
-            assert page.locator('hui-root').get_by_text('Offline editable drive',exact=True).count()>0
+            if not args.classic:assert page.locator('hui-root').get_by_text('Offline editable drive',exact=True).count()>0
             marker=page.evaluate('performance.getEntriesByName("car-dashboard-visible").map(e=>e.startTime)')
             assert marker, 'Dashboard visibility milestone missing'
             # Fresh disposable HTTP settings require the native safety
@@ -58,8 +59,22 @@ def main():
             confirmation.get_by_role('button',name='Confirm',exact=True).wait_for(state='hidden',timeout=10000)
             page.screenshot(path=args.screenshot)
             # Exercise the actual native dashboard editor, not just a WS save.
-            page.get_by_role('button',name='Edit dashboard',exact=True).click(timeout=10000)
+            if args.classic:
+                page.locator('drive-console-layout').get_by_role('button',name='Edit dashboard',exact=True).click(timeout=10000)
+            else:page.get_by_role('button',name='Edit dashboard',exact=True).click(timeout=10000)
             page.get_by_role('button',name='Done',exact=True).wait_for(timeout=10000)
+            if args.classic:
+                page.locator('hui-masonry-view').wait_for(timeout=10000)
+                page.screenshot(path=args.screenshot.replace('.png','-editor.png'))
+                page.get_by_role('button',name='Edit',exact=True).first.click()
+                editor=page.locator('drive-console-widget-editor')
+                editor.get_by_role('textbox',name='Heading',exact=True).fill('MY TEST DRIVE')
+                page.get_by_role('button',name='Save',exact=True).click()
+                page.get_by_role('button',name='Done',exact=True).click()
+                page.locator('drive-console-widget').get_by_text('MY TEST DRIVE',exact=True).wait_for()
+                page.reload(wait_until='domcontentloaded')
+                page.locator('drive-console-widget').get_by_text('MY TEST DRIVE',exact=True).wait_for(timeout=10000)
+
             assert 'recorder/info' not in requests, 'Startup still waits on the recorder'
             print(f'PASS: saved native dashboard visible in {marker[0]/1000:.2f}s; native editor opened with recorder/info withheld')
             browser.close()
