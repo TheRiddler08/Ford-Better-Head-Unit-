@@ -34,10 +34,20 @@ class AssistantPreviewTests(unittest.TestCase):
 
     def test_current_running_preview_does_not_download_or_rebuild_for_start(self):
         _,revision=preview.profile()
-        info={'Config':{'Labels':{preview.REVISION_LABEL:revision}},'State':{'Running':True}}
+        info={'Config':{'Labels':{preview.REVISION_LABEL:revision}},'State':{'Running':True},'HostConfig':{'RestartPolicy':{'Name':'unless-stopped'}}}
         with patch.object(preview,'existing',return_value=info),patch.object(preview,'docker') as docker:
             preview.start()
         docker.assert_not_called()
+
+    def test_old_running_and_stopped_previews_get_recovery_without_rebuilding_or_resetting(self):
+        _,revision=preview.profile()
+        for running in (True,False):
+            info={'Config':{'Labels':{preview.REVISION_LABEL:revision}},'State':{'Running':running},'HostConfig':{'RestartPolicy':{'Name':'no'}}}
+            with self.subTest(running=running),patch.object(preview,'existing',return_value=info),patch.object(preview,'docker') as docker,patch.object(preview,'launch') as launch,patch.object(preview.ha,'car_assistant_image') as build:
+                preview.start()
+            docker.assert_called_once_with('update','--restart','unless-stopped',preview.NAME)
+            self.assertEqual(launch.call_count,0 if running else 1)
+            build.assert_not_called()
 
     def test_start_builds_isolated_preview_with_loopback_port_and_no_host_mounts(self):
         calls=[]
@@ -49,6 +59,7 @@ class AssistantPreviewTests(unittest.TestCase):
             preview.start()
         create=next(args for args,_ in calls if args[0]=='create')
         self.assertIn('127.0.0.1:18123:8123',create)
+        self.assertEqual(create[create.index('--restart')+1],'unless-stopped')
         self.assertNotIn('--network=host',create)
         self.assertEqual(create[create.index('--volume')+1],preview.VOLUME+':/config')
         initialize=next((args,kw) for args,kw in calls if args[0]=='run')

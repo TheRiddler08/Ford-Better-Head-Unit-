@@ -102,6 +102,18 @@ Container readiness, first browser navigation, cached navigation and fresh vehic
 readings are different milestones. WSL measurements do not include Windows/WSL
 boot or predict the Tiny's firmware, Ubuntu and Ethernet/SSH cold-start time.
 
+## Recover a stopped preview
+
+Run `python3 dev/assistant_preview.py start` again. For an unchanged installation,
+it repairs the Docker restart policy if needed and starts the existing container
+without rebuilding or changing the saved account/layout. Home Assistant's internal
+restart requests can exit the container, so the preview uses `unless-stopped` for
+automatic recovery. The explicit `stop` command still keeps it stopped.
+
+`status` reports the exit code, out-of-memory flag, restart policy and declared
+port bindings, including while the container is stopped. A successful old startup
+log does not mean that container is still running now.
+
 ## Stop, inspect or test a newer release
 
 ```sh

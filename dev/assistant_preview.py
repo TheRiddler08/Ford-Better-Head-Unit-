@@ -66,6 +66,13 @@ def existing():
     return info
 
 
+def ensure_restart_policy(info):
+    policy=(info.get('HostConfig',{}).get('RestartPolicy') or {}).get('Name')
+    if policy!='unless-stopped':
+        docker('update','--restart','unless-stopped',NAME)
+        print('Enabled automatic recovery for this preview container; the stop command still keeps it stopped.')
+
+
 def launch():
     client=build_opener(ProxyHandler({}))
     started=time.monotonic()
@@ -84,8 +91,9 @@ def launch():
                     return elapsed
         except (OSError,URLError,ValueError):pass
         info=existing()
-        if not info or not info['State']['Running']:
-            raise RuntimeError('Preview stopped. Inspect: docker logs --tail 60 '+NAME)
+        if not info or not (info['State']['Running'] or info['State'].get('Restarting')):
+            state=info.get('State',{}) if info else {}
+            raise RuntimeError(f"Preview stopped (exit={state.get('ExitCode')}, OOM={state.get('OOMKilled')}). Inspect: docker logs --tail 60 "+NAME)
         time.sleep(.2)
     raise RuntimeError('Frontend not ready within 120 seconds. Inspect: docker logs --tail 60 '+NAME)
 
@@ -103,9 +111,14 @@ def profile():
 def start():
     files,revision=profile()
     info=existing()
-    if info and info['State']['Running'] and info['Config']['Labels'].get(REVISION_LABEL)==revision:
-        print('Preview is already running: http://localhost:18123/drive-console')
-        print('Use the measure command for a stop/start timing run.')
+    if info and info['Config']['Labels'].get(REVISION_LABEL)==revision:
+        # HA's own restart exits its container. Repair older preview policies
+        # and reuse the existing image/configuration instead of rebuilding.
+        ensure_restart_policy(info)
+        if info['State']['Running']:
+            print('Preview is already running: http://localhost:18123/drive-console')
+            print('Use the measure command for a stop/start timing run.')
+        else:launch()
         return
     docker('info')
     print('Preparing the verified runtime. First download/build can take several minutes.',flush=True)
@@ -129,7 +142,7 @@ def start():
         '--entrypoint','python3',image,'-c',INITIALIZE,
         data=json.dumps({'files':files,'migration':ha.DASHBOARD_MIGRATION}).encode())
     docker('create','--name',NAME,'--label',LABEL+'=true','--label',REVISION_LABEL+'='+revision,'--pull=never',
-        '--publish','127.0.0.1:18123:8123','--volume',VOLUME+':/config',
+        '--restart','unless-stopped','--publish','127.0.0.1:18123:8123','--volume',VOLUME+':/config',
         '--security-opt','no-new-privileges=true','--env','TZ=America/New_York',image)
     launch()
 
@@ -145,10 +158,15 @@ def main():
             if not info:raise ValueError('Preview not installed yet; run this script with start first')
             if args.action=='status':
                 print(json.dumps({'running':info['State']['Running'],'image':info['Image'],
-                    'url':URL+'/drive-console','configVolume':VOLUME},indent=2))
+                    'url':URL+'/drive-console','configVolume':VOLUME,
+                    'state':{key:info['State'].get(key) for key in ('Status','ExitCode','OOMKilled','Error','Restarting')},
+                    'restartPolicy':info.get('HostConfig',{}).get('RestartPolicy',{}).get('Name'),
+                    'publishedPorts':info.get('HostConfig',{}).get('PortBindings',{})},indent=2))
             else:
                 if info['State']['Running']:docker('stop','--time','30',NAME)
-                if args.action=='measure':launch()
+                if args.action=='measure':
+                    ensure_restart_policy(info)
+                    launch()
                 else:print('Preview stopped. Saved test dashboard and account are retained.')
     except (OSError,ValueError,RuntimeError,subprocess.CalledProcessError) as exc:
         print('Preview: '+str(exc),file=sys.stderr)
