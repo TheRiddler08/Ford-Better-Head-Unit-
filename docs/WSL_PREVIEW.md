@@ -135,3 +135,66 @@ named volume, accounts and edited dashboards. Manually customized configuration
 files are preserved. The volume is `car-assistant-preview-config`; it remains after
 stopping the container. Reusing an unrelated container or volume with those names
 is refused.
+
+## Try raw HTML and test locations
+
+The original car console remains installed independently of Car Assistant. On
+Duet, open `http://127.0.0.1:8877/cockpit.html` or choose **Original console**
+under the dashboard's **Data source** controls. Keep both while deciding which
+editor you prefer. The standalone WSL HA preview does not start the original
+console server. To view it there too, run this in a second WSL terminal from
+this repository (leave that terminal running):
+
+```sh
+preview_dir=$(mktemp -d /tmp/car-console-preview.XXXXXX)
+CAR_PORT=8877 CAR_DB="$preview_dir/vehicle.sqlite3" \
+CAR_GPS_DB="$preview_dir/gps.sqlite3" CAR_UI_CONFIG="$preview_dir/ui.json" \
+CAR_LAYOUT_FILE="$preview_dir/layout.json" CAR_HEADUNIT_PREFS="$preview_dir/preferences.json" \
+CAR_OVERRIDE_DIR="$preview_dir/overrides" python3 -m app.server
+```
+
+This serves the original design on loopback with no vehicle recorder attached.
+It uses isolated temporary settings and shows unavailable real measurements.
+Stop it with Ctrl+C. It does not install car networking or power services.
+
+In Car Assistant, edit any tab → **Add card** → **Drive Console widget** →
+choose **HTML / CSS / JavaScript**. Edit the three raw source fields directly.
+Use one card for a small component or a whole page; choose a one-column grid in
+that tab's Page settings for a full-width design. Existing cards and saved tabs
+are preserved. Example card YAML (also editable through those source fields):
+
+```yaml
+type: custom:drive-console-widget
+widget: html
+min_height: 300
+html: '<h1>My cockpit</h1><p id="speed">Waiting</p>'
+css: 'h1 { color: #39d9ee; } p { font-size: 48px; }'
+javascript: |
+  addEventListener('drive-data', ({detail}) => {
+    const speed = detail.states['sensor.car_speed'];
+    document.getElementById('speed').textContent =
+      `${detail.mode}: ${speed?.state ?? 'unavailable'} km/h`;
+  });
+```
+
+The script receives `window.driveData` and `drive-data` events containing `mode`
+and the car widget entities in `states`. It runs in an isolated sandbox without
+parent-page access, HA credentials or service calls. External scripts, fetches
+and remote images are blocked by the frame's content policy; use inline code
+and data images. This is a custom HTML card, not a replacement for HA's frontend.
+
+Expand **Data source** above the dashboard:
+
+- **Simulated drive** supplies changing GPS coordinates, speed/RPM and sample
+  vehicle metrics to Drive Console widgets and HTML cards.
+- **Laptop / browser location** requests browser permission and displays the
+  computer's location with its reported accuracy. Windows location services may
+  need enabling; most laptops use approximate Wi-Fi/OS location, not a GPS
+  receiver. Use localhost or HTTPS. Fixes expire after 30 seconds without updates.
+- **Live car** restores normal readings. Reloading also leaves test mode.
+
+Test mode is visibly labelled and stays only in browser memory. It does not
+write recordings, transmit over LoRaWAN, change HA entities, or simulate native
+third-party HA cards. Browser location leaves OBD readings unavailable. The test
+map shows coordinates rather than loading road tiles; this tests display/data
+bindings, not historical trip recording, route replay or navigation.

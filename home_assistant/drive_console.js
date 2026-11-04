@@ -1,6 +1,6 @@
 /* Native Lovelace widgets using the original local Drive Console artwork/CSS. */
 const ORIGINAL = null; // Filled from the original dashboard by the managed installer.
-const KINDS = {clock:'Clock',media:'Local music',map:'Offline map',vehicleArt:'Vehicle illustration',gauges:'Driving gauges',metrics:'Vehicle metrics',status:'Connection status',value:'Sensor value',text:'Text',link:'Link / action',page:'Page settings'};
+const KINDS = {clock:'Clock',media:'Local music',map:'Offline map',vehicleArt:'Vehicle illustration',gauges:'Driving gauges',metrics:'Vehicle metrics',status:'Connection status',value:'Sensor value',text:'Text',link:'Link / action',html:'HTML / CSS / JavaScript',page:'Page settings'};
 const DEFAULTS={speed:'sensor.car_speed',rpm:'sensor.car_rpm',coolant:'sensor.car_coolant',voltage:'sensor.car_ecu_voltage',fuel:'sensor.car_raw_fuel_level',load:'sensor.car_engine_load',gps:'device_tracker.car_location'};
 const number = (hass,id) => {
   if(!hass?.connected)return null;
@@ -22,6 +22,40 @@ const targetView=(views,name)=>{
   const alias={home:'drive',diagnostics:'health'}[name]||name;
   return views.find(v=>v.path===alias)||views.find(v=>v.title?.toLowerCase()===String(name).toLowerCase())||(name==='home'?views[0]:undefined);
 };
+// Preview values exist only in this module's memory; never call the reporting API.
+const preview={mode:'live',fix:null,watch:null,error:'',started:Date.now()};
+function previewHass(hass,now=Date.now()){
+  if(preview.mode==='live')return hass;
+  const states={...(hass?.states||{})},put=(id,state,attributes={})=>{states[id]={entity_id:id,state:String(state),attributes:{...attributes,preview:true}};};
+  // Clear real car readings in location-only mode rather than mixing sources.
+  for(const id of Object.values(DEFAULTS))put(id,'unavailable');
+  put('binary_sensor.car_obd_connection','off');put('binary_sensor.car_gps_fix','off');
+  if(preview.mode==='demo'){
+    const t=(now-preview.started)/1000;
+    for(const [key,value,unit] of [['speed',45+15*Math.sin(t/10),'km/h'],['rpm',1600+500*Math.sin(t/10),'rpm'],['coolant',85,'°C'],['voltage',13.8,'V'],['fuel',68,'%'],['load',32,'%']])put(DEFAULTS[key],value,{unit_of_measurement:unit,recorded_at:now/1000});
+    put('binary_sensor.car_obd_connection','on');
+    put(DEFAULTS.gps,'home',{latitude:39+.006*Math.sin(t/35),longitude:-77+.008*Math.cos(t/35),source_type:'gps',accuracy:0});
+    put('binary_sensor.car_gps_fix','on');
+  }else if(preview.fix && now-preview.fix.time>=0 && now-preview.fix.time<30000){
+    put(DEFAULTS.gps,'home',{latitude:preview.fix.latitude,longitude:preview.fix.longitude,gps_accuracy:preview.fix.accuracy,source_type:'gps'});put('binary_sensor.car_gps_fix','on');
+  }
+  return {...hass,connected:true,states,callService:()=>Promise.reject(new Error('Services disabled in browser preview'))};
+}
+function previewMode(mode){
+  if(preview.watch!==null)navigator.geolocation?.clearWatch(preview.watch);
+  Object.assign(preview,{mode,fix:null,watch:null,error:'',started:Date.now()});
+  if(mode==='location'){
+    if(!navigator.geolocation)preview.error='Browser location unavailable. Use localhost or HTTPS.';
+    else try{preview.watch=navigator.geolocation.watchPosition(p=>{
+      const c=p.coords;
+      if(Number.isFinite(c.latitude)&&Number.isFinite(c.longitude)&&Math.abs(c.latitude)<=90&&Math.abs(c.longitude)<=180){preview.error='';preview.fix={latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,time:p.timestamp};}
+    },e=>{preview.error=e.message;},{enableHighAccuracy:true,maximumAge:0,timeout:15000});}catch(e){preview.error=e.message;}
+  }
+}
+function htmlDocument(config){
+  const safe=value=>String(value||'').replace(/<\/script/gi,'<\\/script');
+  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'"><style>body{margin:0;color:#eee;background:#101c30;font-family:system-ui}${String(config.css||'').replace(/<\/style/gi,'<\\/style')}</style>${config.html||'<h1>My car dashboard</h1><p id="speed">Waiting for data</p>'}<script>window.driveData={};addEventListener('message',e=>{if(e.source!==parent||e.data?.channel!=='drive-html-data')return;window.driveData=e.data.data;dispatchEvent(new CustomEvent('drive-data',{detail:window.driveData}));});parent.postMessage({channel:'drive-html-ready'},'*');<\/script><script>${safe(config.javascript)}<\/script>`;
+}
 function go(url,newTab=false){
   let dest;try{dest=new URL(url,location.href);}catch(_){return;}
   if(!['http:','https:'].includes(dest.protocol))return;
@@ -32,6 +66,7 @@ function go(url,newTab=false){
 function icon(el,value){if(String(value).startsWith('mdi:')){const i=document.createElement('ha-icon');i.icon=value;el.replaceChildren(i);}else el.textContent=value||'◇';}
 function markup(kind){
   if(ORIGINAL.widgets[kind])return ORIGINAL.widgets[kind];
+  if(kind==='html')return '<section class="glass"><iframe id="htmlFrame" title="Custom dashboard HTML" sandbox="allow-scripts" style="border:0;width:100%;height:100%;min-height:300px"></iframe></section>';
   if(kind==='page')return '<section class="glass status-card"><span class="eyebrow">PAGE SETTINGS</span><strong>Appearance & navigation</strong><p>Controls this tab only: layout, header, sidebar, tabs, bottom controls and colors. Edit this card to customize them.</p></section>';
   if(kind==='text' || kind==='link')return '<section class="glass status-card"><span class="eyebrow" id="cardHeading"></span><p id="cardBody" style="white-space:pre-wrap"></p><button class="subtle-button" id="cardAction"></button></section>';
   if(kind==='value')return '<section class="glass status-card"><span class="eyebrow" id="cardHeading"></span><strong id="sensorValue" style="font-size:40px">—</strong><span id="sensorUnit"></span></section>';
@@ -75,7 +110,7 @@ section{height:100%}.glass{border-radius:var(--drive-radius,17px);background:var
 .status-card{padding:22px;display:grid;gap:12px;min-height:130px}.status-card p{color:var(--muted)}
 `;
 class DriveConsoleWidget extends HTMLElement {
-  constructor(){super();this.attachShadow({mode:'open'});this._onMedia=()=>this.updateMedia();this._zoom=13;}
+  constructor(){super();this.attachShadow({mode:'open'});this._onMedia=()=>this.updateMedia();this._zoom=13;this._htmlMessage=e=>{if(e.source===this.shadowRoot.getElementById('htmlFrame')?.contentWindow && e.data?.channel==='drive-html-ready')this.update();};}
   setConfig(config){
     if(!KINDS[config.widget])throw new Error('Choose a Drive Console widget');
     this.config={...config};this.dataset.widget=config.widget;this._zoom=bounded(config.zoom,13,2,18);this.render();
@@ -87,13 +122,14 @@ class DriveConsoleWidget extends HTMLElement {
   static getStubConfig(){return {type:'custom:drive-console-widget',widget:'gauges',speed_unit:'mph'};}
   set hass(hass){this._hass=hass;this.update();}
   get hass(){return this._hass;}
-  connectedCallback(){this._timer=setInterval(()=>{this.clock();this.update();},1000);media.addEventListener('change',this._onMedia);this.clock();this.update();}
-  disconnectedCallback(){clearInterval(this._timer);media.removeEventListener('change',this._onMedia);this._ticket=(this._ticket||0)+1;}
+  connectedCallback(){window.addEventListener('message',this._htmlMessage);this._timer=setInterval(()=>{this.clock();this.update();},1000);media.addEventListener('change',this._onMedia);this.clock();this.update();}
+  disconnectedCallback(){window.removeEventListener('message',this._htmlMessage);clearInterval(this._timer);media.removeEventListener('change',this._onMedia);this._ticket=(this._ticket||0)+1;}
   render(){
     if(!this.config || !ORIGINAL)return;
     const kind=this.config.widget;
     this.shadowRoot.innerHTML=`<style>${ORIGINAL.css}\n${EXTRA_CSS}</style>`+markup(kind);
     applyWidgetStyle(this);
+    if(kind==='html')this.shadowRoot.getElementById('htmlFrame').srcdoc=htmlDocument(this.config);
     if(this.config.title){const label=this.shadowRoot.querySelector('.eyebrow,.card-caption span,.map-heading strong');if(label)label.textContent=this.config.title;}
     const c=this.config,r=this.shadowRoot,hide=(selector,flag)=>r.querySelectorAll(selector).forEach(el=>{el.hidden=flag===false;});
     hide('.hero-date',c.show_date);hide('.clock-bottom',c.show_footer);text(r,'cardHeading',c.title||KINDS[kind]);text(r,'cardBody',c.body||'');
@@ -119,7 +155,8 @@ class DriveConsoleWidget extends HTMLElement {
   clock(){if(!this.config || this.config.widget!=='clock')return;const now=new Date();text(this.shadowRoot,'heroTime',now.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit',hour12:this.config.hour24?false:undefined}));text(this.shadowRoot,'heroDate',now.toLocaleDateString(undefined,{dateStyle:['full','long','short'].includes(this.config.date_format)?this.config.date_format:'full'}));}
   update(){
     if(!this.config || !this.shadowRoot.firstChild)return;
-    const h=this._hass,c=this.config,r=this.shadowRoot;
+    const h=previewHass(this._hass),c=this.config,r=this.shadowRoot;
+    if(c.widget==='html'){const states={};for(const id of Object.values(DEFAULTS))if(h?.states?.[id])states[id]=h.states[id];r.getElementById('htmlFrame')?.contentWindow?.postMessage({channel:'drive-html-data',data:{mode:preview.mode,states}},'*');}
     if(c.widget==='gauges'){
       let speed=number(h,c.speed_entity||DEFAULTS.speed);
       const source=h?.states?.[c.speed_entity||DEFAULTS.speed]?.attributes?.unit_of_measurement;
@@ -129,7 +166,7 @@ class DriveConsoleWidget extends HTMLElement {
       const rpm=number(h,c.rpm_entity||DEFAULTS.rpm);
       text(r,'speedValue',display(speed,bounded(c.speed_decimals,0,0,3)));text(r,'speedUnit',unit.toUpperCase());r.querySelector('.rpm-ring small').textContent=Number(c.rpm_divisor)===1?'RPM':'RPM ×1000';text(r,'rpmValue',display(rpm===null?null:rpm/(Number(c.rpm_divisor)===1?1:1000),bounded(c.rpm_decimals,1,0,3)));
       for(const [id,value,max] of [['speedRing',speed,bounded(c.speed_max,unit==='mph'?140:220,1,1000)],['rpmRing',rpm,bounded(c.rpm_max,6500,100,30000)]])r.getElementById(id)?.style.setProperty('--progress',`${value===null?0:Math.max(0,Math.min(1,value/max))*260}deg`);
-      text(r,'gaugeFreshness',speed===null && rpm===null?'WAITING':'LIVE');
+      text(r,'gaugeFreshness',preview.mode!=='live'?'TEST':speed===null && rpm===null?'WAITING':'LIVE');
       const seen=h?.states?.[c.rpm_entity||DEFAULTS.rpm]?.attributes?.recorded_at;
       text(r,'gaugeAge',rpm===null?'—':seen?`${Math.max(0,Math.floor(Date.now()/1000-Number(seen)))}s ago`:'Live');
     }else if(c.widget==='metrics'){
@@ -145,10 +182,13 @@ class DriveConsoleWidget extends HTMLElement {
     }
   }
   updateMap(){
-    const r=this.shadowRoot,h=this._hass,obj=h?.states?.[this.config.gps_entity||DEFAULTS.gps],a=obj?.attributes||{},lat=a.latitude,lon=a.longitude;
+    const r=this.shadowRoot,h=previewHass(this._hass),obj=h?.states?.[this.config.gps_entity||DEFAULTS.gps],a=obj?.attributes||{},lat=a.latitude,lon=a.longitude;
     const valid=h?.connected && obj && !['unknown','unavailable'].includes(obj.state) && Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat)<=90 && Math.abs(lon)<=180;
+    if(preview.mode!=='live')this._ticket=(this._ticket||0)+1;
+    if(preview.mode==='live'){r.querySelector('.map-empty strong').textContent=this.config.empty_title||'Offline map unavailable';r.querySelector('.map-empty p').textContent=this.config.empty_message||'Waiting for local map tiles.';}
     text(r,'gpsCoordinates',valid?`${lat.toFixed(5)}, ${lon.toFixed(5)}`:'Waiting for GPS fix');
     if(!valid){r.getElementById('mapEmpty').hidden=this.config.show_empty===false;r.getElementById('mapCenter').hidden=true;r.getElementById('mapTiles').replaceChildren();this._mapKey=null;text(r,'mapModeText','Waiting for GPS and local map tiles');text(r,'mapBadge','NO GPS');return;}
+    if(preview.mode!=='live'){r.getElementById('mapTiles').replaceChildren();r.getElementById('mapEmpty').hidden=false;r.querySelector('.map-empty strong').textContent='TEST POSITION — NO ROAD MAP';r.querySelector('.map-empty p').textContent='Browser-only coordinates above. Local road tiles are not loaded in test mode.';r.getElementById('mapCenter').hidden=false;text(r,'mapBadge',preview.mode==='demo'?'SIMULATED':'BROWSER');text(r,'mapModeText','TEST · '+(preview.mode==='demo'?'Synthetic moving route':`Browser accuracy ±${Math.round(a.gps_accuracy||0)} m`));this._mapKey=null;return;}
     const z=this._zoom,n=2**z,clamped=Math.max(-85.0511,Math.min(85.0511,lat)),phi=clamped*Math.PI/180;
     const x=(lon+180)/360*n,y=(1-Math.log(Math.tan(phi)+1/Math.cos(phi))/Math.PI)/2*n;
     const surface=r.getElementById('mapSurface'),w=surface.clientWidth||500,height=surface.clientHeight||500,key=[z,x.toFixed(5),y.toFixed(5),w,height].join(':');
@@ -188,6 +228,7 @@ function editorSchema(kind){
     group('page_dock','Bottom launcher and controls',[flag('show_dock'),flag('compact_dock'),field('dock_items',{object:{}}),flag('show_volume'),txt('volume_label'),flag('show_climate'),txt('climate_label'),txt('climate_status'),flag('show_home_button'),flag('show_back_button')]),
     group('page_css','Advanced page CSS',[field('custom_css',{text:{multiline:true}})])];
   fields.push(txt('title'));
+  if(kind==='html')fields.push(group('html_source','Raw HTML, CSS and JavaScript',[field('html',{text:{multiline:true}}),field('css',{text:{multiline:true}}),field('javascript',{text:{multiline:true}})],true));
   if(kind==='clock')fields.push(group('clock_options','Clock',[flag('hour24'),choice('date_format',['full','long','short']),flag('show_date'),flag('show_footer'),txt('footer_text'),num('clock_size',24,120)],true));
   if(kind==='media')fields.push(group('media_options','Music player',[txt('empty_title'),txt('artist_placeholder'),txt('picker_label'),flag('show_art'),flag('show_picker'),flag('show_seek'),flag('show_controls')],true));
   if(kind==='gauges')fields.push(group('gauge_values','Gauge values and units',[entity('speed_entity'),entity('rpm_entity'),choice('speed_unit',['mph','km/h']),num('speed_max',1,1000),num('rpm_max',100,30000),num('speed_decimals',0,3),num('rpm_decimals',0,3),choice('rpm_divisor',[{value:'1',label:'Raw RPM'},{value:'1000',label:'RPM ×1000'}])],true),group('gauge_appearance','Gauge labels and colors',[txt('speed_label'),txt('rpm_label'),txt('speed_color'),txt('rpm_color'),flag('show_age'),flag('show_freshness')]));
@@ -288,6 +329,12 @@ class DriveConsoleLayout extends HTMLElement {
     }
     for(const badge of this._badges||[])r.getElementById('badges').append(badge);
     this.chrome();
+    const testing=document.createElement('details');testing.style.cssText='padding:8px 16px;background:#142238;color:white';
+    const summary=document.createElement('summary');summary.id='previewStatus';testing.append(summary);
+    for(const [label,mode] of [['Live car','live'],['Simulated drive','demo'],['Laptop / browser location','location']]){const button=document.createElement('button');button.textContent=label;button.onclick=()=>{previewMode(mode);this.updateHeader();};testing.append(button);}
+    const original=document.createElement('button');original.textContent='Original console';original.onclick=()=>legacy('home');testing.append(original);
+    r.getElementById('pageTabs').after(testing);
+
     const tools=document.createElement('span');tools.className='layout-tools';
     if(this._hass?.user?.is_admin){const edit=document.createElement('button');edit.className='top-icon';edit.textContent='✎';edit.title='Edit this tab';edit.setAttribute('aria-label','Edit dashboard');edit.onclick=()=>this._lovelace?.setEditMode(true);tools.append(edit);if(p.show_header===false){const floating=edit.cloneNode(true);floating.classList.add('floating-edit');floating.onclick=edit.onclick;r.append(floating);}}
     if(p.show_assistant_menu!==false){const menu=document.createElement('button');menu.className='top-icon';menu.textContent='☰';menu.setAttribute('aria-label','Assistant menu');menu.onclick=()=>this.assistantMenu();tools.append(menu);}
@@ -337,7 +384,8 @@ class DriveConsoleLayout extends HTMLElement {
   updateHeader(){
     const r=this.shadowRoot;if(!r.getElementById('topClock'))return;
     const now=new Date();text(r,'topClock',now.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}));text(r,'topDate',now.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}));
-    const h=this._hass,p=this.settings,obd=h?.connected && h.states?.[p.obd_entity||'binary_sensor.car_obd_connection']?.state==='on',gps=h?.connected && h.states?.[p.gps_fix_entity||'binary_sensor.car_gps_fix']?.state==='on';
+    text(r,'previewStatus',preview.mode==='live'?'Data source: live car · testing & original console':`TEST ONLY · ${preview.mode==='demo'?'SIMULATED DRIVE':'BROWSER LOCATION'} · ${preview.error||'Not recorded or transmitted'}`);
+    const h=previewHass(this._hass),p=this.settings,obd=h?.connected && h.states?.[p.obd_entity||'binary_sensor.car_obd_connection']?.state==='on',gps=h?.connected && h.states?.[p.gps_fix_entity||'binary_sensor.car_gps_fix']?.state==='on';
     text(r,'telemetryState',obd?'OBD2 connected':'OBD2 unavailable');text(r,'gpsState',gps?'GPS fix':'GPS unavailable');r.getElementById('telemetryDot').className='led '+(obd?'good':'warning');r.getElementById('gpsDot').className='led '+(gps?'good':'');
   }
 }
@@ -346,4 +394,4 @@ customElements.define('drive-console-widget-editor',DriveConsoleEditor);
 customElements.define('drive-console-layout',DriveConsoleLayout);
 window.customCards=window.customCards||[];
 window.customCards.push({type:'drive-console-widget',name:'Drive Console widget',description:'Original car clock, local music, offline map, truck art and vehicle gauges',preview:true});
-export {number,display,temperature,bounded,currentPage,targetView,editorSchema,WIDGET_DEFAULTS};
+export {number,display,temperature,bounded,currentPage,targetView,editorSchema,WIDGET_DEFAULTS,preview,previewHass,htmlDocument};
