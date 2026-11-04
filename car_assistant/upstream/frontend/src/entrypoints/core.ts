@@ -15,7 +15,6 @@ import { fetchConfig } from "../data/lovelace/config/types";
 import { fetchResources } from "../data/lovelace/resource";
 import { MAIN_WINDOW_NAME } from "../data/main_window";
 import type { WindowWithPreloads } from "../data/preloads";
-import { getRecorderInfo } from "../data/recorder";
 import { subscribeRepairsIssueRegistry } from "../data/repairs";
 import { subscribeAreaRegistry } from "../data/ws-area_registry";
 import { subscribeDeviceRegistry } from "../data/ws-device_registry";
@@ -138,7 +137,6 @@ window.hassConnection.then(({ conn }) => {
   subscribeRepairsIssueRegistry(conn, noop);
 
   const preloadWindow = window as WindowWithPreloads;
-  preloadWindow.recorderInfoProm = getRecorderInfo(conn);
 
   if (location.pathname === "/" || location.pathname.startsWith("/lovelace/")) {
     preloadWindow.llConfProm = fetchConfig(conn, null, false);

@@ -33,6 +33,24 @@ class HATunnelRecoveryTests(unittest.TestCase):
         with patch.object(proxy,'fetch_upstream',return_value=(200,{},data)),patch.object(proxy.http.client,'HTTPConnection',side_effect=OSError('starting')),patch.object(proxy,'refresh_ha_tunnel') as refresh:
             self.assertIsNone(handler.start_status()['target'])
         refresh.assert_not_called()
+    def test_native_dashboard_opens_while_reporting_backend_is_offline(self):
+        handler=object.__new__(proxy.ProxyHandler)
+        response=MagicMock();response.status=200
+        response.read.return_value=b'{"name":"Car Assistant","short_name":"Car Assistant"}'
+        connection=MagicMock();connection.getresponse.return_value=response
+        with patch.object(proxy,'fetch_upstream',side_effect=TimeoutError('reporter still starting')) as fetch,patch.object(proxy.http.client,'HTTPConnection',return_value=connection):
+            status=handler.start_status()
+        self.assertEqual(status['target'],'http://127.0.0.1:8878/car-starter')
+        self.assertEqual(fetch.call_args.kwargs['timeout'],.25)
+        connection.close.assert_called_once()
+
+    def test_explicit_disabled_choice_wins_over_running_native_frontend(self):
+        handler=object.__new__(proxy.ProxyHandler)
+        settings=json.dumps({'installed':True,'enabled':False}).encode()
+        with patch.object(proxy,'fetch_upstream',return_value=(200,{},settings)),patch.object(proxy.http.client,'HTTPConnection') as connection:
+            self.assertEqual(handler.start_status()['target'],'/')
+        connection.assert_not_called()
+
     def test_refresh_is_rate_limited(self):
         with tempfile.TemporaryDirectory() as temp:
             with patch.object(proxy,'_HA_REFRESH_AT',100),patch.object(proxy.time,'monotonic',return_value=110):

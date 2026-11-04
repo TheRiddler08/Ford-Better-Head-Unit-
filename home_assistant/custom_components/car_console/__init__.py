@@ -43,7 +43,7 @@ async def async_setup_entry(hass,entry):
     async def health(ready):
         if not platforms_ready:return
         count=len(er.async_entries_for_config_entry(er.async_get(hass),entry.entry_id))
-        data={'schema':1,'ready':bool(ready and count>=11),'entities':count,'checkedAt':time.time()}
+        data={'schema':1,'ready':bool(count>=11),'backendReady':bool(ready),'entities':count,'checkedAt':time.time()}
         path=Path(hass.config.path('car-console-health.json'))
         def write():
             with tempfile.NamedTemporaryFile(mode='w',dir=path.parent,delete=False) as f:
@@ -64,11 +64,18 @@ async def async_setup_entry(hass,entry):
             raise UpdateFailed('Local car data unavailable') from exc
     coordinator=DataUpdateCoordinator(hass,logging.getLogger(__name__),name='Car Console',
         config_entry=entry,update_method=update,update_interval=timedelta(seconds=5))
-    await coordinator.async_config_entry_first_refresh()
+    # A dashboard must not depend on a running GPS/OBD/recorder service. Seed
+    # only an empty schema, never previous readings or fabricated zero values.
+    coordinator.data={'schema':1,'metrics':{},'gps':None,'obdFresh':False}
+    coordinator.last_update_success=False
     hass.data.setdefault(DOMAIN,{})[entry.entry_id]=coordinator
     await hass.config_entries.async_forward_entry_setups(entry,PLATFORMS)
     platforms_ready=True
-    await health(True)
+    await health(False)
+    # Register native entities before any network request. Coordinator listeners
+    # schedule subsequent polling even if this first background request fails.
+    entry.async_create_background_task(hass,coordinator.async_refresh(),
+        'Car Console initial refresh')
     return True
 
 

@@ -36,7 +36,7 @@ Vehicle data and controls are temporarily unavailable.</p>
 if(r.ok)location.replace('/');}catch(e){}},2000)</script></body></html>"""
 
 
-START_HTML=b"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Car dashboard</title><style>body{background:#081422;color:#eaf5ff;font:20px system-ui;padding:10vh 8vw}a{display:inline-block;color:#8dddff;padding:18px;border:1px solid #37546c;border-radius:12px;margin:12px 12px 12px 0}p{color:#a4bbd0}</style><h1>Car dashboard</h1><p id="status">Connecting to the Tiny...</p><a href="/cockpit.html">Open standard dashboard / Recovery</a><a href="/records">Reports and GPS archive</a><script>async function check(){try{const r=await fetch('/__start-status',{cache:'no-store'});const data=await r.json();document.getElementById('status').textContent=data.message;if(data.target){location.replace(data.target);return;}}catch(_){}setTimeout(check,3000);}check();</script></html>"""
+START_HTML=b"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Car dashboard</title><style>body{background:#081422;color:#eaf5ff;font:20px system-ui;padding:10vh 8vw}a{display:inline-block;color:#8dddff;padding:18px;border:1px solid #37546c;border-radius:12px;margin:12px 12px 12px 0}p{color:#a4bbd0}</style><h1>Car dashboard</h1><p id="status">Connecting to the Tiny...</p><a href="/cockpit.html">Open standard dashboard / Recovery</a><a href="/records">Reports and GPS archive</a><script>async function check(){try{const r=await fetch('/__start-status',{cache:'no-store'});const data=await r.json();document.getElementById('status').textContent=data.message;if(data.target){const target=new URL(data.target,location.href);if(target.port==='8878')target.searchParams.set('ha_cache_bust',String(Date.now()));location.replace(target.href);return;}}catch(_){}setTimeout(check,500);}check();</script></html>"""
 
 
 _HA_REFRESH_AT=None
@@ -80,8 +80,8 @@ def refresh_ha_tunnel(upstream_port=8788,force=False,proc=Path('/proc')):
         return count
 
 
-def fetch_upstream(host, port, path, method="GET", body=None, content_type=None):
-    conn = http.client.HTTPConnection(host, port, timeout=3)
+def fetch_upstream(host, port, path, method="GET", body=None, content_type=None, timeout=3):
+    conn = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
         headers = {"Accept": "*/*", "Cache-Control": "no-store"}
         if body is not None:
@@ -126,31 +126,38 @@ class ProxyHandler(BaseHTTPRequestHandler):
         return self.dispatch()
 
     def start_status(self):
+        # Reading the reporter is bounded; a slow recorder must never hide an
+        # already-running native frontend. Preserve explicit disabled settings.
+        settings={};code=None
         try:
-            code,_,raw=fetch_upstream(self.upstream_host,self.upstream_port,"/api/home-assistant")
+            code,_,raw=fetch_upstream(self.upstream_host,self.upstream_port,
+                "/api/home-assistant",timeout=.25)
             try:settings=json.loads(raw)
-            except (ValueError,UnicodeError):settings={}
+            except (ValueError,UnicodeError):pass
             if not isinstance(settings,dict):settings={}
-            if code==200 and settings.get('installed') and settings.get('enabled'):
-                conn=None
-                try:
-                    conn=http.client.HTTPConnection('127.0.0.1',8878,timeout=2)
-                    conn.request('GET','/manifest.json');response=conn.getresponse()
-                    manifest=json.loads(response.read(65536))
-                    names=' '.join(str(manifest.get(key,'')) for key in ('name','short_name')) if isinstance(manifest,dict) else ''
-                    if response.status==200 and 'homeassistant' in names.lower().replace(' ',''):
-                        return {'target':'http://127.0.0.1:8878/lovelace','message':'Home Assistant is ready'}
-                    if response.status==200:
-                        return {'target':None,'message':'Port 8878 is responding but was not identified as Home Assistant. Check the kiosk log.'}
-                except (OSError,ValueError,http.client.HTTPException):pass
-                finally:
-                    if conn is not None:conn.close()
-                if settings.get('ready') is True:
-                    refreshed=refresh_ha_tunnel(self.upstream_port)
-                    if refreshed:return {'target':None,'message':'Refreshing the Home Assistant SSH tunnel; retrying automatically.'}
-                return {'target':None,'message':'Waiting for Home Assistant and its SSH tunnel. Recovery is available below.'}
-            if code in (200,404):return {'target':'/','message':'Opening the standard dashboard'}
         except (OSError,TimeoutError,http.client.HTTPException,ValueError):pass
+        if code==200 and (settings.get('enabled') is False or settings.get('installed') is False):
+            return {'target':'/','message':'Opening the standard dashboard'}
+        conn=None
+        try:
+            conn=http.client.HTTPConnection('127.0.0.1',8878,timeout=.5)
+            conn.request('GET','/manifest.json');response=conn.getresponse()
+            manifest=json.loads(response.read(65536))
+            names=' '.join(str(manifest.get(key,'')) for key in ('name','short_name')) if isinstance(manifest,dict) else ''
+            identity=names.lower().replace(' ','')
+            if response.status==200 and ('homeassistant' in identity or 'carassistant' in identity):
+                return {'target':'http://127.0.0.1:8878/car-starter','message':'Car Assistant dashboard is ready'}
+            if response.status==200:
+                return {'target':None,'message':'Port 8878 was not identified as Car Assistant. Check the kiosk log.'}
+        except (OSError,ValueError,http.client.HTTPException):pass
+        finally:
+            if conn is not None:conn.close()
+        if code==200 and settings.get('installed') and settings.get('enabled'):
+            if settings.get('ready') is True:
+                refreshed=refresh_ha_tunnel(self.upstream_port)
+                if refreshed:return {'target':None,'message':'Refreshing the Home Assistant SSH tunnel; retrying automatically.'}
+            return {'target':None,'message':'Waiting for Car Assistant and its SSH tunnel. Recovery is available below.'}
+        if code in (200,404):return {'target':'/','message':'Opening the standard dashboard'}
         return {'target':None,'message':'Waiting for the Tiny wired connection. The display will reconnect automatically.'}
 
     def stream_csv(self):

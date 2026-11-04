@@ -118,6 +118,47 @@ CSV exports and recovery remain on Duet port 8877. If 8878 is occupied by anothe
 application, the old display tunnel remains usable; stop that unrelated listener
 before using HA. No router port forwarding or public HTTP exposure is required.
 
+## Dashboard-first startup and timing
+
+The current Car Assistant build opens the native saved Car starter layout first.
+It no longer waits for database migrations, GPS/OBD data or the reporting service.
+Unavailable car readings stay unavailable until fresh data arrives. Maps, history
+and other cards finish loading afterward; history and accounts are preserved.
+The default profile skips household discovery, energy/prediction, media/streaming,
+mobile-app services, scenes/tags and unused household helpers. Explicitly configured
+optional integrations remain supported.
+
+Normal signed updates apply this automatically, including removing the container's
+startup dependency on the reporting service. No dashboard reset or owner setup is
+needed. An already-running instance needs one restart to use the new runtime;
+installation handles that. The first derived-image build is installation work,
+not something repeated on every boot.
+
+The Tiny still has to boot Ubuntu, start Docker and accept the Duet's authenticated
+SSH tunnel. A completely powered-off Tiny cannot serve its saved dashboard.
+Measure the whole car cold start with a stopwatch/video from power application to
+the visible layout, then to fresh GPS/OBD readings. These are separate milestones.
+For the browser portion, open its developer console after Car starter appears:
+
+```js
+performance.getEntriesByName("car-dashboard-visible").map(entry => ({
+  dashboardVisibleSeconds: entry.startTime / 1000
+}))
+```
+
+This measures navigation to first dashboard reveal, including browser auth and
+module loading, not firmware/OS boot. An absent marker means a previous frontend
+build or a different initial panel. Compare identical cold boots, then inspect
+Tiny's journal with monotonic times to locate earlier delays:
+
+```sh
+sudo journalctl -b -o short-monotonic -u docker -u car-home-assistant --no-pager
+```
+
+The cloud test intentionally starts the reporting API only after authenticated
+native dashboard edits have succeeded. Optional real-browser validation also
+withholds `recorder/info` while checking layout visibility and the editor.
+
 ## Finish the owner account once
 
 The installer starts Home Assistant automatically but does not create an owner,

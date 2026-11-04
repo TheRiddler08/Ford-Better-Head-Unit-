@@ -5,23 +5,8 @@
     "@home-assistant/core"
   ],
   "dependencies": [
-    "bluetooth",
-    "dhcp",
-    "energy",
-    "file",
-    "go2rtc",
     "history",
-    "logbook",
-    "media_source",
-    "mobile_app",
-    "my",
-    "ssdp",
-    "stream",
-    "sun",
-    "usage_prediction",
-    "usb",
-    "webhook",
-    "zeroconf"
+    "logbook"
   ],
   "documentation": "https://www.home-assistant.io/integrations/default_config",
   "integration_type": "system",

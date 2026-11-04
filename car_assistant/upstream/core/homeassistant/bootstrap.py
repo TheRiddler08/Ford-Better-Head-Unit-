@@ -41,27 +41,19 @@ from .components import (
     api as api_pre_import,  # noqa: F401
     auth as auth_pre_import,  # noqa: F401
     config as config_pre_import,  # noqa: F401
-    default_config as default_config_pre_import,  # noqa: F401
     device_automation as device_automation_pre_import,  # noqa: F401
     diagnostics as diagnostics_pre_import,  # noqa: F401
     file_upload as file_upload_pre_import,  # noqa: F401
-    group as group_pre_import,  # noqa: F401
-    history as history_pre_import,  # noqa: F401
     http as http_import,  # noqa: F401 - not named pre_import since it has requirements
     image_upload as image_upload_import,  # noqa: F401 - not named pre_import since it has requirements
-    logbook as logbook_pre_import,  # noqa: F401
     lovelace as lovelace_pre_import,  # noqa: F401
     onboarding as onboarding_pre_import,  # noqa: F401
-    person as person_pre_import,  # noqa: F401
-    recorder as recorder_import,  # noqa: F401 - not named pre_import since it has requirements
     repairs as repairs_pre_import,  # noqa: F401
     search as search_pre_import,  # noqa: F401
-    sensor as sensor_pre_import,  # noqa: F401
     system_log as system_log_pre_import,  # noqa: F401
     webhook as webhook_pre_import,  # noqa: F401
     websocket_api as websocket_api_pre_import,  # noqa: F401
 )
-from .components.sensor import recorder as sensor_recorder  # noqa: F401
 from .const import (
     BASE_PLATFORMS,
     FORMAT_DATETIME,
@@ -212,68 +204,25 @@ STAGE_1_INTEGRATIONS = {
     "hassio",
 }
 
+# Car Assistant starts the dashboard, authentication and local registries first.
+# Home discovery, energy, media, scenes/tags and unused helpers are not automatic
+# services. Explicit YAML/config entries still work; saved configuration is kept.
 DEFAULT_INTEGRATIONS = {
-    # These integrations are set up unless recovery mode is activated.
-    #
-    # Integrations providing core functionality:
-    "analytics",  # Needed for onboarding
+    "analytics",  # The existing local onboarding preference endpoint.
     "application_credentials",
     "backup",
     "brands",
     "frontend",
-    "hardware",
-    "labs",
     "logger",
     "network",
-    "system_health",
-    #
-    # Key-feature:
-    "automation",
     "person",
-    "scene",
-    "script",
-    "tag",
+    "system_health",
     "zone",
-    #
-    # Built-in helpers:
-    "counter",
-    "input_boolean",
-    "input_button",
-    "input_datetime",
-    "input_number",
-    "input_select",
-    "input_text",
-    "schedule",
-    "timer",
-    #
-    # Base platforms:
-    # Note: Calendar and todo are not included to prevent them from registering
-    # their frontend panels when there are no calendar or todo integrations.
-    *(BASE_PLATFORMS - {"calendar", "todo"}),
-    #
-    # Integrations providing triggers and conditions for base platforms:
-    "air_quality",
-    "battery",
-    "door",
-    "garage_door",
-    "gate",
-    "humidity",
-    "illuminance",
-    "moisture",
-    "motion",
-    "occupancy",
-    "power",
-    "temperature",
-    "vibration",
-    "window",
 }
-# Car Assistant: retain shared schemas, skip removed runtime domains.
-DEFAULT_INTEGRATIONS -= set(('ai_task', 'assist_pipeline', 'assist_satellite', 'automation', 'cloud', 'conversation', 'homeassistant_alerts', 'script', 'stt', 'tts', 'wake_word'))
 
 DEFAULT_INTEGRATIONS_RECOVERY_MODE = {
     # These integrations are set up if recovery mode is activated.
     "backup",
-    "cloud",
     "frontend",
 }
 DEFAULT_INTEGRATIONS_SUPERVISOR = {
@@ -930,10 +879,6 @@ async def _async_set_up_integrations(
 
     async_set_domains_to_be_loaded(hass, all_domains)
 
-    # Initialize recorder
-    if "recorder" in all_domains:
-        recorder.async_initialize_recorder(hass)
-
     stages: list[tuple[str, set[str], int | None]] = [
         *(
             (name, domain_group, timeout)
@@ -964,6 +909,11 @@ async def _async_set_up_integrations(
         stage_dep_domains = stage_dep_domains_unfiltered - hass.config.components
 
         stage_all_domains = stage_domains | stage_dep_domains
+
+        # Recorder initialization imports its database stack. Do it only in
+        # the stage that needs recorder, after the dashboard HTTP frontend.
+        if "recorder" in stage_all_domains and recorder.DATA_RECORDER not in hass.data:
+            recorder.async_initialize_recorder(hass)
 
         _LOGGER.info(
             "Setting up stage %s: %s; already set up: %s\n"

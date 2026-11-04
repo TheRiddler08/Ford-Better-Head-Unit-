@@ -11,9 +11,6 @@ import { extractSearchParamsObject } from "../common/url/search-params";
 import { afterNextRender } from "../common/util/render-status";
 import { fetchHttpConfig } from "../data/http";
 import type { HttpConfigState } from "../data/http";
-import type { WindowWithPreloads } from "../data/preloads";
-import type { RecorderInfo } from "../data/recorder";
-import { getRecorderInfo } from "../data/recorder";
 import { showHttpPendingConfigDialog } from "../dialogs/http-pending-config/show-dialog-http-pending-config";
 import { showMoreInfoDialog } from "../dialogs/more-info/show-ha-more-info-dialog";
 import "../resources/custom-card-support";
@@ -59,8 +56,6 @@ const panelUrl = (path: string) => {
 export class HomeAssistantAppEl extends QuickBarMixin(HassElement) {
   @state() private _route: Route;
 
-  @state() private _databaseMigration?: boolean;
-
   private _httpPendingDialogOpen = false;
 
   private _initError = false;
@@ -99,14 +94,6 @@ export class HomeAssistantAppEl extends QuickBarMixin(HassElement) {
   protected willUpdate(changedProps: PropertyValues<this>) {
     super.willUpdate(changedProps);
     const oldHass = changedProps.get("hass") as HomeAssistant | undefined;
-    if (
-      this._databaseMigration === undefined &&
-      changedProps.has("hass") &&
-      this.hass?.config &&
-      oldHass?.config !== this.hass.config
-    ) {
-      this.checkDataBaseMigration();
-    }
     // Wait for `hass.user` to first populate so the admin guard can run; it
     // arrives asynchronously after `hass.config`. `hass.user` also gets a fresh
     // reference at runtime (reconnect, profile refresh via subscribeUser), so
@@ -130,10 +117,7 @@ export class HomeAssistantAppEl extends QuickBarMixin(HassElement) {
 
   protected update(changedProps: PropertyValues<this>) {
     const removingLaunchScreen =
-      !!this.hass?.states &&
-      !!this.hass.config &&
-      !!this.hass.services &&
-      this._databaseMigration === false;
+      !!this.hass?.states && !!this.hass.config && !!this.hass.services;
     if (removingLaunchScreen) {
       this.render = this.renderHass;
       this.update = super.update;
@@ -218,14 +202,6 @@ export class HomeAssistantAppEl extends QuickBarMixin(HassElement) {
         this.hass!,
         changedProps.get("hass") as HomeAssistant | undefined
       );
-    }
-    if (changedProps.has("_databaseMigration")) {
-      if (this.render !== this.renderHass) {
-        this._renderInitInfo(false);
-      } else if (this._databaseMigration) {
-        // we already removed the launch screen, so we refresh to add it again to show the migration screen
-        location.reload();
-      }
     }
   }
 
@@ -335,35 +311,6 @@ export class HomeAssistantAppEl extends QuickBarMixin(HassElement) {
     });
   }
 
-  protected async checkDataBaseMigration() {
-    if (__DEMO__) {
-      this._databaseMigration = false;
-      return;
-    }
-
-    let recorderInfoProm: Promise<RecorderInfo> | undefined;
-    const preloadWindow = window as WindowWithPreloads;
-    // On first load, we speed up loading page by having recorderInfoProm ready
-    if (preloadWindow.recorderInfoProm) {
-      recorderInfoProm = preloadWindow.recorderInfoProm;
-      preloadWindow.recorderInfoProm = undefined;
-    }
-    const info = await (
-      recorderInfoProm || getRecorderInfo(this.hass!.connection)
-    ).catch((err) => {
-      // If the command failed with code unknown_command, recorder is not enabled,
-      // otherwise re-throw the error
-      if (err.code !== "unknown_command") throw err;
-      return { migration_in_progress: false, migration_is_live: false };
-    });
-    this._databaseMigration =
-      info.migration_in_progress && !info.migration_is_live;
-    if (this._databaseMigration) {
-      // check every 5 seconds if the migration is done
-      setTimeout(() => this.checkDataBaseMigration(), 5000);
-    }
-  }
-
   protected async _initializeHass() {
     try {
       let result: Awaited<Window["hassConnection"]>;
@@ -443,7 +390,6 @@ export class HomeAssistantAppEl extends QuickBarMixin(HassElement) {
     renderLaunchScreenContent(
       html`<ha-init-page
         .error=${error}
-        .migration=${this._databaseMigration}
         .localize=${this._launchScreenLocalize}
       ></ha-init-page>`,
       this._launchScreenAttribution

@@ -69,12 +69,16 @@ cleanup(){
   wait "$SSH_RECONNECT_PID" "$PROXY_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
-sleep 2
+# Wait only for this local proxy, never for Tiny, Wi-Fi or vehicle services.
+for attempt in {1..20}; do
+  if python3 -c 'import socket; s=socket.create_connection(("127.0.0.1",8877),timeout=.1); s.close()' 2>/dev/null; then break; fi
+  sleep .1
+done
 while :; do
   if command -v firefox >/dev/null 2>&1; then
     firefox --no-remote --profile "$PROFILE" --kiosk "$URL" || true
   elif command -v chromium >/dev/null 2>&1; then
-    chromium --kiosk --incognito --no-first-run \
+    chromium --kiosk --no-first-run \
       --user-data-dir="$HOME/.local/state/drive-console/chromium" "$URL" || true
   else
     echo "Browser missing; install Firefox or Chromium." >&2

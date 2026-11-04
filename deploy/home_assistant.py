@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 IMAGE='ghcr.io/home-assistant/home-assistant:2026.10.4'
 # Release tooling pins the packaged source and production frontend here. The
 # root-owned manager never executes an unverified editable checkout as a build.
-FORK_ARCHIVE_SHA='71f65f1d111d5041e473fcf213bf82aef9085a08414ee404760f8aa47c24a175'
+FORK_ARCHIVE_SHA='a626db2f0702b52d2627929832ea821e87c166c500ce2065584a85fe2fac6a8a'
 NAME='car-home-assistant'
 BASE=Path('/var/lib/car-home-assistant')
 SETTINGS=Path('/etc/car-dashboard/home-assistant-settings.json')
@@ -378,7 +378,7 @@ def reconcile():
 
 def create_container(settings):
     run(['docker','create','--pull=never','--name',NAME,'--network','host','--label',LABEL+'=true',
-         '--security-opt','no-new-privileges=true','--volume',str(BASE/'config')+':/config',
+         '--cpu-shares','2048','--security-opt','no-new-privileges=true','--volume',str(BASE/'config')+':/config',
          '--env','TZ='+settings['timezone'],'--env','CAR_CONSOLE_URL='+settings['backend'],settings['image']],timeout=600)
 
 
@@ -511,7 +511,7 @@ def install(repo,user,timezone,offline_image=None):
     save('/etc/systemd/system/car-home-assistant.service',b'''[Unit]
 Description=Local car Home Assistant Container
 Requires=docker.service
-After=docker.service car-dashboard.service
+After=docker.service
 [Service]
 ExecStart=/usr/bin/docker --host=unix:///var/run/docker.sock start --attach car-home-assistant
 ExecStop=/usr/bin/docker --host=unix:///var/run/docker.sock stop --time 30 car-home-assistant

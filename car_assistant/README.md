@@ -10,7 +10,11 @@ Removed features: automations, scripts, cloud, voice/Assist and area/room manage
 Their startup domains, settings routes/shortcuts and applicable configuration APIs
 are removed or disabled. Area/floor list APIs and internal schemas remain for card
 compatibility; existing saved data is not deleted. The unnecessary Internet alerts
-poll is disabled too. Other integration code/defaults are retained for now.
+poll is disabled too. The dashboard-first profile also stops automatically starting
+Bluetooth/DHCP/SSDP/USB/mDNS discovery, energy/usage prediction, streaming/go2rtc,
+mobile-app/media services, sun, scenes/tags and unused household helpers. Explicit
+YAML or saved config entries can still load those optional integrations. New owner setup also skips automatic Internet weather/radio and shopping lists.
+Existing integration data is preserved; their source remains for card compatibility.
 
 `runtime.tar.gz` contains the reviewed Core source and compiled production frontend.
 `runtime.json` records its hash and a fingerprint of the build inputs. The installed
@@ -31,6 +35,32 @@ The 66 published language locales are reconstructed from the checksum-verified
 matching official frontend wheel and included in the source build. Generated
 third-party license notices are included in the runtime. No translation-account
 token is required to rebuild it.
+
+## Dashboard-first startup
+
+The native frontend no longer waits on `recorder/info` or a history database
+migration. A Lovelace layout is revealed within a 250 ms readiness budget after
+its frontend module loads; map tiles, graphs and other cards finish afterward.
+History still uses its normal database safety checks. Authentication is unchanged.
+The Car Console integration registers its native entities with empty, unavailable
+data before fetching the reporting API in the background. The readiness file
+reports dashboard/entity readiness separately from `backendReady`.
+
+The Tiny container starts after Docker, independently of `car-dashboard.service`,
+and has increased relative CPU shares among competing containers. The Duet polls
+startup twice a second, bounds its reporting-status request to 250 ms, and can open
+`/car-starter` even while that reporter is unavailable. Chromium uses its dedicated
+persistent profile so saved login and frontend assets survive browser exits. The
+launcher requests a fresh entry document after updates, retaining hashed asset
+caches and authentication.
+Explicitly disabled installations still open the recovery dashboard.
+
+This renders the real saved dashboard, not a copied image or fake readings. Tiny's
+OS/container, authentication and the SSH tunnel must still be available. It does
+not make the Tiny's dashboard accessible while Tiny itself is powered off.
+`performance.getEntriesByName("car-dashboard-visible")` records navigation-to-layout
+visibility in the browser; it does not measure vehicle power-on time. See
+[dashboard startup measurement](../docs/HOME_ASSISTANT.md#dashboard-first-startup-and-timing).
 
 ## Rebuilding after source changes
 

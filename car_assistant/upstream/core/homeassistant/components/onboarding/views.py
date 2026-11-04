@@ -247,22 +247,9 @@ class CoreConfigOnboardingView(_BaseOnboardingStepView):
 
             await self._async_mark_done(hass)
 
-            # Integrations to set up when finishing onboarding
-            onboard_integrations = [
-                "met",
-                "radio_browser",
-                "shopping_list",
-            ]
-
-            for domain in onboard_integrations:
-                # Create tasks so onboarding isn't affected
-                # by errors in these integrations.
-                hass.async_create_task(
-                    hass.config_entries.flow.async_init(
-                        domain, context={"source": "onboarding"}
-                    ),
-                    f"onboarding_setup_{domain}",
-                )
+            # Car Assistant does not seed Internet weather/radio services or
+            # household shopping lists during owner setup. Explicitly saved
+            # integrations remain available and their data is not removed.
 
             if "analytics" not in hass.config.components:
                 # If by some chance that analytics has not finished

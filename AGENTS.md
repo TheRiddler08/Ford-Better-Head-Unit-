@@ -73,3 +73,9 @@
   and online. Paired routine updates use the restricted courier identity without
   repeated admin SSH/sudo prompts; reserve administrative authorization for initial
   setup or explicit repair. Preserve host-key, signature and root installer checks.
+
+- Dashboard visibility takes priority over telemetry/history readiness. Keep the
+  native saved layout/editor usable before the reporting backend or GPS/OBD is
+  ready; never substitute fabricated or stale live readings. Do not gate the
+  entire frontend on history migrations or restore heavyweight home discovery
+  defaults. Preserve authentication and explicit integration settings.

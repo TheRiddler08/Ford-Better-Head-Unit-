@@ -68,7 +68,8 @@ class Backend(BaseHTTPRequestHandler):
         pass
 
 server = ThreadingHTTPServer(('127.0.0.1', 8787), Backend)
-threading.Thread(target=server.serve_forever, daemon=True).start()
+# Keep the reporting backend offline until the dashboard/editor are verified.
+backend_started=False
 client = build_opener(ProxyHandler({}))
 base = 'http://127.0.0.1:8123'
 def call(path, data=None, token=None):
@@ -107,17 +108,13 @@ with (root / 'startup.log').open('w') as log:
         request = Request(base + '/auth/token', urlencode({'client_id': base + '/',
             'code': created['auth_code'], 'grant_type': 'authorization_code'}).encode())
         with client.open(request, timeout=5) as response:
-            token = json.load(response)['access_token']
-        while True:
-            components = set(call('/api/config', token=token)['components'])
-            assert not {'homeassistant_alerts', 'cloud', 'automation', 'script', 'conversation', 'assist_pipeline'} & components
-            states = {row['entity_id']: row for row in call('/api/states', token=token)}
-            if (states.get('sensor.car_rpm', {}).get('state') in ('1350','1350.0') and
-                    {'frontend','config','history','logbook','car_console'} <= components):
-                break
-            assert time.monotonic() < deadline, 'Car bridge/local integrations not ready: ' + str(components) + str(states.get('sensor.car_rpm'))
-            time.sleep(1)
+            tokens = json.load(response)
+            token = tokens['access_token']
 
+        # Exercise the complete local owner setup with the smaller defaults.
+        call('/api/onboarding/core_config', {}, token=token)
+        call('/api/onboarding/analytics', {}, token=token)
+        call('/api/onboarding/integration', {'client_id':base+'/', 'redirect_uri':base+'/?auth_callback=1'}, token=token)
         async def edit():
             async with aiohttp.ClientSession(trust_env=False) as session:
                 async with session.ws_connect(base + '/api/websocket') as ws:
@@ -138,8 +135,43 @@ with (root / 'startup.log').open('w') as log:
                     await ws.send_json({'id': 4, 'type': 'config/area_registry/create', 'name': 'Unused room'})
                     reply = await ws.receive_json()
                     assert not reply['success'] and reply['error']['code']=='unknown_command', reply
+                    await ws.send_json({'id':5,'type':'config_entries/get'})
+                    reply=await ws.receive_json()
+                    assert reply['success'],reply
+                    assert not {'met','radio_browser','shopping_list'} & {row['domain'] for row in reply['result']},reply
         asyncio.run(edit())
-        print(f'PASS: offline frontend ready in {elapsed:.1f}s; native editor save, authenticated car RPM; no automation/script/cloud/voice/alerts runtime')
+        # No telemetry server exists yet: entity registration, owner login and
+        # native layout edits must already work, without fabricated readings.
+        states = {row['entity_id']: row for row in call('/api/states', token=token)}
+        assert states['sensor.car_rpm']['state']=='unavailable', states.get('sensor.car_rpm')
+        health=json.loads((root/'car-console-health.json').read_text())
+        assert health['ready'] and not health['backendReady'], health
+        layout_elapsed=time.monotonic()-started
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        backend_started=True
+        while True:
+            components = set(call('/api/config', token=token)['components'])
+            assert not {'homeassistant_alerts','cloud','automation','script','conversation','assist_pipeline',
+                'bluetooth','dhcp','ssdp','usb','zeroconf','energy','usage_prediction',
+                'go2rtc','stream','sun','mobile_app','media_source'} & components
+            states = {row['entity_id']: row for row in call('/api/states', token=token)}
+            if (states.get('sensor.car_rpm', {}).get('state') in ('1350','1350.0') and
+                    {'frontend','config','history','logbook','car_console'} <= components):
+                break
+            assert time.monotonic() < deadline, 'Car bridge/local integrations not ready: ' + str(components) + str(states.get('sensor.car_rpm'))
+            time.sleep(1)
+
+        print(f'PASS: offline frontend in {elapsed:.1f}s; saved dashboard/editor in {layout_elapsed:.1f}s before reporting backend; recovered authenticated RPM; no home discovery/media/energy defaults')
+        if os.getenv('CAR_NATIVE_BROWSER_HOLD')=='1':
+            # Optional companion browser test reads this generated disposable
+            # credential through the private fixture mount, never stdout.
+            fixture=root/'browser-fixture.json'
+            fixture.write_text(json.dumps(tokens));fixture.chmod(0o600)
+            deadline=time.monotonic()+600
+            while not (root/'browser-finished').exists():
+                assert process.poll() is None
+                assert time.monotonic()<deadline, 'Companion browser test timed out'
+                time.sleep(.2)
     finally:
         process.terminate()
         try:
@@ -147,4 +179,5 @@ with (root / 'startup.log').open('w') as log:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
-        server.shutdown()
+        if backend_started:server.shutdown()
+        server.server_close()

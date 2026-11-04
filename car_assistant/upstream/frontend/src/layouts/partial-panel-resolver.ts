@@ -36,7 +36,9 @@ const COMPONENTS = {
   lovelace: {
     load: () => import("../panels/lovelace/ha-panel-lovelace"),
     waitForReady: true,
-    readyTimeout: DASHBOARD_READY_TIMEOUT,
+    // Reveal the saved layout without waiting for every card, map or graph.
+    // Native card readiness and updates continue after the splash is removed.
+    readyTimeout: 250,
   },
   history: { load: () => import("../panels/history/ha-panel-history") },
   iframe: { load: () => import("../panels/iframe/ha-panel-iframe") },
@@ -273,9 +275,14 @@ class PartialPanelResolver extends HassRouterPage {
       // Only fire frontend/loaded when this call actually removed the launch
       // screen, so later panel updates do not fire it again. Native apps remove
       // it instantly because their own splash screen is still visible.
+      const dashboard =
+        this.hass.panels[this._currentPage].component_name === "lovelace";
       if (
-        removeLaunchScreen(!!this.hass.auth?.external?.config.hasSplashscreen)
+        removeLaunchScreen(
+          dashboard || !!this.hass.auth?.external?.config.hasSplashscreen
+        )
       ) {
+        if (dashboard) performance.mark("car-dashboard-visible");
         this.hass.auth?.external?.fireMessage({ type: "frontend/loaded" });
       }
     }
