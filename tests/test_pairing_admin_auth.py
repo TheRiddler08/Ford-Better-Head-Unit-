@@ -41,9 +41,12 @@ raise SystemExit(1 if os.environ.get('TEST_FAIL')=='1' else 0)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual([call['tool'] for call in calls],['ssh','scp','ssh'])
         for call in calls:
-            for option in ('IdentityAgent=none','ControlPath=none','PubkeyAuthentication=no','BatchMode=no'):
+            for option in ('IdentityAgent=none','ControlMaster=auto','ControlPersist=600','PubkeyAuthentication=no','BatchMode=no'):
                 self.assertIn(option,call['args'])
             self.assertNotIn('StrictHostKeyChecking=no',call['args'])
+        sockets=[next(arg for arg in call['args'] if arg.startswith('ControlPath=')) for call in calls]
+        self.assertEqual(len(set(sockets)),1)
+        self.assertFalse(Path(sockets[0].split('=',1)[1]).parent.exists())
     def test_explicit_admin_key_is_supported_without_using_agent(self):
         result,calls=self.exercise(identity=True)
         self.assertEqual(result.returncode,0,result.stderr)

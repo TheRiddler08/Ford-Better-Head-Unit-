@@ -53,10 +53,11 @@ After initial setup, root-owned role code reconciles settings every 30 seconds:
   through Pi, Duet or its own connection, sharing the same update lock. Its
   deliberately stopped dashboard stays stopped. The disable-updates command
   records an explicit opt-out so later role updates do not turn it back on.
-- Pi checks the repository's `main` branch every 15 minutes while its own Wi-Fi
+- Pi checks the repository's `main` branch every four minutes while its own Wi-Fi
   Internet works. It requires a clean `main` checkout and the official origin,
   fast-forwards only, runs the tests as the ordinary user, and restores the old
-  checkout if candidate tests fail. Its installed role code then updates too.
+  checkout if candidate tests fail. Unchanged checks do not rerun candidate tests
+  or rewrite the checkout. Its installed role code then updates too.
 
 Network/power roles are root-owned code. Repository write access and the Duet
 courier signing key therefore authorize changes to privileged installation,

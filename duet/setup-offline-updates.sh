@@ -8,8 +8,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 # This is your normal administrative SSH login, not the display-only key.
 # An agent may offer our forced-command display/courier keys first. They can
 # authenticate successfully yet reject mkdir/scp/sudo with a silent exit 1.
-# Disable agent/multiplexed sessions for every administrative connection.
-ADMIN_SSH=(-o IdentityAgent=none -o ControlMaster=no -o ControlPath=none -o BatchMode=no)
+# Never reuse an unrelated display/courier session. A private, short-lived
+# administrative master reuses this one login for mkdir, scp and installation.
+CONTROL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/car-pair-admin.XXXXXXXX")"
+ADMIN_SSH=(-o IdentityAgent=none -o ControlMaster=auto -o "ControlPath=$CONTROL_DIR/ssh" -o ControlPersist=600 -o BatchMode=no)
+cleanup() {
+ if [[ -S "$CONTROL_DIR/ssh" ]]; then ssh "${ADMIN_SSH[@]}" -O exit "$TARGET" >/dev/null 2>&1 || true; fi
+ rm -rf -- "$CONTROL_DIR"
+}
+trap cleanup EXIT
 if [[ -n "${CAR_ADMIN_IDENTITY:-}" ]]; then
  [[ -f "$CAR_ADMIN_IDENTITY" ]] || { echo 'CAR_ADMIN_IDENTITY must name your normal administrative private key.' >&2; exit 1; }
  ADMIN_SSH+=(-o IdentitiesOnly=yes -i "$CAR_ADMIN_IDENTITY")

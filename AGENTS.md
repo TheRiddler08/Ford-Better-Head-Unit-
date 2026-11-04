@@ -68,3 +68,8 @@
   writes with no unmounted-SD fallback. Keep small bounded durable journals local;
   never move active SQLite/WAL files onto MooseFS. Preserve existing data and
   apply this policy through normal Pi installation/automatic role updates.
+
+- Enabled automatic updaters must check at least every five minutes while idle
+  and online. Paired routine updates use the restricted courier identity without
+  repeated admin SSH/sudo prompts; reserve administrative authorization for initial
+  setup or explicit repair. Preserve host-key, signature and root installer checks.

@@ -1,5 +1,10 @@
 # Duet update courier
 
+Already paired? Run `bash duet/update.sh cayden@172.16.42.2` from the checkout
+for a password-free manual check. Routine updates do not need another pairing or
+`sudo systemctl restart`. Enabled couriers check every four minutes and retry
+Tiny delivery every 30 seconds; long-running jobs finish before the next check.
+
 Use the [one-device automatic update setup](ONE_DEVICE_UPDATES.md). The current
 courier downloads software, the official Home Assistant image and signed Ubuntu
 Docker prerequisites on **Duet**, then installs on the offline **Tiny** over the

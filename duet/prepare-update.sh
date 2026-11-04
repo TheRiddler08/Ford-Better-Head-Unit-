@@ -10,6 +10,17 @@ TARGET="${1:-cayden@172.16.42.2}"
 [[ "$HOME" =~ ^/[a-zA-Z0-9_./-]+$ && "$ROOT" =~ ^/[a-zA-Z0-9_./-]+$ ]] || { echo 'Unsupported home/repository path.' >&2; exit 1; }
 BASE="$HOME/.local/share/drive-console"
 AUTOSTART="$HOME/.config/autostart/car-courier-pairing.desktop"
+if [[ -f "$ROOT/duet/update.sh" ]] && python3 - "$ROOT" "$BASE/courier" "$HOME/.ssh/drive-console-courier" "$TARGET" <<'PYPAIRED'
+import sys
+sys.path.insert(0,sys.argv[1])
+from deploy.offline_updates import paired
+raise SystemExit(0 if paired(*sys.argv[2:]) else 1)
+PYPAIRED
+then
+    rm -f "$AUTOSTART"
+    echo 'Tiny is already paired. Using the password-free courier update path.'
+    exec bash "$ROOT/duet/update.sh" "$TARGET"
+fi
 if [[ "$MODE" == prepare ]]; then
     bash "$ROOT/duet/install.sh"
     bash "$ROOT/duet/install-courier.sh" "$TARGET"

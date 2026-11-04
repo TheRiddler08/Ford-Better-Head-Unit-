@@ -12,6 +12,27 @@ Python 3, Git, SSH, sudo, a dashboard checkout on `main`, and its working
 `car-dashboard.service`. It does not install an operating system or guess which
 serial adapter is the GPS versus OBD device.
 
+## Already paired: update without passwords
+
+On the Duet, get this helper once:
+
+```sh
+cd ~/car-dashboard
+git pull --ff-only
+bash duet/update.sh cayden@172.16.42.2
+```
+
+Future manual checks only need `bash duet/update.sh cayden@172.16.42.2`.
+It downloads the full runtime and delivers using the existing restricted courier
+key, without administrative SSH, sudo, or pairing again. If Tiny is disconnected,
+the completed bundle stays queued. Leave the automatic courier enabled for retries.
+`prepare-update.sh` also takes this shortcut after a successful full delivery.
+Use `setup-offline-updates.sh` only for initial pairing or explicit pairing repair.
+
+First-time pairing still needs authorization: its administrative SSH connection
+is reused across bootstrap steps, followed by Tiny's sudo authorization. No
+password is stored and no unrestricted passwordless administrator key is added.
+
 ## One command while Tiny is disconnected
 
 On Duet's Wi-Fi, as your normal desktop user:
@@ -93,7 +114,8 @@ an SSH private key or use the display key for software installation.
 
 ## Normal routine — no update commands
 
-- Duet checks Git, Home Assistant **stable**, and official Ubuntu metadata hourly.
+- Duet checks Git, the pinned Car Assistant dependency image, and official Ubuntu
+  metadata every four minutes while idle.
   Failed downloads retry after two minutes; partial downloads never replace a
   completed ready package. Content-addressed caches avoid fetching unchanged
   layers/packages repeatedly.
@@ -104,7 +126,9 @@ an SSH private key or use the display key for software installation.
 - Install/validation failures keep the update queued with increasing retry delays
   rather than restarting HA every 30 seconds. A newly downloaded payload gets a
   fresh attempt. Connectivity failures retry quickly.
-- Managed Duet worker code updates itself only after an active transfer finishes.
+- Managed Duet worker code reloads only after active downloads and transfers
+  finish. The manual helper can reload an already-running older user-owned worker
+  without sudo; it does not start an intentionally stopped service.
   The Tiny receiver publishes a complete, versioned bootstrap from the signed
   Git commit and atomically switches its selector after successful validation.
 - If the Tiny was deliberately configured with HA disabled or stopped, the

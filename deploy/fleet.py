@@ -35,6 +35,7 @@ SUBNET='172.16.42.0/24'
 BROADCAST='172.16.42.255'
 PORT=8798
 VERSION=1
+UPDATE_CHECK_INTERVAL=240
 BASE=Path('/usr/local/lib/car-dashboard')
 CONFIG=Path('/etc/car-dashboard/fleet.json')
 STATE=Path('/var/lib/car-dashboard-fleet')
@@ -583,8 +584,8 @@ TimeoutStartSec=300
 Description=Automatically update Tiny when any Internet path is available
 [Timer]
 OnBootSec=180
-OnCalendar=*-*-* *:0/15:00
-RandomizedDelaySec=60
+OnCalendar=*-*-* *:0/4:00
+RandomizedDelaySec=15
 Persistent=true
 [Install]
 WantedBy=timers.target
@@ -1117,19 +1118,20 @@ def refresh_locked(config):
         if config['role'] in ('pi','laptop') and config.get('auto_update',True):
             status=load(STATUS,{})
             stamp=STATE/'last-fetch.json';last=load(stamp,{}).get('time',0)
-            if (status.get('wifiInternet') or config['role']=='laptop') and time.time()-last>900:
+            if (status.get('wifiInternet') or config['role']=='laptop') and time.time()-last>=UPDATE_CHECK_INTERVAL:
                 save(stamp,{'time':time.time()})
                 if git(config,'remote','get-url','origin')!=ORIGIN:raise ValueError('Unexpected managed Git origin')
                 if git(config,'symbolic-ref','--short','HEAD')!='main' or git(config,'status','--porcelain'):raise ValueError('Managed checkout has local changes/branch; keeping them')
                 old=git(config,'rev-parse','HEAD')
                 git(config,'fetch','--no-tags','origin','main')
                 new=git(config,'rev-parse','FETCH_HEAD');git(config,'merge-base','--is-ancestor',old,new)
-                # Validate candidate syntax before advancing the managed checkout.
-                for source in SOURCES.values():ast.parse(git(config,'show',new+':'+source))
-                git(config,'merge','--ff-only',new)
-                tests=subprocess.run(['runuser','-u',config['user'],'--','/usr/bin/python3','-B','-m','unittest','discover','-s','tests'],cwd=config['repo'],capture_output=True,timeout=300)
-                if tests.returncode:
-                    git(config,'reset','--keep',old);raise ValueError('Managed candidate tests failed; kept the previous version')
+                if new!=old:
+                    # Unchanged checks do not rerun tests or rewrite the checkout.
+                    for source in SOURCES.values():ast.parse(git(config,'show',new+':'+source))
+                    git(config,'merge','--ff-only',new)
+                    tests=subprocess.run(['runuser','-u',config['user'],'--','/usr/bin/python3','-B','-m','unittest','discover','-s','tests'],cwd=config['repo'],capture_output=True,timeout=300)
+                    if tests.returncode:
+                        git(config,'reset','--keep',old);raise ValueError('Managed candidate tests failed; kept the previous version')
                 save(stamp,{'time':time.time()})
         commit=git(config,'rev-parse','HEAD')
     if not re.fullmatch('[0-9a-f]{40}',commit):raise ValueError('Invalid source commit')

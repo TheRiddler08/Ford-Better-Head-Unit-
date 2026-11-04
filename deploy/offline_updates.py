@@ -11,6 +11,7 @@ from pathlib import Path
 import pwd
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -23,6 +24,7 @@ REPOSITORY='TheRiddler08/Ford-Better-Head-Unit-'
 ORIGIN='https://github.com/'+REPOSITORY+'.git'
 NAMESPACE='car-dashboard-courier'
 MAX_PACKAGE=8*1024**3
+CHECK_INTERVAL=240
 SHA=re.compile(r'^[0-9a-f]{40}$')
 TARGET=re.compile(r'^[A-Za-z0-9_.-]+@[A-Za-z0-9_.:-]+$')
 
@@ -142,10 +144,10 @@ def publish_version(git,commit,base):
     return changed
 
 
-def prepare(state,key,include_runtime=True):
+def prepare(state,key,include_runtime=True,blocking=False):
     """Download on the Duet; no Docker or amd64 executable runs there."""
     state=Path(state);state.mkdir(parents=True,exist_ok=True)
-    with locked(state/'prepare.lock'):
+    with locked(state/'prepare.lock',blocking=blocking):
         key=ensure_key(key)
         repo=state/'cache.git'
         if not repo.exists():run(['git','init','--bare',repo])
@@ -278,8 +280,10 @@ def provision_role(git,commit,repo,user):
             temp=Path(temp)
             for name,content in sources.items():(temp/name).write_bytes(content);os.chmod(temp/name,0o644)
             os.chmod(temp,0o755);os.replace(temp,destination)
-    output=run(['/usr/bin/python3','-I',destination/'fleet.py','install','--role','tiny','--repo',repo,'--user',user,
-                '--source',destination,'--commit',commit,'--offline'],timeout=180)
+    args=['/usr/bin/python3','-I',destination/'fleet.py','install','--role','tiny','--repo',repo,'--user',user,
+          '--source',destination,'--commit',commit,'--offline']
+    if b'--retry-missing' in sources['fleet.py']:args+=['--retry-missing']
+    output=run(args,timeout=180)
     return json.loads(output.decode().splitlines()[-1])
 
 
@@ -376,7 +380,9 @@ def deliver(state,key,target):
         if same and 0<failure.get('nextAttempt',0)-time.time()<=3600:
             return {'ok':False,'deferred':True,'payloadId':delivery_id(manifest),'nextAttempt':failure['nextAttempt']}
         with package.open('rb') as src:
-            result=subprocess.run(['ssh','-T','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes',
+            result=subprocess.run(['ssh','-F','/dev/null','-T','-o','BatchMode=yes',
+                '-o','IdentitiesOnly=yes','-o','IdentityAgent=none','-o','ControlMaster=no','-o','ControlPath=none',
+                '-o','PasswordAuthentication=no','-o','KbdInteractiveAuthentication=no','-o','StrictHostKeyChecking=yes',
                 '-o','ConnectTimeout=5','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=3',
                 '-i',str(Path(key).expanduser()),target],stdin=src,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=3600)
         if result.returncode:
@@ -394,9 +400,88 @@ def deliver(state,key,target):
         return response
 
 
+def paired(state,key,target):
+    """A local convenience check, never an authorization bypass on the Tiny."""
+    try:
+        receipt=json.loads((Path(state)/'delivered.json').read_text())
+        return (Path(key).expanduser().is_file() and receipt.get('ok') is True and receipt.get('target')==target
+                and receipt.get('provisioning',0)>=1)
+    except (OSError,ValueError,TypeError):return False
+
+
+def worker_running(state):
+    try:
+        with locked(Path(state)/'worker.lock'):return False
+    except BlockingIOError:return True
+
+
+def reload_worker_when_idle(state,wait=3600,proc=Path('/proc')):
+    """Stop only our owned supervised watcher, never an active download/transfer."""
+    state=Path(state);deadline=time.monotonic()+wait
+    try:
+        with locked(state/'reload.lock'):
+            while True:
+                try:
+                    with locked(state/'prepare.lock'),locked(state/'courier.lock'):
+                        pid=int((state/'worker.lock').read_text().strip())
+                        entry=proc/str(pid);fd=None
+                        if pid<=1 or pid==os.getpid() or entry.stat().st_uid!=os.getuid():return False
+                        try:
+                            if hasattr(os,'pidfd_open') and hasattr(signal,'pidfd_send_signal'):
+                                try:fd=os.pidfd_open(pid)
+                                except OSError:pass
+                            raw=(entry/'cmdline').read_bytes()
+                            argv=[os.fsdecode(value) for value in raw.rstrip(b'\0').split(b'\0')]
+                            if not argv or not Path(argv[0]).name.startswith('python'):return False
+                            items=argv[1:]
+                            while items and items[0] in ('-u','-B','-I'):items=items[1:]
+                            if len(items)<2 or items[1]!='watch':return False
+                            script=Path(items[0])
+                            if script.name!='offline_updates.py' or not script.resolve().is_relative_to(state.parent.resolve()):return False
+                            actual=Path.home()/'.local/share/drive-console/courier'
+                            for index,value in enumerate(items[2:],2):
+                                if value=='--state' and index+1<len(items):actual=Path(items[index+1])
+                                elif value.startswith('--state='):actual=Path(value.split('=',1)[1])
+                            if actual.resolve()!=state.resolve():return False
+                            if fd is not None:signal.pidfd_send_signal(fd,signal.SIGTERM)
+                            elif (entry/'cmdline').read_bytes()==raw:os.kill(pid,signal.SIGTERM)
+                            else:return False
+                            return True
+                        finally:
+                            if fd is not None:os.close(fd)
+                except BlockingIOError:
+                    if time.monotonic()>=deadline:return False
+                    time.sleep(1)
+    except (OSError,ValueError):return False
+
+
+def request_worker_reload(state):
+    if not worker_running(state):return False
+    subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'reload-worker','--state',str(state)],
+        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+    return True
+
+
+def update_now(state,key,target,include_runtime=True):
+    if not TARGET.fullmatch(target):raise ValueError('Expected SSH user@host')
+    key=Path(key).expanduser()
+    if not key.is_file():raise ValueError('Courier is not set up; run the one-time Duet pairing setup first')
+    prepared=prepare(state,key,include_runtime,blocking=True)
+    result={'commit':prepared['commit'],'downloaded':True}
+    try:
+        delivery=deliver(state,key,target)
+        result.update(phase=('already-installed' if delivery.get('skipped') else 'installed') if delivery.get('ok') else 'queued',delivery=delivery)
+    except BlockingIOError:
+        result.update(phase='installation-in-progress',message='The courier is already installing; this package remains queued')
+    except RuntimeError as exc:
+        result.update(phase='queued',error=str(exc),automaticRetry=worker_running(state))
+    if prepared.get('workerUpdated'):result['workerReloadQueued']=request_worker_reload(state)
+    return result
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=['prepare','deliver','watch','status','receive'])
+    parser.add_argument('action',choices=['prepare','deliver','update','watch','status','receive','reload-worker'])
     parser.add_argument('--state',default=str(Path.home()/'.local/share/drive-console/courier'))
     parser.add_argument('--key',default=str(Path.home()/'.ssh/drive-console-courier'))
     parser.add_argument('--target',default='cayden@172.16.42.2')
@@ -404,13 +489,19 @@ def main():
     parser.add_argument('--repo');parser.add_argument('--user');parser.add_argument('--allowed-signers')
     args=parser.parse_args()
     try:
-        if args.action=='prepare':result=prepare(args.state,args.key,not args.code_only)
+        if args.action=='update':
+            print('Preparing the latest signed update. Waiting for any active download; no SSH/sudo password is needed.',flush=True)
+            result=update_now(args.state,args.key,args.target,not args.code_only)
+        elif args.action=='reload-worker':
+            result={'reloaded':reload_worker_when_idle(args.state),'time':int(time.time())}
+            save_json(Path(args.state)/'worker-reload.json',result)
+        elif args.action=='prepare':result=prepare(args.state,args.key,not args.code_only)
         elif args.action=='deliver':result=deliver(args.state,args.key,args.target)
         elif args.action=='receive':
             if not all([args.repo,args.user,args.allowed_signers]):raise ValueError('Missing receiver settings')
             result=receive(args.repo,args.user,args.allowed_signers)
         elif args.action=='status':
-            result={name:json.loads((Path(args.state)/name).read_text()) if (Path(args.state)/name).exists() else None for name in ['prepared.json','delivered.json','duet-runtime.json','activity.json','failed.json']}
+            result={name:json.loads((Path(args.state)/name).read_text()) if (Path(args.state)/name).exists() else None for name in ['prepared.json','delivered.json','duet-runtime.json','activity.json','failed.json','worker-reload.json']}
         else:
             Path(args.state).mkdir(parents=True,exist_ok=True)
             worker_lock=(Path(args.state)/'worker.lock').open('a')
@@ -419,7 +510,8 @@ def main():
             stop=threading.Event();restart=threading.Event();transferring=threading.Lock()
             def downloads():
                 while not stop.is_set():
-                    delay=3600
+                    started=time.monotonic()
+                    delay=CHECK_INTERVAL
                     try:
                         save_json(Path(args.state)/'activity.json',{'phase':'downloading','started':int(time.time())})
                         result=prepare(args.state,args.key,not args.code_only)
@@ -429,7 +521,7 @@ def main():
                     except Exception as exc:
                         save_json(Path(args.state)/'activity.json',{'phase':'retrying-download','error':str(exc)[-500:],'checked':int(time.time())})
                         print('Download unavailable; previous package retained: '+str(exc),file=sys.stderr,flush=True);delay=120
-                    stop.wait(delay)
+                    stop.wait(max(0,delay-(time.monotonic()-started)))
             def deliveries():
                 while not stop.is_set():
                     with transferring:
@@ -437,14 +529,19 @@ def main():
                         try:print(json.dumps({'delivery':deliver(args.state,args.key,args.target)}),flush=True)
                         except Exception as exc:print('Tiny unavailable; queued update retained: '+str(exc),file=sys.stderr,flush=True)
                     stop.wait(30)
+            running_source=Path(__file__).resolve()
             threading.Thread(target=downloads,daemon=True).start()
             threading.Thread(target=deliveries,daemon=True).start()
             while not stop.wait(1):
+                if (Path(args.state).parent/'courier-current/offline_updates.py').resolve()!=running_source:restart.set()
                 if restart.is_set():
                     with transferring:
-                        stop.set()
-                        # No active SSH transfer is killed by self-upgrade.
-                        os.execv(sys.executable,[sys.executable,str(Path(args.state).parent/'courier-current/offline_updates.py'),*sys.argv[1:]])
+                        try:
+                            with locked(Path(args.state)/'prepare.lock'):
+                                stop.set()
+                                # No active transfer or download is killed.
+                                os.execv(sys.executable,[sys.executable,str(Path(args.state).parent/'courier-current/offline_updates.py'),*sys.argv[1:]])
+                        except BlockingIOError:continue
         print(json.dumps(result),flush=True)
         if args.action=='deliver' and result.get('ok') is False:return 1
     except (Exception,KeyboardInterrupt) as exc:

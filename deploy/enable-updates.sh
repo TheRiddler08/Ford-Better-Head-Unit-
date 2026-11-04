@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs a root-owned 15 minute systemd update timer (opt-in).
+# Installs a root-owned four-minute systemd update timer (opt-in).
 set -euo pipefail
 [[ "$EUID" != 0 ]] || { echo 'Run as Ubuntu login user, not root' >&2; exit 1; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -13,7 +13,7 @@ REMOTE="$(git -C "$ROOT" remote get-url origin)"
 [[ -f /etc/systemd/system/car-dashboard.service ]] || { echo 'Run deploy/install.sh first'; exit 1; }
 echo "Auto update source: $REMOTE, branch: $BRANCH"
 echo 'WARNING: updates will execute new code from this branch. Protect branch permissions.'
-read -r -p 'Enable automatic GitHub update checks every 15 minutes? Type yes: ' answer
+read -r -p 'Enable automatic GitHub update checks every four minutes? Type yes: ' answer
 [[ "$answer" == yes ]] || { echo 'Cancelled'; exit 0; }
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
@@ -35,10 +35,10 @@ TimeoutStartSec=180
 UNIT
 sudo tee /etc/systemd/system/car-dashboard-update.timer >/dev/null <<'UNIT'
 [Unit]
-Description=Check Ford dashboard updates every 15 minutes
+Description=Check Ford dashboard updates every four minutes
 [Timer]
-OnCalendar=*-*-* *:0/15:00
-RandomizedDelaySec=60s
+OnCalendar=*-*-* *:0/4:00
+RandomizedDelaySec=15s
 Persistent=true
 Unit=car-dashboard-update.service
 [Install]

@@ -6,8 +6,14 @@ ROLE="${1:?Device role required: pi, tiny, duet or laptop}"
 [[ "$ROLE" == pi || "$ROLE" == tiny || "$ROLE" == duet || "$ROLE" == laptop ]] || exit 2
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 BOOTSTRAP=/usr/local/lib/car-dashboard/fleet-bootstrap
-sudo install -d -m 0755 "$BOOTSTRAP"
-sudo install -o root -g root -m 0644 "$ROOT/deploy/fleet.py" "$BOOTSTRAP/fleet.py"
-sudo install -o root -g root -m 0644 "$ROOT/power/wake.py" "$ROOT/power/standby.py" "$BOOTSTRAP/"
 COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
-sudo /usr/bin/python3 -I "$BOOTSTRAP/fleet.py" install --role "$ROLE" --repo "$ROOT" --user "$(id -un)" --source "$BOOTSTRAP" --commit "$COMMIT"
+# One elevation even on systems whose sudo timestamp cache is disabled.
+sudo /bin/bash -s -- "$ROOT" "$ROLE" "$(id -un)" "$COMMIT" "$BOOTSTRAP" <<'ROOTSETUP'
+set -euo pipefail
+ROOT="$1"; ROLE="$2"; USER_NAME="$3"; COMMIT="$4"; BOOTSTRAP="$5"
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+install -d -m 0755 "$BOOTSTRAP"
+install -o root -g root -m 0644 "$ROOT/deploy/fleet.py" "$BOOTSTRAP/fleet.py"
+install -o root -g root -m 0644 "$ROOT/power/wake.py" "$ROOT/power/standby.py" "$BOOTSTRAP/"
+exec /usr/bin/python3 -I "$BOOTSTRAP/fleet.py" install --role "$ROLE" --repo "$ROOT" --user "$USER_NAME" --source "$BOOTSTRAP" --commit "$COMMIT"
+ROOTSETUP
