@@ -41,23 +41,6 @@ test('page appearance and navigation controls live in the page card',()=>{
   for(const kind of ['clock','media','map','vehicleArt','gauges','metrics','value','text','link'])assert.ok(names(editorSchema(kind)).includes('custom_css'));
 });
 
-test('simulated and laptop fixes never change backend state and expire',async()=>{
-  const {preview,previewHass}=await import('../home_assistant/drive_console.js');
-  const real={connected:false,states:{'sensor.car_speed':{state:'unavailable'}}};
-  preview.mode='demo';preview.started=0;
-  const first=previewHass(real,10000),next=previewHass(real,20000);
-  assert.equal(real.states['sensor.car_speed'].state,'unavailable');
-  assert.equal(real.connected,false);
-  assert.notEqual(first.states['device_tracker.car_location'].attributes.latitude,next.states['device_tracker.car_location'].attributes.latitude);
-  assert.equal(first.states['sensor.car_speed'].attributes.preview,true);
-  await assert.rejects(first.callService(),/disabled/);
-  preview.mode='location';preview.fix={latitude:40,longitude:-76,accuracy:20,time:10000};
-  assert.equal(previewHass(real,11000).states['device_tracker.car_location'].attributes.gps_accuracy,20);
-  assert.equal(previewHass(real,11000).states['sensor.car_speed'].state,'unavailable');
-  assert.equal(previewHass(real,41000).states['binary_sensor.car_gps_fix'].state,'off');
-  preview.mode='live';preview.fix=null;
-  assert.equal(previewHass(real),real);
-});
 test('raw code editor exposes all sources and keeps network blocked in custom frame',async()=>{
   const {htmlDocument}=await import('../home_assistant/drive_console.js');
   const fields=editorSchema('html').flatMap(f=>f.schema||[f]).map(f=>f.name);

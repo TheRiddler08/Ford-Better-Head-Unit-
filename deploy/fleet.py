@@ -348,6 +348,7 @@ def publish(sources,base=BASE):
 
 def native_dependencies(offline=False,role=None):
     needed=list(REQUIRED)
+    if role=='tiny':needed.append('gpsd')
     pi_client=role=='pi' and load(CONFIG,{}).get('pi_storage_client',True)
     if role in ADDRESSES and shutil.which('apt-get'):
         needed+=['mfsmount','mfssetgoal'] if pi_client else ['mfsmount','mfschunkserver','ffprobe']+(['mfsmaster'] if role=='tiny' else ['mfsmetalogger'])
@@ -363,6 +364,7 @@ def native_dependencies(offline=False,role=None):
         run(['apt-get','update'],timeout=300)
         env=dict(os.environ,DEBIAN_FRONTEND='noninteractive')
         packages=['network-manager','iproute2','iptables','dnsmasq-base','curl','ethtool','python3-cryptography','python3-paho-mqtt','python3-serial','python3-nacl','moosefs-client']
+        if role=='tiny':packages+=['gpsd','gpsd-clients']
         if not pi_client:packages+=['moosefs-master','moosefs-chunkserver','moosefs-metalogger','ffmpeg']
         subprocess.run(['apt-get','install','-y','--no-install-recommends',*packages],env=env,check=True,timeout=600)
     elif shutil.which('apk'):
@@ -532,6 +534,10 @@ depend() {{ need car-fleet; }}
 def install_gps(config):
     """Adopt Tiny's GPS client automatically; never probe arbitrary USB ports."""
     if not config.get('gps_recording',True):return
+    commit=config.get('commit') or git(config,'rev-parse','HEAD')
+    simulator=source_bytes(config,commit,'recorder/virtual_gps.py')
+    ast.parse(simulator)
+    save(BASE/'virtual_gps.py',simulator)
     service='car-gps-recorder.service'
     existing=Path('/etc/systemd/system')/service
     # Respect a deliberately stopped or masked existing recorder.

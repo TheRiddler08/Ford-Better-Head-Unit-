@@ -7,8 +7,7 @@ from playwright.sync_api import sync_playwright
 
 module,_=classic_resource(Path(__file__).resolve().parents[1])
 page_html='''<script type="module">
-import {preview} from '/module.js';
-window.preview=preview;
+import '/module.js';
 const card=document.createElement('drive-console-widget');
 card.setConfig({widget:'html',html:'<h1 id="value">Waiting</h1>',javascript:`
 try { parent.document.body; document.body.dataset.escape='yes'; }
@@ -25,9 +24,9 @@ with sync_playwright() as p:
     frame=page.frame_locator('drive-console-widget iframe')
     frame.locator('#value').filter(has_text='live:12').wait_for()
     assert frame.locator('body').get_attribute('data-escape')=='blocked'
-    page.evaluate("preview.mode='demo';card.update()")
-    frame.locator('#value').filter(has_text='demo:').wait_for()
-    page.evaluate("preview.mode='live';card.update()")
+    page.evaluate("card.hass={connected:true,states:{'sensor.car_speed':{state:'35',attributes:{}}}}")
+    frame.locator('#value').filter(has_text='live:35').wait_for()
+    page.evaluate("card.hass={connected:true,states:{'sensor.car_speed':{state:'12',attributes:{}}}}")
     frame.locator('#value').filter(has_text='live:12').wait_for()
     browser.close()
-print('HTML sandbox and live/demo/live delivery passed')
+print('HTML sandbox and normal state delivery passed')

@@ -140,7 +140,7 @@ is refused.
 
 The original car console remains installed independently of Car Assistant. On
 Duet, open `http://127.0.0.1:8877/cockpit.html` or choose **Original console**
-under the dashboard's **Data source** controls. Keep both while deciding which
+under the dashboard's **GPS source** controls. Keep both while deciding which
 editor you prefer. The standalone WSL HA preview does not start the original
 console server. To view it there too, run this in a second WSL terminal from
 this repository (leave that terminal running):
@@ -183,18 +183,7 @@ parent-page access, HA credentials or service calls. External scripts, fetches
 and remote images are blocked by the frame's content policy; use inline code
 and data images. This is a custom HTML card, not a replacement for HA's frontend.
 
-Expand **Data source** above the dashboard:
-
-- **Simulated drive** supplies changing GPS coordinates, speed/RPM and sample
-  vehicle metrics to Drive Console widgets and HTML cards.
-- **Laptop / browser location** requests browser permission and displays the
-  computer's location with its reported accuracy. Windows location services may
-  need enabling; most laptops use approximate Wi-Fi/OS location, not a GPS
-  receiver. Use localhost or HTTPS. Fixes expire after 30 seconds without updates.
-- **Live car** restores normal readings. Reloading also leaves test mode.
-
-Test mode is visibly labelled and stays only in browser memory. It does not
-write recordings, transmit over LoRaWAN, change HA entities, or simulate native
-third-party HA cards. Browser location leaves OBD readings unavailable. The test
-map shows coordinates rather than loading road tiles; this tests display/data
-bindings, not historical trip recording, route replay or navigation.
+GPS testing now uses an external virtual serial device rather than browser
+state overrides. See [Virtual GPS](VIRTUAL_GPS.md). Normal GPS values, recorders,
+HTTP reporting, HA entities and map rendering are used unchanged. The former
+browser-only demo and browser-location buttons have been removed.
