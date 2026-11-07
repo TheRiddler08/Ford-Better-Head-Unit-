@@ -349,6 +349,8 @@ def receive(repo,user,allowed_signers):
                 source=git('show',manifest['commit']+':deploy/home_assistant.py')
                 with tempfile.NamedTemporaryFile(dir=manager.parent,delete=False) as f:f.write(source);pending_manager=Path(f.name)
                 os.chmod(pending_manager,0o644);os.replace(pending_manager,manager)
+                # A receipt must cover the served assets, not just the Git checkout.
+                run(['/usr/bin/python3','-I',manager,'reconcile'],timeout=300)
         result['provisioning']=1
         result['roleSetup']=role_setup
         result['installed']=int(time.time())

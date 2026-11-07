@@ -74,8 +74,9 @@ BROWSER_PAGE = b'''<!doctype html><meta charset="utf-8"><title>Laptop GPS source
 const token=new URLSearchParams(location.hash.slice(1)).get('token');
 let watch=null,latest=null,busy=false;
 const status=document.getElementById('status');
-async function send(){if(busy||!latest)return;busy=true;try{
+async function send(){if(busy||!latest)return;if(Date.now()-latest.timestamp>25000){latest=null;status.textContent='Location paused: waiting for a fresh fix. Return to this window or use the native location helper.';return;}busy=true;try{
  const r=await fetch('/fix',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(latest)});
+ if(r.status===202){latest=null;status.textContent='Waiting for a fresh location fix; background location may be paused.';return;}
  if(!r.ok)throw Error('Source rejected location: HTTP '+r.status);
  status.textContent='Sharing: '+latest.latitude+', '+latest.longitude+'; accuracy +/-'+Math.round(latest.accuracy)+' m';
 }catch(e){status.textContent=e.message;}finally{busy=false;}}
@@ -89,7 +90,10 @@ document.getElementById('start').onclick=()=>{
 };
 document.getElementById('stop').onclick=stop;
 setInterval(send,1000);
-setInterval(()=>{if(watch!==null)navigator.geolocation.getCurrentPosition(located,e=>{status.textContent=e.message;},{enableHighAccuracy:true,maximumAge:0,timeout:15000});},10000);
+function refresh(){if(watch!==null)navigator.geolocation.getCurrentPosition(located,e=>{status.textContent=e.message;},{enableHighAccuracy:true,maximumAge:0,timeout:15000});}
+setInterval(refresh,10000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
+window.addEventListener('focus',refresh);
 </script>'''
 
 
@@ -122,9 +126,9 @@ class BrowserSource:
                     if not 0<length<=2048:raise ValueError('Invalid body length')
                     self.connection.settimeout(3)
                     value=json.loads(self.rfile.read(length))
-                    source.accept(value)
+                    accepted=source.accept(value)
                 except (ValueError,TypeError,KeyError,OSError):return self.reply(400)
-                self.reply(204)
+                self.reply(204 if accepted else 202)
             def do_DELETE(self):
                 if self.path!='/fix':return self.reply(404)
                 if not self.authorized():return self.reply(403)
@@ -138,11 +142,12 @@ class BrowserSource:
         for key,minimum,maximum in [('latitude',-90,90),('longitude',-180,180),('accuracy',0,100000),('timestamp',0,float('inf'))]:
             n=value[key]
             if isinstance(n,bool) or not isinstance(n,(float,int)) or not math.isfinite(n) or not minimum<=n<=maximum:raise ValueError('Invalid location')
-        if not -5<=time.time()-value['timestamp']/1000<=30:raise ValueError('Stale location')
         for key,minimum,maximum in [('speed',0,1000),('heading',0,360),('altitude',-15000,100000)]:
             n=value.get(key)
             if n is not None and (isinstance(n,bool) or not isinstance(n,(int,float)) or not math.isfinite(n) or not minimum<=n<=maximum):raise ValueError('Invalid location')
+        if not -5<=time.time()-value['timestamp']/1000<=30:return False
         with self.lock:self.fix=dict(value)
+        return True
     def data(self):
         with self.lock:value=self.fix
         if value and -5<=time.time()-value['timestamp']/1000<=30:

@@ -48,8 +48,10 @@ class VirtualGPS(unittest.TestCase):
             value={'latitude':40,'longitude':-76,'accuracy':20,'timestamp':time.time()*1000}
             source.accept(value)
             self.assertIn(b'4000.00000,N',source.data())
-            for bad in (dict(value,latitude=True),dict(value,longitude=181),dict(value,timestamp=0),dict(value,speed=-1)):
+            for bad in (dict(value,latitude=True),dict(value,longitude=181),dict(value,speed=-1)):
                 with self.assertRaises(ValueError):source.accept(bad)
+            self.assertFalse(source.accept(dict(value,timestamp=0)))
+            self.assertEqual(source.fix,value)
             with patch.object(virtual.time,'time',return_value=time.time()+40):
                 self.assertIn(b'GPRMC,,V',source.data())
         finally:source.server.server_close()

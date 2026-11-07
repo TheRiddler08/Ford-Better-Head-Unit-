@@ -189,3 +189,36 @@ errors are checked before an image is displayed. A provider 403/429 stops furthe
 online requests for that page session; the app reports the refusal rather than
 rendering a denial image as a working map. This does not bypass provider bans,
 change server identities, or provide offline download rights.
+
+### Windows background location (including WSL laptops)
+
+A browser may suspend geolocation when its tab is hidden. The source page now
+avoids submitting expired positions, asks for a fresh fix on returning to the
+page, and reports a paused location instead of repeating HTTP 400. The receiver
+returns 202 for an expired, otherwise valid fix without storing or refreshing it.
+Browser lifecycle limitations still apply; continuous background location should
+use the native Windows helper instead.
+
+Keep the Tiny's `--browser` source and the laptop SSH tunnel running, then run
+`dev/share_laptop_location.ps1` in **Windows PowerShell 5.1** as your normal user.
+It prompts for the complete temporary source URL, uses Windows' native location
+provider, and sends to the same token-authenticated local endpoint. No browser
+needs to stay active. Do not run both helpers at once; close the browser sharing
+page first.
+
+From an updated checkout in WSL:
+
+```sh
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w "$PWD/dev/share_laptop_location.ps1")"
+```
+
+Alternatively run the script from a Windows checkout using Windows PowerShell.
+The command sets script execution policy only for this PowerShell process; it
+does not change the machine policy or override organization policy. Windows **Location services** and desktop-app
+location permission must be enabled. Location accuracy and updates depend on
+Windows hardware/provider availability. WSL itself does not supply Windows
+location: the helper intentionally runs on the Windows side. It keeps the
+provider's actual timestamp and refuses to treat an old coordinate as fresh.
+Keep its terminal and SSH tunnel open; Ctrl+C stops sharing. Native Windows
+provider behavior requires testing on Windows; cloud tests cover the receiving
+GPS pipeline and browser lifecycle handling.
