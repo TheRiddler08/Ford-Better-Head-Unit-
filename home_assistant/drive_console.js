@@ -26,6 +26,10 @@ function htmlDocument(config){
   const safe=value=>String(value||'').replace(/<\/script/gi,'<\\/script');
   return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'"><style>body{margin:0;color:#eee;background:#101c30;font-family:system-ui}${String(config.css||'').replace(/<\/style/gi,'<\\/style')}</style>${config.html||'<h1>My car dashboard</h1><p id="speed">Waiting for data</p>'}<script>window.driveData={};addEventListener('message',e=>{if(e.source!==parent||e.data?.channel!=='drive-html-data')return;window.driveData=e.data.data;dispatchEvent(new CustomEvent('drive-data',{detail:window.driveData}));});parent.postMessage({channel:'drive-html-ready'},'*');<\/script><script>${safe(config.javascript)}<\/script>`;
 }
+function gpsPosition(hass,entity=DEFAULTS.gps){
+  const obj=hass?.states?.[entity],a=obj?.attributes||{};
+  return hass?.connected && obj && !['unknown','unavailable'].includes(obj.state) && Number.isFinite(a.latitude) && Number.isFinite(a.longitude) && Math.abs(a.latitude)<=90 && Math.abs(a.longitude)<=180?a:null;
+}
 function go(url,newTab=false){
   let dest;try{dest=new URL(url,location.href);}catch(_){return;}
   if(!['http:','https:'].includes(dest.protocol))return;
@@ -97,6 +101,7 @@ class DriveConsoleWidget extends HTMLElement {
   render(){
     if(!this.config || !ORIGINAL)return;
     const kind=this.config.widget;
+    this._mapKey=null;this._ticket=(this._ticket||0)+1;
     this.shadowRoot.innerHTML=`<style>${ORIGINAL.css}\n${EXTRA_CSS}</style>`+markup(kind);
     applyWidgetStyle(this);
     if(kind==='html')this.shadowRoot.getElementById('htmlFrame').srcdoc=htmlDocument(this.config);
@@ -147,29 +152,41 @@ class DriveConsoleWidget extends HTMLElement {
     }else if(c.widget==='map')this.updateMap();
     else if(c.widget==='status'){
       text(r,'connectionTitle',h?.connected?'Car Assistant connected':'Waiting for Car Assistant');
-      const obd=h?.connected && h.states?.[c.obd_entity||'binary_sensor.car_obd_connection']?.state==='on',gps=h?.connected && h.states?.[c.gps_fix_entity||'binary_sensor.car_gps_fix']?.state==='on';
+      const obd=h?.connected && h.states?.[c.obd_entity||'binary_sensor.car_obd_connection']?.state==='on',gps=!!gpsPosition(h,c.gps_entity||DEFAULTS.gps);
       text(r,'connectionDetail',`OBD: ${obd?'connected':'unavailable'} · GPS: ${gps?'fix available':'unavailable'}. Measurements are read only.`);
     }
   }
   updateMap(){
-    const r=this.shadowRoot,h=this._hass,obj=h?.states?.[this.config.gps_entity||DEFAULTS.gps],a=obj?.attributes||{},lat=a.latitude,lon=a.longitude;
-    const valid=h?.connected && obj && !['unknown','unavailable'].includes(obj.state) && Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat)<=90 && Math.abs(lon)<=180;
+    const r=this.shadowRoot,h=this._hass,a=gpsPosition(h,this.config.gps_entity||DEFAULTS.gps),lat=a?.latitude,lon=a?.longitude;
+    const valid=!!a;
     text(r,'gpsCoordinates',valid?`${lat.toFixed(5)}, ${lon.toFixed(5)}`:'Waiting for GPS fix');
-    if(!valid){r.getElementById('mapEmpty').hidden=this.config.show_empty===false;r.getElementById('mapCenter').hidden=true;r.getElementById('mapTiles').replaceChildren();this._mapKey=null;text(r,'mapModeText','Waiting for GPS and local map tiles');text(r,'mapBadge','NO GPS');return;}
+    if(!valid){this._ticket=(this._ticket||0)+1;r.getElementById('mapEmpty').hidden=this.config.show_empty===false;r.querySelector('.map-empty strong').textContent='Waiting for GPS position';r.querySelector('.map-empty p').textContent='The GPS source has not supplied a current position.';r.getElementById('mapCenter').hidden=true;r.getElementById('mapTiles').replaceChildren();this._mapKey=null;text(r,'mapModeText','Waiting for GPS');text(r,'mapBadge','NO GPS');return;}
+    r.querySelector('.map-empty strong').textContent=this.config.empty_title||'GPS connected · map tiles unavailable';r.querySelector('.map-empty p').textContent=this.config.empty_message||'Position is available. Install local tiles or enable online map fallback in this card’s editor.';
     const z=this._zoom,n=2**z,clamped=Math.max(-85.0511,Math.min(85.0511,lat)),phi=clamped*Math.PI/180;
     const x=(lon+180)/360*n,y=(1-Math.log(Math.tan(phi)+1/Math.cos(phi))/Math.PI)/2*n;
     const surface=r.getElementById('mapSurface'),w=surface.clientWidth||500,height=surface.clientHeight||500,key=[z,x.toFixed(5),y.toFixed(5),w,height].join(':');
-    if(key===this._mapKey)return;this._mapKey=key;
-    const ticket=this._ticket=(this._ticket||0)+1,holder=r.getElementById('mapTiles');holder.replaceChildren();let loaded=0;
+    if(key===this._mapKey && (!this._mapRetryAt || Date.now()<this._mapRetryAt))return;this._mapKey=key;this._mapRetryAt=0;
+    const ticket=this._ticket=(this._ticket||0)+1,holder=r.getElementById('mapTiles');holder.replaceChildren();let loaded=0,onlineUsed=false;
     r.getElementById('mapEmpty').hidden=this.config.show_empty===false;r.getElementById('mapCenter').hidden=true;text(r,'mapModeText','Looking for local map tiles');
     let base;
-    try{base=new URL(this.config.tile_url||'http://127.0.0.1:8877/tiles/',location.href);if(!['http:','https:'].includes(base.protocol))return;}catch(_){return;}
+    try{if(this.config.tile_url){base=new URL(this.config.tile_url,location.href);if(!['http:','https:'].includes(base.protocol))return;}}catch(_){return;}
+    let attribution=r.getElementById('mapAttribution');if(!attribution){attribution=document.createElement('a');attribution.id='mapAttribution';attribution.href='https://www.openstreetmap.org/copyright';attribution.target='_blank';attribution.rel='noopener';attribution.textContent='© OpenStreetMap contributors';attribution.style.cssText='position:absolute;bottom:2px;right:2px;z-index:5;background:#071321dd;color:white;padding:2px 6px;font-size:11px';surface.append(attribution);}attribution.hidden=true;
     for(let dx=-Math.ceil(w/512);dx<=Math.ceil(w/512);dx++)for(let dy=-Math.ceil(height/512);dy<=Math.ceil(height/512);dy++){
       const tx=Math.floor(x)+dx,ty=Math.floor(y)+dy;if(ty<0 || ty>=n)continue;
       const image=new Image();image.alt='';image.style.left=`${w/2+(tx-x)*256}px`;image.style.top=`${height/2+(ty-y)*256}px`;
-      image.onload=()=>{if(this._ticket!==ticket)return;loaded++;r.getElementById('mapEmpty').hidden=true;r.getElementById('mapCenter').hidden=false;text(r,'mapModeText','Local map tiles · GPS position');text(r,'mapBadge','GPS FIX');};
-      image.onerror=()=>{image.hidden=true;if(this._ticket===ticket && !loaded){text(r,'mapModeText','Offline tiles unavailable');text(r,'mapBadge','NO TILES');}};
-      holder.append(image);image.src=new URL(`${z}/${((tx%n)+n)%n}/${ty}.png`,base.href.endsWith('/')?base.href:base.href+'/').href;
+      image.onload=()=>{if(this._ticket!==ticket)return;loaded++;this._mapRetryAt=0;onlineUsed=onlineUsed||!!image.dataset.online;r.getElementById('mapEmpty').hidden=true;r.getElementById('mapCenter').hidden=false;text(r,'mapModeText',onlineUsed?'Online map · GPS connected':'Offline map · GPS connected');text(r,'mapBadge','GPS FIX');if(image.dataset.online)attribution.hidden=false;r.querySelector('.map-heading strong').textContent=this.config.title||(onlineUsed?'Navigation · online map':'Offline navigation');};
+      let objectURL;
+      const missing=()=>{if(this._ticket!==ticket)return;image.hidden=true;if(!loaded){this._mapRetryAt=Date.now()+15000;text(r,'mapModeText','GPS connected · map tiles unavailable');text(r,'mapBadge','GPS · NO MAP');}};
+      const fallback=()=>{if(this._ticket!==ticket)return;if(this.config.online_fallback===false){missing();return;}image.hidden=false;image.dataset.online='true';image.onerror=missing;image.src=`https://tile.openstreetmap.org/${z}/${((tx%n)+n)%n}/${ty}.png`;};
+      const onload=image.onload;image.onload=()=>{if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null;}onload();};
+      image.onerror=()=>{if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null;}fallback();};
+      holder.append(image);
+      if(base)image.src=new URL(`${z}/${((tx%n)+n)%n}/${ty}.png`,base.href.endsWith('/')?base.href:base.href+'/').href;
+      else if(h?.fetchWithAuth){
+        h.fetchWithAuth(`/api/car_console/tiles/${z}/${((tx%n)+n)%n}/${ty}.png`).then(async response=>{
+          if(!response.ok)throw Error('Local tile unavailable');const blob=await response.blob();if(this._ticket!==ticket)return;objectURL=URL.createObjectURL(blob);image.src=objectURL;
+        }).catch(fallback);
+      }else fallback();
     }
   }
   updateMedia(){
@@ -184,13 +201,13 @@ const txt=name=>field(name,{text:{}}),flag=name=>field(name,{boolean:{}}),num=(n
 const choice=(name,options)=>field(name,{select:{options}}),entity=name=>field(name,{entity:{}});
 const group=(name,title,schema,expanded=false)=>({name,title,type:'expandable',flatten:true,expanded,schema});
 const PAGE_DEFAULTS={page_layout:'grid',columns:2,widget_gap:11,content_padding:16,show_header:true,show_rail:true,show_dock:true,show_tabs:true,show_clock:true,show_date:true,show_connections:true,show_theme_button:true,show_assistant_menu:true,show_volume:true,show_climate:true,show_home_button:true,show_back_button:true,compact_dock:true};
-const WIDGET_DEFAULTS={clock:{show_date:true,show_footer:true,date_format:'full',hour24:false},media:{show_art:true,show_picker:true,show_seek:true,show_controls:true},map:{show_map_controls:true,show_position:true,show_empty:true,zoom:13},vehicleArt:{show_illustration:true},gauges:{show_age:true,show_freshness:true,speed_unit:'mph',speed_decimals:0,rpm_decimals:1,rpm_divisor:'1000',rpm_max:6500},metrics:{temperature_unit:'F',visible_metrics:['coolant','voltage','fuel','load']},link:{new_tab:true},page:PAGE_DEFAULTS};
+const WIDGET_DEFAULTS={clock:{show_date:true,show_footer:true,date_format:'full',hour24:false},media:{show_art:true,show_picker:true,show_seek:true,show_controls:true},map:{online_fallback:true,show_map_controls:true,show_position:true,show_empty:true,zoom:13},vehicleArt:{show_illustration:true},gauges:{show_age:true,show_freshness:true,speed_unit:'mph',speed_decimals:0,rpm_decimals:1,rpm_divisor:'1000',rpm_max:6500},metrics:{temperature_unit:'F',visible_metrics:['coolant','voltage','fuel','load']},link:{new_tab:true},page:PAGE_DEFAULTS};
 function editorSchema(kind){
   const fields=[choice('widget',Object.entries(KINDS).map(([value,label])=>({value,label})))];
   if(kind==='page')return [...fields,
     group('page_layout_group','Page layout',[choice('page_layout',['cockpit','grid']),num('columns',1,6),num('widget_gap',0,60),num('content_padding',0,60),num('max_width',0,4096),num('left_width',.1,5,.05),num('map_width',.1,5,.05),num('right_width',.1,5,.05)],true),
     group('page_appearance','Page colors and typography',[choice('theme',['night','day','auto']),txt('background_color'),txt('surface_color'),txt('text_color'),txt('accent'),txt('border_color'),num('border_radius',0,60),num('font_size',10,36)]),
-    group('page_header','Header',[flag('show_header'),txt('brand_text'),txt('subtitle'),txt('badge_text'),flag('show_clock'),flag('show_date'),flag('show_connections'),flag('show_theme_button'),flag('show_assistant_menu'),entity('obd_entity'),entity('gps_fix_entity')]),
+    group('page_header','Header',[flag('show_header'),txt('brand_text'),txt('subtitle'),txt('badge_text'),flag('show_clock'),flag('show_date'),flag('show_connections'),flag('show_theme_button'),flag('show_assistant_menu'),entity('obd_entity'),entity('gps_entity')]),
     group('page_navigation','Tabs and sidebar',[flag('show_tabs'),flag('show_rail'),txt('nav_brand'),field('navigation_items',{object:{}})]),
     group('page_dock','Bottom launcher and controls',[flag('show_dock'),flag('compact_dock'),field('dock_items',{object:{}}),flag('show_volume'),txt('volume_label'),flag('show_climate'),txt('climate_label'),txt('climate_status'),flag('show_home_button'),flag('show_back_button')]),
     group('page_css','Advanced page CSS',[field('custom_css',{text:{multiline:true}})])];
@@ -203,9 +220,9 @@ function editorSchema(kind){
     fields.push(group('metric_values','Metrics and units',[...['coolant','voltage','fuel','load'].map(key=>entity(key+'_entity')),choice('temperature_unit',['F','C']),field('visible_metrics',{select:{options:['coolant','voltage','fuel','load'],multiple:true}})],true));
     fields.push(group('metric_labels','Metric labels and icons',['coolant','voltage','fuel','load'].flatMap(key=>[txt(key+'_label'),txt(key+'_icon')])));
   }
-  if(kind==='map')fields.push(group('map_data','Map and GPS',[entity('gps_entity'),txt('tile_url'),num('zoom',2,18),flag('show_map_controls'),flag('show_position'),flag('show_empty')],true),group('map_labels','Map text',[txt('empty_title'),field('empty_message',{text:{multiline:true}}),txt('position_label'),txt('route_label'),txt('button_label')]));
+  if(kind==='map')fields.push(group('map_data','Map and GPS',[entity('gps_entity'),txt('tile_url'),num('zoom',2,18),flag('online_fallback'),flag('show_map_controls'),flag('show_position'),flag('show_empty')],true),group('map_labels','Map text',[txt('empty_title'),field('empty_message',{text:{multiline:true}}),txt('position_label'),txt('route_label'),txt('button_label')]));
   if(kind==='vehicleArt')fields.push(group('vehicle_image','Vehicle artwork',[txt('brand_text'),txt('status_text'),txt('vehicle_color'),txt('image_url'),flag('show_illustration')],true));
-  if(kind==='status')fields.push(entity('obd_entity'),entity('gps_fix_entity'));
+  if(kind==='status')fields.push(entity('obd_entity'),entity('gps_entity'));
   if(kind==='value')fields.push(entity('entity'),txt('unit'),num('decimals',0,6));
   if(kind==='text' || kind==='link')fields.push(field('body',{text:{multiline:true}}));
   if(kind==='link')fields.push(txt('url'),txt('button_label'),flag('new_tab'));
@@ -352,7 +369,7 @@ class DriveConsoleLayout extends HTMLElement {
     const r=this.shadowRoot;if(!r.getElementById('topClock'))return;
     const now=new Date();text(r,'topClock',now.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}));text(r,'topDate',now.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}));
     text(r,'previewStatus','GPS source: gpsd · source tools & original console');
-    const h=this._hass,p=this.settings,obd=h?.connected && h.states?.[p.obd_entity||'binary_sensor.car_obd_connection']?.state==='on',gps=h?.connected && h.states?.[p.gps_fix_entity||'binary_sensor.car_gps_fix']?.state==='on';
+    const h=this._hass,p=this.settings,obd=h?.connected && h.states?.[p.obd_entity||'binary_sensor.car_obd_connection']?.state==='on',gps=!!gpsPosition(h,p.gps_entity||DEFAULTS.gps);
     text(r,'telemetryState',obd?'OBD2 connected':'OBD2 unavailable');text(r,'gpsState',gps?'GPS fix':'GPS unavailable');r.getElementById('telemetryDot').className='led '+(obd?'good':'warning');r.getElementById('gpsDot').className='led '+(gps?'good':'');
   }
 }
@@ -361,4 +378,4 @@ customElements.define('drive-console-widget-editor',DriveConsoleEditor);
 customElements.define('drive-console-layout',DriveConsoleLayout);
 window.customCards=window.customCards||[];
 window.customCards.push({type:'drive-console-widget',name:'Drive Console widget',description:'Original car clock, local music, offline map, truck art and vehicle gauges',preview:true});
-export {number,display,temperature,bounded,currentPage,targetView,editorSchema,WIDGET_DEFAULTS,htmlDocument};
+export {number,display,temperature,bounded,currentPage,targetView,editorSchema,WIDGET_DEFAULTS,htmlDocument,gpsPosition};

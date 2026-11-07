@@ -158,3 +158,25 @@ include. If an uncatchable SIGKILL or power loss leaves a block marked
 `car-virtual-gps` in `/etc/apparmor.d/local/usr.sbin.gpsd`, inspect and remove that
 block, then reload `/etc/apparmor.d/usr.sbin.gpsd` with `apparmor_parser -r` before
 starting another session. Normal source termination performs that cleanup.
+
+## Dashboard GPS state and maps
+
+Drive Console's map, header and connection widget use the same valid tracker
+position. A renamed/missing GPS binary-sensor entity does not independently make
+the header report a disconnection while coordinates are present. Once the
+tracker becomes unavailable, those widgets all report no GPS fix.
+
+Local map tiles are fetched through an authenticated HA endpoint, so the existing
+HA SSH tunnel also carries map imagery; an extra localhost:8877 tunnel is no
+longer required for default tile access. Custom tile URLs remain supported.
+
+When local tiles are missing, the map card defaults to online OpenStreetMap tiles
+with visible attribution and an online status. This requires Internet on the
+browser computer and requests the visible map area from OpenStreetMap. Disable
+**Online fallback** in the map card editor to keep map imagery local-only. No
+bulk tile downloader or offline pack is installed by this feature. Missing tiles
+are reported independently of GPS status and are retried after 15 seconds.
+
+The laptop source page also requests a fresh location every 10 seconds while
+sharing. It never re-labels an old fix as current: if the provider stops supplying
+fresh positions, the NMEA source expires the position normally.

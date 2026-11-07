@@ -80,14 +80,16 @@ async function send(){if(busy||!latest)return;busy=true;try{
  status.textContent='Sharing: '+latest.latitude+', '+latest.longitude+'; accuracy +/-'+Math.round(latest.accuracy)+' m';
 }catch(e){status.textContent=e.message;}finally{busy=false;}}
 function stop(){if(watch!==null)navigator.geolocation.clearWatch(watch);watch=null;latest=null;fetch('/fix',{method:'DELETE',headers:{Authorization:'Bearer '+token}}).catch(()=>{});status.textContent='Stopped';}
+function located(p){const c=p.coords;latest={latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,altitude:c.altitude,speed:c.speed,heading:c.heading,timestamp:p.timestamp};send();}
 document.getElementById('start').onclick=()=>{
  if(watch!==null)return;
  if(!navigator.geolocation){status.textContent='Location unavailable: use localhost or HTTPS.';return;}
  status.textContent='Waiting for location permission / fix';
- watch=navigator.geolocation.watchPosition(p=>{const c=p.coords;latest={latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,altitude:c.altitude,speed:c.speed,heading:c.heading,timestamp:p.timestamp};send();},e=>{latest=null;status.textContent=e.message;},{enableHighAccuracy:true,maximumAge:0,timeout:15000});
+ watch=navigator.geolocation.watchPosition(located,e=>{latest=null;status.textContent=e.message;},{enableHighAccuracy:true,maximumAge:0,timeout:15000});
 };
 document.getElementById('stop').onclick=stop;
 setInterval(send,1000);
+setInterval(()=>{if(watch!==null)navigator.geolocation.getCurrentPosition(located,e=>{status.textContent=e.message;},{enableHighAccuracy:true,maximumAge:0,timeout:15000});},10000);
 </script>'''
 
 

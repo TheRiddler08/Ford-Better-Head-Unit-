@@ -50,3 +50,14 @@ test('raw code editor exposes all sources and keeps network blocked in custom fr
   assert.ok(doc.includes('window.driveData'));
   assert.ok(doc.includes('window.x="<\\/script>"'));
 });
+
+test('map and GPS status share the tracker position, regardless of missing or differently named binary sensor',async()=>{
+  const {gpsPosition}=await import('../home_assistant/drive_console.js');
+  const states={'device_tracker.car_location':{state:'not_home',attributes:{latitude:38.36,longitude:-81.62}},'binary_sensor.car_gps_fix':{state:'off'}};
+  const h={connected:true,states};
+  assert.equal(gpsPosition(h).latitude,38.36);
+  assert.equal(gpsPosition({...h,connected:false}),null);
+  states['device_tracker.car_location'].state='unavailable';
+  assert.equal(gpsPosition(h),null);
+  assert.equal(gpsPosition({connected:true,states:{}}),null);
+});

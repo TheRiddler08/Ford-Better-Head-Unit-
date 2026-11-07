@@ -7,7 +7,9 @@ import time
 import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
-from aiohttp import ClientTimeout, ClientSession, TCPConnector
+from aiohttp import ClientError, ClientTimeout, ClientSession, TCPConnector, web
+import asyncio
+from homeassistant.components.http import HomeAssistantView
 from homeassistant.const import Platform
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
@@ -17,6 +19,41 @@ DOMAIN='car_console'
 PLATFORMS=[Platform.SENSOR,Platform.BINARY_SENSOR,Platform.DEVICE_TRACKER]
 CONFIG_SCHEMA=cv.empty_config_schema(DOMAIN)
 
+
+
+def coordinates(z, x, y):
+    if any(not str(v).isdigit() or len(str(v))>8 for v in (z,x,y)):
+        raise ValueError('Invalid tile coordinates')
+    z,x,y=map(int,(z,x,y))
+    if not 0<=z<=18 or not 0<=x<2**z or not 0<=y<2**z:
+        raise ValueError('Invalid tile coordinates')
+    return z,x,y
+
+
+class CarTileView(HomeAssistantView):
+    url='/api/car_console/tiles/{z}/{x}/{y}.png'
+    name='api:car_console:tiles'
+    requires_auth=True
+
+    def __init__(self, session, origin):
+        self.session=session
+        self.origin=origin
+
+    async def get(self, request, z, x, y):
+        try:z,x,y=coordinates(z,x,y)
+        except ValueError:return web.Response(status=400)
+        # Origin comes from backend_url's validated loopback address, never input.
+        try:
+            async with self.session.get(f'{self.origin}/tiles/{z}/{x}/{y}.png',timeout=ClientTimeout(total=3),allow_redirects=False) as response:
+                if response.status!=200:return web.Response(status=404)
+                data=bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    data.extend(chunk)
+                    if len(data)>2097152:return web.Response(status=502)
+                if not data.startswith(b'\x89PNG\r\n\x1a\n'):return web.Response(status=502)
+                return web.Response(body=bytes(data),content_type='image/png',headers={'Cache-Control':'private, max-age=86400'})
+        except (OSError,ClientError,asyncio.TimeoutError):
+            return web.Response(status=503)
 
 def backend_url():
     url=os.getenv('CAR_CONSOLE_URL','http://127.0.0.1:8787/api/home-assistant/state')
@@ -39,6 +76,8 @@ async def async_setup_entry(hass,entry):
     # interface while the portable display is away from the car.
     session=ClientSession(connector=TCPConnector(local_addr=('127.0.0.1',0)))
     entry.async_on_unload(lambda:hass.async_create_task(session.close()))
+    parsed=urlsplit(url)
+    hass.http.register_view(CarTileView(session,f'{parsed.scheme}://{parsed.netloc}'))
     platforms_ready=False
     async def health(ready):
         if not platforms_ready:return
