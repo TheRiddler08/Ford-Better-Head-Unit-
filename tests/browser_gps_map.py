@@ -14,17 +14,33 @@ png=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m
 with sync_playwright() as p:
     browser=p.chromium.launch(executable_path='/usr/bin/chromium',args=['--no-sandbox'])
     page=browser.new_page()
-    page.route('http://127.0.0.1:19998/**',lambda r:r.fulfill(body=module if r.request.url.endswith('module.js') else html,content_type='text/javascript' if r.request.url.endswith('module.js') else 'text/html'))
-    page.route('https://tile.openstreetmap.org/**',lambda r:r.fulfill(body=png,content_type='image/png'))
+    page.route('http://127.0.0.1:19998/**',lambda r:r.fulfill(body=module if r.request.url.endswith('module.js') else html,content_type='text/javascript' if r.request.url.endswith('module.js') else 'text/html',headers={'Referrer-Policy':'no-referrer'}))
+    calls=[]
+    blocked=[False]
+    def tile_request(route):
+        calls.append(route.request.headers)
+        route.fulfill(body=png,status=403 if blocked[0] else 200,content_type='image/png',headers={'Access-Control-Allow-Origin':'*'})
+    page.route('https://tile.openstreetmap.org/**',tile_request)
     page.goto('http://127.0.0.1:19998/')
     expect(page.locator('#connectionDetail')).to_contain_text('GPS: fix available')
     expect(page.locator('#mapModeText')).to_contain_text('Online map · GPS connected')
     expect(page.locator('#mapAttribution')).to_be_visible()
+    assert calls and all(c.get('referer')=='http://127.0.0.1:19998/' for c in calls)
+    assert all('authorization' not in c for c in calls)
     page.evaluate("mapCard.setConfig({widget:'map',online_fallback:false})")
     expect(page.locator('#mapBadge')).to_have_text('GPS · NO MAP')
     expect(page.locator('#mapEmpty')).to_contain_text('GPS connected')
     page.evaluate("h.states['device_tracker.car_location'].state='unavailable';mapCard.hass=h;statusCard.hass=h")
     expect(page.locator('#connectionDetail')).to_contain_text('GPS: unavailable')
     expect(page.locator('#mapBadge')).to_have_text('NO GPS')
+    blocked[0]=True
+    page.reload()
+    expect(page.locator('#mapModeText')).to_contain_text('map provider refused access')
+    expect(page.locator('#mapEmpty')).to_be_visible()
+    assert page.locator('#mapTiles img:visible').count()==0
+    count=len(calls)
+    page.evaluate("h.states['device_tracker.car_location'].attributes.latitude=38.37;mapCard.hass=h")
+    page.wait_for_timeout(300)
+    assert len(calls)==count
     browser.close()
 print('GPS status, online fallback, offline opt-out and no-fix rendering passed')

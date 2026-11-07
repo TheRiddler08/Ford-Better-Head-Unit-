@@ -180,3 +180,12 @@ are reported independently of GPS status and are retried after 15 seconds.
 The laptop source page also requests a fresh location every 10 seconds while
 sharing. It never re-labels an old fix as current: if the provider stops supplying
 fresh positions, the NMEA source expires the position normally.
+
+Online requests explicitly use the browser's real origin referrer, overriding
+HA's document-wide no-referrer policy for these map requests only. HA credentials
+are not sent to the tile provider. Requests use ordinary browser HTTP caching,
+coalesce duplicate in-flight tiles, and cover only the visible viewport. HTTP
+errors are checked before an image is displayed. A provider 403/429 stops further
+online requests for that page session; the app reports the refusal rather than
+rendering a denial image as a working map. This does not bypass provider bans,
+change server identities, or provide offline download rights.

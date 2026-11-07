@@ -26,6 +26,18 @@ function htmlDocument(config){
   const safe=value=>String(value||'').replace(/<\/script/gi,'<\\/script');
   return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'"><style>body{margin:0;color:#eee;background:#101c30;font-family:system-ui}${String(config.css||'').replace(/<\/style/gi,'<\\/style')}</style>${config.html||'<h1>My car dashboard</h1><p id="speed">Waiting for data</p>'}<script>window.driveData={};addEventListener('message',e=>{if(e.source!==parent||e.data?.channel!=='drive-html-data')return;window.driveData=e.data.data;dispatchEvent(new CustomEvent('drive-data',{detail:window.driveData}));});parent.postMessage({channel:'drive-html-ready'},'*');<\/script><script>${safe(config.javascript)}<\/script>`;
 }
+let onlineProviderBlocked=false;
+const onlineTileRequests=new Map();
+function onlineTile(url){
+  if(onlineProviderBlocked)return Promise.reject(new Error('Map provider refused access'));
+  if(onlineTileRequests.has(url))return onlineTileRequests.get(url);
+  const request=fetch(url,{mode:'cors',credentials:'omit',cache:'default',referrerPolicy:'strict-origin-when-cross-origin'}).then(async response=>{
+    if(response.status===403 || response.status===429)onlineProviderBlocked=true;
+    if(!response.ok)throw new Error(`Map provider HTTP ${response.status}`);
+    const blob=await response.blob();if(!blob.type.startsWith('image/'))throw new Error('Invalid map tile');return blob;
+  }).finally(()=>onlineTileRequests.delete(url));
+  onlineTileRequests.set(url,request);return request;
+}
 function gpsPosition(hass,entity=DEFAULTS.gps){
   const obj=hass?.states?.[entity],a=obj?.attributes||{};
   return hass?.connected && obj && !['unknown','unavailable'].includes(obj.state) && Number.isFinite(a.latitude) && Number.isFinite(a.longitude) && Math.abs(a.latitude)<=90 && Math.abs(a.longitude)<=180?a:null;
@@ -171,13 +183,13 @@ class DriveConsoleWidget extends HTMLElement {
     let base;
     try{if(this.config.tile_url){base=new URL(this.config.tile_url,location.href);if(!['http:','https:'].includes(base.protocol))return;}}catch(_){return;}
     let attribution=r.getElementById('mapAttribution');if(!attribution){attribution=document.createElement('a');attribution.id='mapAttribution';attribution.href='https://www.openstreetmap.org/copyright';attribution.target='_blank';attribution.rel='noopener';attribution.textContent='© OpenStreetMap contributors';attribution.style.cssText='position:absolute;bottom:2px;right:2px;z-index:5;background:#071321dd;color:white;padding:2px 6px;font-size:11px';surface.append(attribution);}attribution.hidden=true;
-    for(let dx=-Math.ceil(w/512);dx<=Math.ceil(w/512);dx++)for(let dy=-Math.ceil(height/512);dy<=Math.ceil(height/512);dy++){
-      const tx=Math.floor(x)+dx,ty=Math.floor(y)+dy;if(ty<0 || ty>=n)continue;
+    for(let tx=Math.floor(x-w/512);tx<=Math.floor(x+w/512);tx++)for(let ty=Math.floor(y-height/512);ty<=Math.floor(y+height/512);ty++){
+      if(ty<0 || ty>=n)continue;
       const image=new Image();image.alt='';image.style.left=`${w/2+(tx-x)*256}px`;image.style.top=`${height/2+(ty-y)*256}px`;
       image.onload=()=>{if(this._ticket!==ticket)return;loaded++;this._mapRetryAt=0;onlineUsed=onlineUsed||!!image.dataset.online;r.getElementById('mapEmpty').hidden=true;r.getElementById('mapCenter').hidden=false;text(r,'mapModeText',onlineUsed?'Online map · GPS connected':'Offline map · GPS connected');text(r,'mapBadge','GPS FIX');if(image.dataset.online)attribution.hidden=false;r.querySelector('.map-heading strong').textContent=this.config.title||(onlineUsed?'Navigation · online map':'Offline navigation');};
       let objectURL;
-      const missing=()=>{if(this._ticket!==ticket)return;image.hidden=true;if(!loaded){this._mapRetryAt=Date.now()+15000;text(r,'mapModeText','GPS connected · map tiles unavailable');text(r,'mapBadge','GPS · NO MAP');}};
-      const fallback=()=>{if(this._ticket!==ticket)return;if(this.config.online_fallback===false){missing();return;}image.hidden=false;image.dataset.online='true';image.onerror=missing;image.src=`https://tile.openstreetmap.org/${z}/${((tx%n)+n)%n}/${ty}.png`;};
+      const missing=()=>{if(this._ticket!==ticket)return;image.hidden=true;if(!loaded){this._mapRetryAt=Date.now()+15000;text(r,'mapModeText',onlineProviderBlocked?'GPS connected · map provider refused access':'GPS connected · map tiles unavailable');text(r,'mapBadge','GPS · NO MAP');if(onlineProviderBlocked){r.querySelector('.map-empty strong').textContent='GPS connected · online map blocked';r.querySelector('.map-empty p').textContent='The map provider refused access. No further online requests will be made this session. Install local tiles or configure an authorized tile source.';}}};
+      const fallback=()=>{if(this._ticket!==ticket)return;if(this.config.online_fallback===false){missing();return;}image.hidden=false;image.dataset.online='true';image.onerror=missing;onlineTile(`https://tile.openstreetmap.org/${z}/${((tx%n)+n)%n}/${ty}.png`).then(blob=>{if(this._ticket!==ticket)return;objectURL=URL.createObjectURL(blob);image.src=objectURL;}).catch(missing);};
       const onload=image.onload;image.onload=()=>{if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null;}onload();};
       image.onerror=()=>{if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null;}fallback();};
       holder.append(image);
