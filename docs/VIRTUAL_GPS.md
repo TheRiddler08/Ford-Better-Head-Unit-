@@ -104,3 +104,40 @@ restoring previously active services after failure. The optional real-gpsd test
 starts the actual daemon on loopback, runs the unchanged recorder into a
 disposable SQLite database, and reads moving fixes through the ordinary HA HTTP
 adapter. It never changes the host system GPS service.
+
+## Feed the laptop's browser location into the car Tiny
+
+Update the Tiny first, then start the external source there:
+
+```sh
+sudo python3 /usr/local/lib/car-dashboard/virtual_gps.py \
+  --replace-system-gpsd --browser --seconds 1800
+```
+
+It prints a **Laptop browser URL** containing a temporary token. On the laptop
+where you want location, open another terminal and forward the source port
+through your existing SSH/Tailscale access to the **car Tiny**:
+
+```sh
+ssh -N -L 8790:127.0.0.1:8790 cayden@CAR_TINY_TAILSCALE_IP
+```
+
+Leave both terminals running. Open the exact printed `http://127.0.0.1:8790/`
+URL including its `#token=...` fragment **in that laptop's browser**, then click
+**Share this laptop's location** and approve location access. OS location services
+must be enabled. Accuracy depends on the laptop's GPS/Wi-Fi/OS provider; this
+cannot create physical GNSS hardware or improve the provider's precision.
+
+Coordinates go through an authenticated loopback-only receiver on the Tiny,
+then standard NMEA → real gpsd → ordinary recording/reporting/HA. The HA page
+itself never accesses geolocation or manufactures entities. Open the normal car
+dashboard alongside the separate source page. A browser error, closing the source
+page, or an old position causes a no-fix NMEA status after at most 30 seconds;
+the emitter never keeps refreshing an old position's timestamp. **Stop sharing**
+sends an immediate no-fix; Ctrl+C in the Tiny's source terminal restores physical
+GPS. The 1800-second limit restores it automatically after 30 minutes.
+
+Positions go into ordinary trip history. Keep the token private; it only lasts
+for this source process. No port is opened on the car Ethernet/Tailscale addresses.
+Keep the same local forwarding port (8790), since browser-origin checks include
+that port. This source does not grant remote command execution or HA access.

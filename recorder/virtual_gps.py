@@ -2,9 +2,14 @@
 """Independent NMEA serial GPS source. No dashboard/recorder simulation API."""
 import argparse
 import fcntl
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from datetime import datetime, timezone
 import math
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import secrets
+import threading
+from urllib.parse import urlsplit
 import os
 from pathlib import Path
 import pty
@@ -36,15 +41,18 @@ def coordinate(value, latitude):
     return f'{degrees:0{2 if latitude else 3}d}{minutes:08.5f}', ('N' if value >= 0 else 'S') if latitude else ('E' if value >= 0 else 'W')
 
 
-def frame(lat, lon, speed, course, stamp=None):
+def frame(lat, lon, speed, course, stamp=None, altitude=100.0):
     stamp = stamp or datetime.now(timezone.utc)
     a, ns = coordinate(lat, True)
     b, ew = coordinate(lon, False)
     clock = stamp.strftime('%H%M%S') + f'.{stamp.microsecond//10000:02d}'
+    knots = '' if speed is None else f'{speed/0.514444:.2f}'
+    heading = '' if course is None else f'{course:.2f}'
+    height = '' if altitude is None else f'{altitude:.1f}'
     return b''.join([
-        sentence(f'GPRMC,{clock},A,{a},{ns},{b},{ew},{speed/0.514444:.2f},{course:.2f},{stamp:%d%m%y},,,A'),
-        sentence(f'GPGGA,{clock},{a},{ns},{b},{ew},1,08,0.9,100.0,M,0.0,M,,'),
-        sentence('GPGSA,A,3,01,02,03,04,05,06,07,08,,,,,1.5,0.9,1.2'),
+        sentence(f'GPRMC,{clock},A,{a},{ns},{b},{ew},{knots},{heading},{stamp:%d%m%y},,,A'),
+        sentence(f'GPGGA,{clock},{a},{ns},{b},{ew},1,08,0.9,{height},M,0.0,M,,'),
+        sentence(f'GPGSA,A,{3 if altitude is not None else 2},01,02,03,04,05,06,07,08,,,,,1.5,0.9,1.2'),
     ])
 
 
@@ -52,6 +60,95 @@ def position(lat, lon, radius, speed, elapsed):
     angle = elapsed * speed / radius
     north, east = radius * math.sin(angle), radius * math.cos(angle)
     return lat + north/111320, lon + east/(111320*math.cos(math.radians(lat))), math.degrees(-angle) % 360
+
+
+BROWSER_PAGE = b'''<!doctype html><meta charset="utf-8"><title>Laptop GPS source</title>
+<h1>Laptop location to virtual GPS</h1>
+<p>This computer's browser provides location. Positions enter normal car history.</p>
+<button id="start">Share this laptop's location</button><button id="stop">Stop sharing</button>
+<p id="status">Not sharing. Keep this page open while testing.</p>
+<script>
+const token=new URLSearchParams(location.hash.slice(1)).get('token');
+let watch=null,latest=null,busy=false;
+const status=document.getElementById('status');
+async function send(){if(busy||!latest)return;busy=true;try{
+ const r=await fetch('/fix',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(latest)});
+ if(!r.ok)throw Error('Source rejected location: HTTP '+r.status);
+ status.textContent='Sharing: '+latest.latitude+', '+latest.longitude+'; accuracy +/-'+Math.round(latest.accuracy)+' m';
+}catch(e){status.textContent=e.message;}finally{busy=false;}}
+function stop(){if(watch!==null)navigator.geolocation.clearWatch(watch);watch=null;latest=null;fetch('/fix',{method:'DELETE',headers:{Authorization:'Bearer '+token}}).catch(()=>{});status.textContent='Stopped';}
+document.getElementById('start').onclick=()=>{
+ if(watch!==null)return;
+ if(!navigator.geolocation){status.textContent='Location unavailable: use localhost or HTTPS.';return;}
+ status.textContent='Waiting for location permission / fix';
+ watch=navigator.geolocation.watchPosition(p=>{const c=p.coords;latest={latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,altitude:c.altitude,speed:c.speed,heading:c.heading,timestamp:p.timestamp};send();},e=>{latest=null;status.textContent=e.message;},{enableHighAccuracy:true,maximumAge:0,timeout:15000});
+};
+document.getElementById('stop').onclick=stop;
+setInterval(send,1000);
+</script>'''
+
+
+class BrowserSource:
+    def __init__(self, port):
+        self.token=secrets.token_urlsafe(32)
+        self.fix=None
+        self.lock=threading.Lock()
+        source=self
+        class Handler(BaseHTTPRequestHandler):
+            def reply(self, code, body=b''):
+                self.send_response(code)
+                self.send_header('Content-Type','text/html; charset=utf-8')
+                self.send_header('Content-Length',str(len(body)))
+                self.send_header('Cache-Control','no-store')
+                self.send_header('Referrer-Policy','no-referrer')
+                self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+                self.end_headers();self.wfile.write(body)
+            def authorized(self):
+                origin=self.headers.get('Origin')
+                allowed=(f'http://127.0.0.1:{source.server.server_port}',f'http://localhost:{source.server.server_port}')
+                return (not origin or origin in allowed) and secrets.compare_digest(self.headers.get('Authorization',''),'Bearer '+source.token)
+            def do_GET(self):
+                self.reply(200,BROWSER_PAGE) if self.path=='/' else self.reply(404)
+            def do_POST(self):
+                if self.path!='/fix':return self.reply(404)
+                if not self.authorized():return self.reply(403)
+                try:
+                    length=int(self.headers.get('Content-Length','0'))
+                    if not 0<length<=2048:raise ValueError('Invalid body length')
+                    self.connection.settimeout(3)
+                    value=json.loads(self.rfile.read(length))
+                    source.accept(value)
+                except (ValueError,TypeError,KeyError,OSError):return self.reply(400)
+                self.reply(204)
+            def do_DELETE(self):
+                if self.path!='/fix':return self.reply(404)
+                if not self.authorized():return self.reply(403)
+                with source.lock:source.fix=None
+                self.reply(204)
+            def log_message(self,*_):pass  # Do not log coordinates or credentials.
+        self.server=ThreadingHTTPServer(('127.0.0.1',port),Handler)
+        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True)
+    def accept(self, value):
+        if not isinstance(value,dict):raise ValueError('Invalid location')
+        for key,minimum,maximum in [('latitude',-90,90),('longitude',-180,180),('accuracy',0,100000),('timestamp',0,float('inf'))]:
+            n=value[key]
+            if isinstance(n,bool) or not isinstance(n,(float,int)) or not math.isfinite(n) or not minimum<=n<=maximum:raise ValueError('Invalid location')
+        if not -5<=time.time()-value['timestamp']/1000<=30:raise ValueError('Stale location')
+        for key,minimum,maximum in [('speed',0,1000),('heading',0,360),('altitude',-15000,100000)]:
+            n=value.get(key)
+            if n is not None and (isinstance(n,bool) or not isinstance(n,(int,float)) or not math.isfinite(n) or not minimum<=n<=maximum):raise ValueError('Invalid location')
+        with self.lock:self.fix=dict(value)
+    def data(self):
+        with self.lock:value=self.fix
+        if value and -5<=time.time()-value['timestamp']/1000<=30:
+            return frame(value['latitude'],value['longitude'],value.get('speed'),value.get('heading'),datetime.fromtimestamp(value['timestamp']/1000,timezone.utc),value.get('altitude'))
+        return sentence('GPRMC,,V,,,,,,,,,,N')+sentence('GPGGA,,,,,,0,00,,,,,,,')+sentence('GPGSA,A,1,,,,,,,,,,,,,99.9,99.9,99.9')
+    def __enter__(self):
+        self.thread.start()
+        print(f'Laptop browser URL: http://127.0.0.1:{self.server.server_port}/#token={self.token}',flush=True)
+        return self
+    def __exit__(self,*_):
+        self.server.shutdown();self.server.server_close();self.thread.join(timeout=3)
 
 
 @contextmanager
@@ -96,6 +193,7 @@ def system_source(replace):
 
 def available(port):
     with socket.socket() as sock:
+        sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         sock.bind(('127.0.0.1', port))
 
 
@@ -117,7 +215,10 @@ def run(args):
         stopped = True
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
     try:
-        with source_lock(args.replace_system_gpsd), system_source(args.replace_system_gpsd):
+        with ExitStack() as stack:
+            browser=stack.enter_context(BrowserSource(args.browser_port)) if args.browser else None
+            stack.enter_context(source_lock(args.replace_system_gpsd))
+            stack.enter_context(system_source(args.replace_system_gpsd))
             if not args.serial_only:
                 available(args.port)  # Refuse to compete with an existing GPS service.
             master, slave = pty.openpty()
@@ -139,7 +240,7 @@ def run(args):
                         credentials = dict(user=uid, group=account.pw_gid, extra_groups=[])
                     process = subprocess.Popen([gpsd, '-N', '-n', '-S', str(args.port), path], **credentials)
                     print(f'Normal gpsd endpoint: 127.0.0.1:{args.port}', flush=True)
-                print('Synthetic NMEA source active. Normal clients may record/transmit these positions. Ctrl+C restores the previous source.', flush=True)
+                print('Virtual NMEA serial source active. Normal clients may record/transmit these positions. Ctrl+C restores the previous source.', flush=True)
                 started = time.monotonic()
                 next_frame = started
                 while not stopped and (args.seconds is None or time.monotonic()-started < args.seconds):
@@ -149,7 +250,7 @@ def run(args):
                     if now >= next_frame:
                         lat, lon, course = position(args.latitude, args.longitude, args.radius, args.speed, now-started)
                         try:
-                            os.write(master, frame(lat, lon, args.speed, course))
+                            os.write(master, browser.data() if browser else frame(lat, lon, args.speed, course))
                         except BlockingIOError:
                             pass  # No reader: discard this output epoch, don't hang cleanup.
                         next_frame = now + 1
@@ -176,12 +277,14 @@ def main():
     parser.add_argument('--longitude', type=float, default=-77.0)
     parser.add_argument('--radius', type=float, default=300, help='Loop radius in metres')
     parser.add_argument('--speed', type=float, default=10, help='Speed in metres/second')
+    parser.add_argument('--browser', action='store_true', help='Use laptop browser location as the external NMEA source')
+    parser.add_argument('--browser-port',type=int,default=8790)
     parser.add_argument('--port', type=int, default=2947)
     parser.add_argument('--seconds', type=float, help='Stop and restore automatically after this many seconds')
     parser.add_argument('--serial-only', action='store_true', help='Expose NMEA PTY; let an external gpsd attach to the printed path')
     parser.add_argument('--replace-system-gpsd', action='store_true', help='Temporarily stop system gpsd, then restore previously active units on exit')
     args = parser.parse_args()
-    if not 1024 <= args.port <= 65535:
+    if not all(1024 <= port <= 65535 for port in (args.port,args.browser_port)):
         parser.error('Use an unprivileged port between 1024 and 65535')
     try:
         run(args)

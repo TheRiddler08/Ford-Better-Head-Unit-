@@ -41,7 +41,7 @@ CONFIG=Path('/etc/car-dashboard/fleet.json')
 STATE=Path('/var/lib/car-dashboard-fleet')
 STATUS=Path('/etc/car-dashboard/fleet-status.json')
 ORIGIN='https://github.com/TheRiddler08/Ford-Better-Head-Unit-.git'
-SOURCES={'fleet.py':'deploy/fleet.py','wake.py':'power/wake.py','standby.py':'power/standby.py'}
+SOURCES={'virtual_gps.py':'recorder/virtual_gps.py','fleet.py':'deploy/fleet.py','wake.py':'power/wake.py','standby.py':'power/standby.py'}
 REQUIRED=('nmcli','ip','iptables','dnsmasq','curl','ethtool')
 STOP=False
 
