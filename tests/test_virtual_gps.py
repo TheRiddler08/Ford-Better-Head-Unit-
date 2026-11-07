@@ -31,6 +31,13 @@ class VirtualGPS(unittest.TestCase):
         self.assertEqual(virtual.coordinate(39.9999999999, True), ('4000.00000', 'N'))
         self.assertNotEqual(virtual.position(39, -77, 300, 10, 0), virtual.position(39, -77, 300, 10, 10))
 
+    def test_manual_gps_values_are_an_external_serial_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'gps.json';path.write_text(json.dumps({'lat':40,'lon':-100,'speed':0,'heading':0,'altitude':100}))
+            self.assertIn(b'4000.00000,N,10000.00000,W',virtual.manual_frame(path))
+            path.write_text(json.dumps({'lat':True,'lon':-100}))
+            with self.assertRaises(ValueError):virtual.manual_frame(path)
+
     def test_controller_restores_only_previously_active_services_on_failure(self):
         calls=[]
         def systemctl(args, **kwargs):

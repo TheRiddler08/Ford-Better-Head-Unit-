@@ -41,7 +41,7 @@ CONFIG=Path('/etc/car-dashboard/fleet.json')
 STATE=Path('/var/lib/car-dashboard-fleet')
 STATUS=Path('/etc/car-dashboard/fleet-status.json')
 ORIGIN='https://github.com/TheRiddler08/Ford-Better-Head-Unit-.git'
-SOURCES={'virtual_gps.py':'recorder/virtual_gps.py','fleet.py':'deploy/fleet.py','wake.py':'power/wake.py','standby.py':'power/standby.py'}
+SOURCES={'routing_setup.py':'dev/setup_us_routing.py','virtual_obd.py':'recorder/virtual_obd.py','virtual_gps.py':'recorder/virtual_gps.py','fleet.py':'deploy/fleet.py','wake.py':'power/wake.py','standby.py':'power/standby.py'}
 REQUIRED=('nmcli','ip','iptables','dnsmasq','curl','ethtool')
 STOP=False
 
@@ -348,7 +348,7 @@ def publish(sources,base=BASE):
 
 def native_dependencies(offline=False,role=None):
     needed=list(REQUIRED)
-    if role=='tiny':needed.append('gpsd')
+    if role=='tiny':needed+=['gpsd','osmium']
     pi_client=role=='pi' and load(CONFIG,{}).get('pi_storage_client',True)
     if role in ADDRESSES and shutil.which('apt-get'):
         needed+=['mfsmount','mfssetgoal'] if pi_client else ['mfsmount','mfschunkserver','ffprobe']+(['mfsmaster'] if role=='tiny' else ['mfsmetalogger'])
@@ -364,7 +364,7 @@ def native_dependencies(offline=False,role=None):
         run(['apt-get','update'],timeout=300)
         env=dict(os.environ,DEBIAN_FRONTEND='noninteractive')
         packages=['network-manager','iproute2','iptables','dnsmasq-base','curl','ethtool','python3-cryptography','python3-paho-mqtt','python3-serial','python3-nacl','moosefs-client']
-        if role=='tiny':packages+=['gpsd','gpsd-clients']
+        if role=='tiny':packages+=['gpsd','gpsd-clients','osmium-tool']
         if not pi_client:packages+=['moosefs-master','moosefs-chunkserver','moosefs-metalogger','ffmpeg']
         subprocess.run(['apt-get','install','-y','--no-install-recommends',*packages],env=env,check=True,timeout=600)
     elif shutil.which('apk'):
@@ -531,13 +531,29 @@ depend() {{ need car-fleet; }}
         run(['rc-service','car-laptop-power','restart' if enabled else 'stop'],check=False)
 
 
+def install_device_tools(config):
+    """Independent input tools and navigation are available even with GPS disabled."""
+    commit=config.get('commit') or git(config,'rev-parse','HEAD')
+    for name,source in (('virtual_gps.py','recorder/virtual_gps.py'),('virtual_obd.py','recorder/virtual_obd.py'),('routing_setup.py','dev/setup_us_routing.py')):
+        content=source_bytes(config,commit,source);ast.parse(content);save(BASE/name,content)
+    data=Path('/var/lib/car-dashboard/routing')
+    status={'region':'us','phase':'pending-data','message':'Full USA routing pack is not installed. Prepare it on a sufficiently sized host, then import the prepared pack.'}
+    if (data/'prepared.json').is_file():
+        metadata=load(data/'prepared.json',{})
+        if not isinstance(metadata,dict):
+            save('/etc/car-dashboard/navigation-status.json',{'region':'us','phase':'invalid-pack','message':'Prepared pack metadata must be a JSON object'});return
+        status={'region':metadata.get('regions',['us']),'phase':'prepared','message':'Prepared routing data found; use routing_setup.py --serve-only to activate it.'}
+        # Activate an already prepared, cached runtime without downloading data during updates.
+        if shutil.which('docker') and isinstance(metadata.get('regions'),list) and 1<=len(metadata['regions'])<=51 and all(isinstance(value,str) and re.fullmatch('[a-z][a-z-]{1,31}',value) for value in metadata['regions']):
+            result=run(['/usr/bin/python3',BASE/'routing_setup.py','--serve-only','--offline','--directory',data,'--region',*metadata['regions']],timeout=120,check=False)
+            if result.returncode==0:status.update(phase='ready',message='Local routing engine started with prepared data')
+            else:status.update(phase='pending-runtime',message='Prepared pack found; routing image must be carried or installed before offline activation')
+    save('/etc/car-dashboard/navigation-status.json',status)
+
+
 def install_gps(config):
     """Adopt Tiny's GPS client automatically; never probe arbitrary USB ports."""
     if not config.get('gps_recording',True):return
-    commit=config.get('commit') or git(config,'rev-parse','HEAD')
-    simulator=source_bytes(config,commit,'recorder/virtual_gps.py')
-    ast.parse(simulator)
-    save(BASE/'virtual_gps.py',simulator)
     service='car-gps-recorder.service'
     existing=Path('/etc/systemd/system')/service
     # Respect a deliberately stopped or masked existing recorder.
@@ -836,6 +852,7 @@ def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False
         if reconfigure:systemd_units(role)
         if role=='tiny' and reconfigure:
             install_app_updates(defaults)
+            install_device_tools(defaults)
             install_gps(defaults)
     elif Path('/run/openrc').exists():
         if reconfigure:openrc_units(role)

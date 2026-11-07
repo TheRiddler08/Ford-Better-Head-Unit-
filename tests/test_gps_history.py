@@ -53,6 +53,6 @@ class HistoryTests(unittest.TestCase):
         units={}
         with patch.object(fleet.Path,'exists',return_value=False),patch.object(fleet.Path,'is_symlink',return_value=False),patch.object(fleet,'source_bytes',return_value=b'print("gps")\n') as source,patch.object(fleet,'save'),patch.object(fleet,'unit',side_effect=lambda name,value:units.update({name:value})),patch.object(fleet,'run'):
             fleet.install_gps(config)
-            self.assertEqual([call.args[2] for call in source.call_args_list],['recorder/virtual_gps.py','recorder/gps_recorder.py'])
+            source.assert_called_once_with(config,'a'*40,'recorder/gps_recorder.py')
             self.assertIn('UMask=0077',units['car-gps-recorder.service'])
             source.reset_mock();fleet.install_gps(dict(config,gps_recording=False));source.assert_not_called()

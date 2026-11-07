@@ -59,6 +59,18 @@ def frame(lat, lon, speed, course, stamp=None, altitude=100.0):
     ])
 
 
+def manual_frame(path):
+    path=Path(path)
+    if path.is_symlink() or path.stat().st_size>8192:raise ValueError('Use a regular manual GPS JSON file under 8 KB')
+    value=json.loads(path.read_text())
+    if not isinstance(value,dict) or set(value)-{'lat','lon','speed','heading','altitude'}:raise ValueError('Invalid manual GPS fields')
+    for key,low,high in [('lat',-90,90),('lon',-180,180),('speed',0,1000),('heading',0,360),('altitude',-15000,100000)]:
+        n=value.get(key,0 if key in ('speed','heading') else None)
+        if n is None and key=='altitude':continue
+        if isinstance(n,bool) or not isinstance(n,(int,float)) or not math.isfinite(n) or not low<=n<=high:raise ValueError('Invalid manual GPS '+key)
+    return frame(value['lat'],value['lon'],value.get('speed',0),value.get('heading',0),altitude=value.get('altitude'))
+
+
 def position(lat, lon, radius, speed, elapsed):
     angle = elapsed * speed / radius
     north, east = radius * math.sin(angle), radius * math.cos(angle)
@@ -269,6 +281,7 @@ def run(args):
         raise ValueError('Choose a route centre between ±80 latitude and ±179 longitude')
     if not (1 <= args.radius <= 5000 and 0 <= args.speed <= 80):
         raise ValueError('Radius must be 1–5000 m; speed must be 0–80 m/s')
+    if args.browser and args.values:raise ValueError('Choose browser input or a manual values file')
     if args.replace_system_gpsd and (args.port != 2947 or args.serial_only):
         raise ValueError('System replacement uses gpsd port 2947')
     if args.seconds is not None and (not math.isfinite(args.seconds) or args.seconds <= 0):
@@ -315,7 +328,7 @@ def run(args):
                     if now >= next_frame:
                         lat, lon, course = position(args.latitude, args.longitude, args.radius, args.speed, now-started)
                         try:
-                            os.write(master, browser.data() if browser else frame(lat, lon, args.speed, course))
+                            os.write(master, browser.data() if browser else manual_frame(args.values) if args.values else frame(args.latitude if args.fixed else lat, args.longitude if args.fixed else lon, args.speed, course))
                         except BlockingIOError:
                             pass  # No reader: discard this output epoch, don't hang cleanup.
                         next_frame = now + 1
@@ -342,6 +355,8 @@ def main():
     parser.add_argument('--longitude', type=float, default=-77.0)
     parser.add_argument('--radius', type=float, default=300, help='Loop radius in metres')
     parser.add_argument('--speed', type=float, default=10, help='Speed in metres/second')
+    parser.add_argument('--values',help='Manual GPS JSON file; reread for every NMEA epoch')
+    parser.add_argument('--fixed',action='store_true',help='Emit the exact configured coordinates instead of a circular route')
     parser.add_argument('--browser', action='store_true', help='Use laptop browser location as the external NMEA source')
     parser.add_argument('--browser-port',type=int,default=8790)
     parser.add_argument('--port', type=int, default=2947)

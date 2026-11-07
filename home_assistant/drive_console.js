@@ -26,6 +26,13 @@ function htmlDocument(config){
   const safe=value=>String(value||'').replace(/<\/script/gi,'<\\/script');
   return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'"><style>body{margin:0;color:#eee;background:#101c30;font-family:system-ui}${String(config.css||'').replace(/<\/style/gi,'<\\/style')}</style>${config.html||'<h1>My car dashboard</h1><p id="speed">Waiting for data</p>'}<script>window.driveData={};addEventListener('message',e=>{if(e.source!==parent||e.data?.channel!=='drive-html-data')return;window.driveData=e.data.data;dispatchEvent(new CustomEvent('drive-data',{detail:window.driveData}));});parent.postMessage({channel:'drive-html-ready'},'*');<\/script><script>${safe(config.javascript)}<\/script>`;
 }
+const navigationBus=new EventTarget();
+const defaultNavigation=()=>({revision:0,settings:{lat:39.5,lon:-98.35,zoom:5,followGPS:true,usaOnly:true,routingRegions:['us']},markers:[],trips:[],route:{waypoints:[],geometry:[],distance:null,duration:null,instructions:[]}});
+const navID=()=>crypto.randomUUID?.()||Array.from(crypto.getRandomValues(new Uint8Array(16)),n=>n.toString(16).padStart(2,'0')).join('');
+const localDateTime=stamp=>{const d=new Date(stamp);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16);};
+const validPoint=p=>p&&Number.isFinite(p.lat)&&Number.isFinite(p.lon)&&Math.abs(p.lat)<=90&&Math.abs(p.lon)<=180;
+function project(lat,lon,z){const n=2**z,phi=Math.max(-85.0511,Math.min(85.0511,lat))*Math.PI/180;return{x:(lon+180)/360*n,y:(1-Math.log(Math.tan(phi)+1/Math.cos(phi))/Math.PI)/2*n};}
+function unproject(x,y,z){const n=2**z;return{lat:Math.atan(Math.sinh(Math.PI*(1-2*Math.max(0,Math.min(n,y))/n)))*180/Math.PI,lon:((x/n*360)%360+360)%360-180};}
 let onlineProviderBlocked=false;
 const onlineTileRequests=new Map();
 function onlineTile(url){
@@ -96,10 +103,10 @@ section{height:100%}.glass{border-radius:var(--drive-radius,17px);background:var
 .status-card{padding:22px;display:grid;gap:12px;min-height:130px}.status-card p{color:var(--muted)}
 `;
 class DriveConsoleWidget extends HTMLElement {
-  constructor(){super();this.attachShadow({mode:'open'});this._onMedia=()=>this.updateMedia();this._zoom=13;this._htmlMessage=e=>{if(e.source===this.shadowRoot.getElementById('htmlFrame')?.contentWindow && e.data?.channel==='drive-html-ready')this.update();};}
+  constructor(){super();this.attachShadow({mode:'open'});this._onMedia=()=>this.updateMedia();this._zoom=5;this._onNavigation=e=>{if(this.config?.widget!=='map')return;this._navigation=structuredClone(e.detail);this._navLoaded=true;this.drawNavigation();};this._htmlMessage=e=>{if(e.source===this.shadowRoot.getElementById('htmlFrame')?.contentWindow && e.data?.channel==='drive-html-ready')this.update();};}
   setConfig(config){
     if(!KINDS[config.widget])throw new Error('Choose a Drive Console widget');
-    this.config={...config};this.dataset.widget=config.widget;this._zoom=bounded(config.zoom,13,2,18);this.render();
+    this.config={...config};this.dataset.widget=config.widget;this._zoom=bounded(config.zoom,5,2,18);this.render();
   }
   getCardSize(){return this.config?.widget==='page'?2:this.config?.widget==='map'?8:this.config?.widget==='media'?5:3;}
   setPageStyle(value){this.pageStyle=value;applyWidgetStyle(this);}
@@ -108,14 +115,15 @@ class DriveConsoleWidget extends HTMLElement {
   static getStubConfig(){return {type:'custom:drive-console-widget',widget:'gauges',speed_unit:'mph'};}
   set hass(hass){this._hass=hass;this.update();}
   get hass(){return this._hass;}
-  connectedCallback(){window.addEventListener('message',this._htmlMessage);this._timer=setInterval(()=>{this.clock();this.update();},1000);media.addEventListener('change',this._onMedia);this.clock();this.update();}
-  disconnectedCallback(){window.removeEventListener('message',this._htmlMessage);clearInterval(this._timer);media.removeEventListener('change',this._onMedia);this._ticket=(this._ticket||0)+1;}
+  connectedCallback(){navigationBus.addEventListener('saved',this._onNavigation);window.addEventListener('message',this._htmlMessage);this._timer=setInterval(()=>{this.clock();this.replayTick();this.update();},1000);media.addEventListener('change',this._onMedia);this.clock();this.update();}
+  disconnectedCallback(){navigationBus.removeEventListener('saved',this._onNavigation);window.removeEventListener('message',this._htmlMessage);clearInterval(this._timer);media.removeEventListener('change',this._onMedia);this._ticket=(this._ticket||0)+1;}
   render(){
     if(!this.config || !ORIGINAL)return;
     const kind=this.config.widget;
     this._mapKey=null;this._ticket=(this._ticket||0)+1;
     this.shadowRoot.innerHTML=`<style>${ORIGINAL.css}\n${EXTRA_CSS}</style>`+markup(kind);
     applyWidgetStyle(this);
+    if(kind==='map'){this.installNavigation();const ownerStyle=this.shadowRoot.getElementById('custom-style');if(ownerStyle)this.shadowRoot.append(ownerStyle);}
     if(kind==='html')this.shadowRoot.getElementById('htmlFrame').srcdoc=htmlDocument(this.config);
     if(this.config.title){const label=this.shadowRoot.querySelector('.eyebrow,.card-caption span,.map-heading strong');if(label)label.textContent=this.config.title;}
     const c=this.config,r=this.shadowRoot,hide=(selector,flag)=>r.querySelectorAll(selector).forEach(el=>{el.hidden=flag===false;});
@@ -134,7 +142,7 @@ class DriveConsoleWidget extends HTMLElement {
     this.shadowRoot.getElementById('mediaSeek')?.addEventListener('input',e=>{if(Number.isFinite(player().duration))player().currentTime=Number(e.target.value)*player().duration/100;});
     on('mapZoomIn',()=>{this._zoom=Math.min(18,this._zoom+1);this._mapKey=null;this.update();});
     on('mapZoomOut',()=>{this._zoom=Math.max(2,this._zoom-1);this._mapKey=null;this.update();});
-    on('mapLocate',()=>{this._mapKey=null;this.update();});
+    on('mapLocate',()=>{this._viewCenter=null;this._followGPS=true;this._mapKey=null;this.update();});
     this.shadowRoot.querySelector('[data-view="navigation"]')?.addEventListener('click',()=>event(this,'drive-console-screen',{screen:'navigation'}));
     on('reports',()=>legacy('reports'));
     this.clock();this.update();this.updateMedia();
@@ -165,41 +173,156 @@ class DriveConsoleWidget extends HTMLElement {
     else if(c.widget==='status'){
       text(r,'connectionTitle',h?.connected?'Car Assistant connected':'Waiting for Car Assistant');
       const obd=h?.connected && h.states?.[c.obd_entity||'binary_sensor.car_obd_connection']?.state==='on',gps=!!gpsPosition(h,c.gps_entity||DEFAULTS.gps);
-      text(r,'connectionDetail',`OBD: ${obd?'connected':'unavailable'} · GPS: ${gps?'fix available':'unavailable'}. Measurements are read only.`);
+      text(r,'connectionDetail',`OBD: ${obd?'connected':'unavailable'} · GPS: ${gps?'connected':'disconnected'}. Measurements are read only.`);
     }
   }
+  async loadNavigation(){
+    if(this.config?.widget!=='map'||this._navLoading||this._navLoaded||!this._hass?.fetchWithAuth)return;
+    this._navLoading=true;
+    try{const response=await this._hass.fetchWithAuth('/api/car_console/navigation');if(!response.ok)throw Error('Navigation storage unavailable');this._navigation=await response.json();this._zoom=this.config.zoom==null?this._navigation.settings.zoom:bounded(this.config.zoom,5,2,18);this._followGPS=this._navigation.settings.followGPS;this._navLoaded=true;this._mapKey=null;this.updateMap();this.drawNavigation();}
+    catch(e){this._navLoaded=true;this.navNotice(e.message);}finally{this._navLoading=false;}
+  }
+  navNotice(message){text(this.shadowRoot,'navNotice',message);}
+  async saveNavigation(){
+    if(!this._hass?.fetchWithAuth){this.navNotice('Navigation storage unavailable');return;}
+    // Serialize edits within this card; the server also protects other windows.
+    this._navSave=(this._navSave||Promise.resolve()).catch(()=>{}).then(async()=>{
+      const data=structuredClone(this._navigation);data.revision++;
+      const response=await this._hass.fetchWithAuth('/api/car_console/navigation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+      if(!response.ok){let error;try{error=(await response.json()).error;}catch(_){}throw Error(error||'Could not save navigation');}
+      const saved=await response.json();this._navigation.revision=saved.revision;
+      navigationBus.dispatchEvent(new CustomEvent('saved',{detail:structuredClone(this._navigation)}));this.navNotice('Saved on the Tiny');this.drawNavigation();
+    }).catch(e=>this.navNotice(e.message));
+    return this._navSave;
+  }
+  installNavigation(){
+    const r=this.shadowRoot,surface=r.getElementById('mapSurface');if(!surface)return;
+    if(!this._navigation)this._navigation=defaultNavigation();
+    this._followGPS??=this._navigation.settings.followGPS;
+    const panel=document.createElement('details');panel.className='nav-panel';panel.innerHTML=`<summary>Places, routes & trips</summary><div class="nav-controls">
+      <label>Map click <select id="navPick"><option value="inspect">Inspect coordinates</option><option value="marker">Add marker</option><option value="waypoint">Add route waypoint</option></select></label>
+      <label>Name <input id="navName" maxlength="160" placeholder="Place or trip name"></label><label>Selected latitude <input id="navLat" type="number" step="any" min="-90" max="90"></label><label>Selected longitude <input id="navLon" type="number" step="any" min="-180" max="180"></label><label>Marker color <input id="navColor" type="color" value="#095b9c"></label><button id="navSelectCoordinate">Select coordinates</button><span id="navSelected">Click or touch the map to choose coordinates.</span>
+      <div><button id="navAddMarker">Save selected marker</button><button id="navNewMarker">New marker</button><button id="navAddPoint">Add selected waypoint</button><button id="navFollow">Follow GPS</button></div>
+      <h4>Saved places</h4><div id="navMarkers"></div><h4>Route waypoints</h4><ol id="navPoints"></ol>
+      <div><button id="navCalculate">Calculate road route</button><button id="navClearRoute">Clear route</button></div><p id="navRouteSummary"></p><ol id="navDirections"></ol>
+      <h4>Trip / manual journey</h4><label>Departure <input id="navDeparture" type="datetime-local"></label><label>Arrival <input id="navArrival" type="datetime-local"></label>
+      <label>Status <select id="navTripStatus"><option value="planned">Planned</option><option value="completed">Completed</option></select></label><label>Notes <textarea id="navNotes" maxlength="4000"></textarea></label><button id="navSaveTrip">Save trip from route endpoints</button><button id="navNewTrip">New trip</button><div id="navTrips"></div>
+      <h4>Recorded GPS history</h4><div><button id="navHistory">Load recorded GPS (trip times or last 24h)</button><button id="navHistoryMore">Load more</button><button id="navReplay">Play / pause replay</button><button id="navHistoryTrip">Use history endpoints for trip</button></div><label>Replay speed <select id="navReplaySpeed"><option>1</option><option>10</option><option selected>60</option></select></label><input id="navReplaySeek" type="range" min="0" max="0" value="0"><p id="navHistoryStatus"></p><h4>USA data coverage</h4><label>Routing pack regions (us = full USA; or comma-separated state slugs)<input id="navRegions" value="us"></label><p>Road routing needs a prepared regional pack on the Tiny. USA is the default; position data does not select your region.</p><h4>Default map position (used without GPS)</h4><label>Latitude <input id="navDefaultLat" type="number" step="any" min="-90" max="90"></label><label>Longitude <input id="navDefaultLon" type="number" step="any" min="-180" max="180"></label><label>Zoom <input id="navDefaultZoom" type="number" min="2" max="18"></label>
+      <label><input id="navUSA" type="checkbox"> Limit map browsing to USA extent (including Alaska/Hawaii)</label><div><button id="navDefaultSave">Save default position</button><button id="navDefaultHere">Use current map view</button></div>
+      <div><button id="navExport">Export places / trips</button><label>Import JSON <input id="navImport" type="file" accept="application/json,.json"></label><button id="navReload">Reload saved data</button></div><p id="navNotice" role="status"></p></div>`;
+    surface.append(panel);
+    const style=document.createElement('style');style.textContent=`.map-surface{touch-action:none}.map-empty{display:none!important}.nav-panel{position:absolute;z-index:9;top:78px;left:12px;max-width:min(400px,80%);max-height:65%;overflow:auto;background:#091b2ff5;border:1px solid #315577;border-radius:10px;color:#eef8ff;padding:8px;font:13px system-ui;touch-action:pan-y}.nav-panel summary{cursor:pointer;padding:6px}.nav-controls{display:grid;gap:8px;padding:6px}.nav-controls label{display:grid;gap:4px}.nav-controls button{padding:7px;margin:2px;border:1px solid #407097;border-radius:5px;background:#153855;color:white;cursor:pointer}.nav-controls input,.nav-controls textarea,.nav-controls select{padding:7px;background:#102a42;color:white;border:1px solid #4c6e87;border-radius:4px;min-width:0}.nav-controls h4{margin:10px 0 0}.nav-marker{position:absolute;z-index:4;transform:translate(-50%,-100%);border:1px solid white;background:#095b9c;color:white;border-radius:8px;padding:4px;cursor:pointer;max-width:160px;overflow:hidden;text-overflow:ellipsis}.nav-route-layer{position:absolute;inset:0;z-index:3;pointer-events:none;width:100%;height:100%}`;r.append(style);
+    const on=(id,fn)=>r.getElementById(id).onclick=fn;
+    on('navFollow',()=>{this._followGPS=!this._followGPS;this._navigation.settings.followGPS=this._followGPS;this._viewCenter=null;this._mapKey=null;this.updateMap();this.saveNavigation();});
+    on('navSelectCoordinate',()=>{const point={lat:Number(r.getElementById('navLat').value),lon:Number(r.getElementById('navLon').value)};if(!validPoint(point)||!r.getElementById('navLat').value||!r.getElementById('navLon').value){this.navNotice('Enter valid latitude and longitude');return;}this._selectedPoint=point;this._viewCenter=point;this._followGPS=false;this._mapKey=null;this.updateMap();});
+    on('navNewMarker',()=>{this._editingMarkerId=null;r.getElementById('navName').value='';this.drawNavigation();});on('navNewTrip',()=>{this._editingTripId=null;for(const id of ['navName','navDeparture','navArrival','navNotes'])r.getElementById(id).value='';this.drawNavigation();});
+    on('navAddMarker',()=>this.addNavPoint('marker'));on('navAddPoint',()=>this.addNavPoint('waypoint'));
+    on('navClearRoute',()=>{this._navigation.route={waypoints:[],geometry:[],distance:null,duration:null,instructions:[]};this.saveNavigation();this.drawNavigation();});
+    on('navCalculate',()=>this.calculateRoute());on('navSaveTrip',()=>this.saveTrip());
+    on('navHistory',()=>this.loadHistory(false));on('navHistoryMore',()=>this.loadHistory(true));on('navReplay',()=>{this._replaying=!this._replaying;this._replayClock=this._history?.[this._replayIndex||0]?.ts;});
+    r.getElementById('navReplaySeek').oninput=e=>{this._replayIndex=Number(e.target.value);this._replayClock=this._history?.[this._replayIndex]?.ts;this._replaying=false;this.viewReplay();};
+    on('navHistoryTrip',()=>{if(!this._history?.length)return;const first=this._history[0],last=this._history.at(-1);this._navigation.route={waypoints:[{lat:first.lat,lon:first.lon},{lat:last.lat,lon:last.lon}],geometry:[],instructions:[],distance:null,duration:null};r.getElementById('navDeparture').value=localDateTime(first.ts*1000);r.getElementById('navArrival').value=localDateTime(last.ts*1000);r.getElementById('navTripStatus').value='completed';this.saveNavigation();this.drawNavigation();});
+    const saveDefault=()=>{const lat=Number(r.getElementById('navDefaultLat').value),lon=Number(r.getElementById('navDefaultLon').value),zoom=Number(r.getElementById('navDefaultZoom').value);if(!validPoint({lat,lon})||!Number.isInteger(zoom)||zoom<2||zoom>18){this.navNotice('Enter valid default coordinates and zoom');return;}Object.assign(this._navigation.settings,{lat,lon,zoom,usaOnly:r.getElementById('navUSA').checked,routingRegions:r.getElementById('navRegions').value.toLowerCase().split(',').map(v=>v.trim()).filter(Boolean)});this._viewCenter=null;this._zoom=zoom;this._mapKey=null;this.saveNavigation();this.updateMap();};
+    on('navDefaultSave',saveDefault);on('navDefaultHere',()=>{r.getElementById('navDefaultLat').value=this._mapView.lat;r.getElementById('navDefaultLon').value=this._mapView.lon;r.getElementById('navDefaultZoom').value=this._zoom;saveDefault();});
+    on('navReload',()=>{this._navLoaded=false;this.loadNavigation();});
+    on('navExport',()=>{const blob=new Blob([JSON.stringify(this._navigation,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='car-navigation.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+    r.getElementById('navImport').onchange=async e=>{try{const file=e.target.files[0];if(!file||file.size>2000000)throw Error('Choose a navigation JSON file under 2 MB');const data=JSON.parse(await file.text());if(!data.settings||!Array.isArray(data.markers)||!Array.isArray(data.trips)||!data.route)throw Error('Invalid navigation export');await this._navSave;data.revision=this._navigation.revision+1;const response=await this._hass.fetchWithAuth('/api/car_console/navigation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!response.ok)throw Error((await response.json()).error||'Import rejected');this._navigation=await response.json();navigationBus.dispatchEvent(new CustomEvent('saved',{detail:structuredClone(this._navigation)}));this._mapKey=null;this.updateMap();}catch(error){this.navNotice(error.message);}};
+    let drag=null,pointers=new Map(),pinch=null;
+    const ignored=e=>e.target.closest('.nav-panel,.map-side-tools,.map-heading,.map-bottom,button,a');
+    surface.onpointerdown=e=>{if(ignored(e))return;pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});surface.setPointerCapture(e.pointerId);if(pointers.size===2){const points=[...pointers.values()];pinch={distance:Math.hypot(points[0].x-points[1].x,points[0].y-points[1].y),zoom:this._zoom};drag=null;}else drag={x:e.clientX,y:e.clientY,center:this._mapView,moved:false};};
+    surface.onpointermove=e=>{if(!pointers.has(e.pointerId))return;pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pointers.size===2&&pinch){const points=[...pointers.values()],distance=Math.hypot(points[0].x-points[1].x,points[0].y-points[1].y);this._zoom=bounded(Math.round(pinch.zoom+Math.log2(distance/Math.max(1,pinch.distance))),5,2,18);this._mapKey=null;this.updateMap();return;}if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.hypot(dx,dy)>5)drag.moved=true;if(drag.moved){const center=project(drag.center.lat,drag.center.lon,this._zoom);this._viewCenter=unproject(center.x-dx/256,center.y-dy/256,this._zoom);this._followGPS=false;this._mapKey=null;this.updateMap();}};
+    surface.onpointerup=e=>{pointers.delete(e.pointerId);if(drag&&!drag.moved&&!pinch){const rect=surface.getBoundingClientRect(),center=project(this._mapView.lat,this._mapView.lon,this._zoom);this._selectedPoint=unproject(center.x+(e.clientX-rect.left-rect.width/2)/256,center.y+(e.clientY-rect.top-rect.height/2)/256,this._zoom);const mode=r.getElementById('navPick').value;if(mode!=='inspect')this.addNavPoint(mode);this.drawNavigation();}drag=null;if(!pointers.size)pinch=null;};
+    surface.onpointercancel=()=>{drag=null;pinch=null;pointers.clear();};
+    surface.addEventListener('wheel',e=>{if(ignored(e))return;e.preventDefault();this._zoom=bounded(this._zoom+(e.deltaY<0?1:-1),5,2,18);this._mapKey=null;this.updateMap();},{passive:false});
+    this.drawNavigation();this.loadNavigation();
+  }
+  addNavPoint(kind){
+    if(this._navLoading){this.navNotice('Loading saved navigation; try again in a moment');return;}
+    if(!validPoint(this._selectedPoint)){this.navNotice('Click or touch the map first');return;}
+    const point={...this._selectedPoint};if(kind==='marker'){if(this._navigation.markers.length>=500)return;const marker={...point,id:this._editingMarkerId||navID(),name:this.shadowRoot.getElementById('navName').value||'Saved place',color:this.shadowRoot.getElementById('navColor').value};const index=this._navigation.markers.findIndex(m=>m.id===marker.id);if(index>=0)this._navigation.markers[index]=marker;else this._navigation.markers.push(marker);this._editingMarkerId=null;}else{if(this._navigation.route.waypoints.length>=25){this.navNotice('Route supports up to 25 waypoints');return;}this._navigation.route.waypoints.push(point);Object.assign(this._navigation.route,{geometry:[],instructions:[],distance:null,duration:null});}
+    this.saveNavigation();this.drawNavigation();
+  }
+  async calculateRoute(){
+    const route=this._navigation.route,identity=JSON.stringify(route.waypoints);if(route.waypoints.length<2){this.navNotice('Choose a start and destination on the map');return;}
+    this.navNotice('Calculating with the local road-routing engine…');
+    try{const response=await this._hass.fetchWithAuth('/api/car_console/route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({waypoints:route.waypoints})});const data=await response.json();if(!response.ok)throw Error(data.error||'Route unavailable');if(JSON.stringify(this._navigation.route.waypoints)!==identity)throw Error('Waypoints changed; calculate again');this._navigation.route=data;await this.saveNavigation();this.drawNavigation();}catch(error){this.navNotice(error.message);}
+  }
+  saveTrip(){
+    const r=this.shadowRoot,points=this._navigation.route.waypoints;if(points.length<2){this.navNotice('Choose the departure and arrival points using route waypoints');return;}
+    const stamp=id=>{const value=r.getElementById(id).value;return value?new Date(value).toISOString():null;};
+    const departure=stamp('navDeparture'),arrival=stamp('navArrival');if(departure&&arrival&&arrival<departure){this.navNotice('Arrival must be after departure');return;}
+    const trip={id:this._editingTripId||navID(),name:r.getElementById('navName').value||'Trip',origin:points[0],destination:points.at(-1),waypoints:structuredClone(points),departure,arrival,status:r.getElementById('navTripStatus').value,notes:r.getElementById('navNotes').value};const index=this._navigation.trips.findIndex(t=>t.id===trip.id);if(index>=0)this._navigation.trips[index]=trip;else this._navigation.trips.push(trip);this._editingTripId=null;this.saveNavigation();this.drawNavigation();
+  }
+  drawNavigation(){
+    const r=this.shadowRoot,nav=this._navigation;if(!nav||!r.getElementById('navMarkers'))return;
+    text(r,'navAddMarker',this._editingMarkerId?'Update marker':'Save selected marker');text(r,'navSaveTrip',this._editingTripId?'Update trip':'Save trip from route endpoints');
+    const button=(label,action)=>{const b=document.createElement('button');b.textContent=label;b.onclick=action;return b;};
+    const fill=(id,items,render)=>{const target=r.getElementById(id);target.replaceChildren();for(const [i,item] of items.entries()){const row=document.createElement('div');render(row,item,i);target.append(row);}};
+    fill('navMarkers',nav.markers,(row,item,i)=>{const name=document.createElement('span');name.textContent=item.name+' ';row.append(name,button('Edit',()=>{this._editingMarkerId=item.id;this._selectedPoint={lat:item.lat,lon:item.lon};r.getElementById('navName').value=item.name;r.getElementById('navLat').value=item.lat;r.getElementById('navLon').value=item.lon;r.getElementById('navColor').value=item.color||'#095b9c';this.drawNavigation();}),button('View',()=>{this._viewCenter={lat:item.lat,lon:item.lon};this._followGPS=false;this._mapKey=null;this.updateMap();}),button('Route via',()=>{this._selectedPoint={lat:item.lat,lon:item.lon};this.addNavPoint('waypoint');}),button('Delete',()=>{nav.markers.splice(i,1);this.saveNavigation();this.drawNavigation();}));});
+    fill('navPoints',nav.route.waypoints,(row,item,i)=>{row.textContent=`${i+1}. ${item.lat.toFixed(5)}, ${item.lon.toFixed(5)} `;row.append(button('↑',()=>{if(i){[nav.route.waypoints[i-1],nav.route.waypoints[i]]=[nav.route.waypoints[i],nav.route.waypoints[i-1]];Object.assign(nav.route,{geometry:[],instructions:[],distance:null,duration:null});this.saveNavigation();this.drawNavigation();}}),button('Remove',()=>{nav.route.waypoints.splice(i,1);Object.assign(nav.route,{geometry:[],instructions:[],distance:null,duration:null});this.saveNavigation();this.drawNavigation();}));});
+    fill('navTrips',nav.trips,(row,item,i)=>{row.textContent=`${item.name} · ${item.status} · ${item.departure?new Date(item.departure).toLocaleString():'Departure unset'} → ${item.arrival?new Date(item.arrival).toLocaleString():'Arrival unset'} `;row.append(button('Edit',()=>{this._editingTripId=item.id;r.getElementById('navName').value=item.name;r.getElementById('navDeparture').value=item.departure?localDateTime(new Date(item.departure).getTime()):'';r.getElementById('navArrival').value=item.arrival?localDateTime(new Date(item.arrival).getTime()):'';r.getElementById('navTripStatus').value=item.status;r.getElementById('navNotes').value=item.notes||'';nav.route={waypoints:structuredClone(item.waypoints||[item.origin,item.destination]),geometry:[],instructions:[],distance:null,duration:null};this.drawNavigation();}),button('Load route',()=>{nav.route={waypoints:structuredClone(item.waypoints||[item.origin,item.destination]),geometry:[],instructions:[],distance:null,duration:null};this._viewCenter=item.origin;this._followGPS=false;this._mapKey=null;this.saveNavigation();this.updateMap();}),button('Delete',()=>{nav.trips.splice(i,1);this.saveNavigation();this.drawNavigation();}));});
+    const selectedKey=JSON.stringify(this._selectedPoint);if(this._selectedPoint&&selectedKey!==this._selectedFieldKey){for(const [id,key] of [['navLat','lat'],['navLon','lon']])r.getElementById(id).value=this._selectedPoint[key];this._selectedFieldKey=selectedKey;}
+    text(r,'navSelected',this._selectedPoint?`Selected: ${this._selectedPoint.lat.toFixed(6)}, ${this._selectedPoint.lon.toFixed(6)}`:'Click or touch the map to choose coordinates.');
+    text(r,'navRouteSummary',nav.route.distance!=null?`${(nav.route.distance/1609.344).toFixed(1)} miles · ${Math.round(nav.route.duration/60)} minutes`:`${nav.route.waypoints.length} waypoints · no calculated road route`);
+    fill('navDirections',nav.route.instructions,(row,item)=>{row.textContent=item;});
+    const settingsKey=JSON.stringify(nav.settings);if(settingsKey!==this._settingsFieldKey){for(const [id,value] of [['navDefaultLat',nav.settings.lat],['navDefaultLon',nav.settings.lon],['navDefaultZoom',nav.settings.zoom]])r.getElementById(id).value=value;r.getElementById('navUSA').checked=nav.settings.usaOnly;r.getElementById('navRegions').value=(nav.settings.routingRegions||['us']).join(',');this._settingsFieldKey=settingsKey;}
+    text(r,'navFollow',this._followGPS?'Following GPS':'Follow GPS');
+    r.querySelectorAll('.nav-marker,.nav-route-layer').forEach(el=>el.remove());if(!this._mapView)return;
+    const surface=r.getElementById('mapSurface'),w=surface.clientWidth||500,h=surface.clientHeight||500,center=project(this._mapView.lat,this._mapView.lon,this._zoom),pixel=p=>{const a=project(p.lat,p.lon,this._zoom);let dx=a.x-center.x;const n=2**this._zoom;if(dx>n/2)dx-=n;if(dx<-n/2)dx+=n;return{x:w/2+dx*256,y:h/2+(a.y-center.y)*256};};
+    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.classList.add('nav-route-layer');svg.setAttribute('viewBox',`0 0 ${w} ${h}`);
+    if(this._history?.length){let group=[];const draw=()=>{if(group.length<2)return;const path=document.createElementNS(svg.namespaceURI,'polyline');path.setAttribute('points',group.map(p=>{const a=pixel(p);return `${a.x},${a.y}`;}).join(' '));path.setAttribute('fill','none');path.setAttribute('stroke','#ffbd59');path.setAttribute('stroke-width','3');svg.append(path);};for(const point of this._history){if(group.length&&(point.segment!==group.at(-1).segment||point.break_reason)){draw();group=[];}group.push(point);}draw();}
+    if(nav.route.geometry.length){const line=document.createElementNS(svg.namespaceURI,'polyline');line.setAttribute('points',nav.route.geometry.map(p=>{const a=pixel(p);return `${a.x},${a.y}`;}).join(' '));line.setAttribute('fill','none');line.setAttribute('stroke','#42d5ff');line.setAttribute('stroke-width','5');svg.append(line);}surface.append(svg);
+    const replay=this._history?.[this._replayIndex||0];const markers=[...(replay?[{lat:replay.lat,lon:replay.lon,name:'Replay'}]:[]),...nav.markers,...nav.route.waypoints.map((p,i)=>({...p,name:String(i+1)})),...(this._selectedPoint?[{...this._selectedPoint,name:'Selected'}]:[])];
+    for(const marker of markers){const p=pixel(marker);if(p.x<0||p.y<0||p.x>w||p.y>h)continue;const b=button(marker.name,()=>{this._selectedPoint={lat:marker.lat,lon:marker.lon};this.drawNavigation();});b.className='nav-marker';if(marker.color&&CSS.supports('color',marker.color))b.style.background=marker.color;b.style.left=p.x+'px';b.style.top=p.y+'px';surface.append(b);}
+  }
+  async loadHistory(more){
+    const r=this.shadowRoot;
+    try{if(!more||!this._historyRange){const start=r.getElementById('navDeparture').value,end=r.getElementById('navArrival').value;this._historyRange={from:start?new Date(start).getTime()/1000:Date.now()/1000-86400,to:end?new Date(end).getTime()/1000:Date.now()/1000};this._history=[];this._historyCursor=0;}
+      const query=new URLSearchParams({...this._historyRange,after:this._historyCursor||0});const response=await this._hass.fetchWithAuth('/api/car_console/gps-history?'+query);const data=await response.json();if(!response.ok)throw Error(data.error||'History unavailable');if(this._history.length+data.items.length>30000)throw Error('Choose a smaller date range (30,000 displayed fixes maximum)');this._history.push(...data.items.filter(point=>validPoint(point)&&Number.isFinite(point.ts)));this._historyCursor=data.next;this._historyMore=data.hasMore;this._replayIndex=0;r.getElementById('navReplaySeek').max=Math.max(0,this._history.length-1);this.navNotice(`${this._history.length} recorded fixes loaded${data.hasMore?' · more available':''}`);this.viewReplay();
+    }catch(error){this.navNotice(error.message);}
+  }
+  viewReplay(){const point=this._history?.[this._replayIndex||0];if(!point)return;this._viewCenter={lat:point.lat,lon:point.lon};this._followGPS=false;this._mapKey=null;text(this.shadowRoot,'navHistoryStatus',`Recorded: ${new Date(point.ts*1000).toLocaleString()} · ${this._replayIndex+1}/${this._history.length}`);this.shadowRoot.getElementById('navReplaySeek').value=this._replayIndex||0;this.updateMap();}
+  replayTick(){if(!this._replaying||!this._history?.length)return;this._replayClock=(this._replayClock||this._history[0].ts)+Number(this.shadowRoot.getElementById('navReplaySpeed').value);while((this._replayIndex||0)<this._history.length-1&&this._history[(this._replayIndex||0)+1].ts<=this._replayClock)this._replayIndex=(this._replayIndex||0)+1;if(this._replayIndex===this._history.length-1)this._replaying=false;this.viewReplay();}
   updateMap(){
-    const r=this.shadowRoot,h=this._hass,a=gpsPosition(h,this.config.gps_entity||DEFAULTS.gps),lat=a?.latitude,lon=a?.longitude;
-    const valid=!!a;
-    text(r,'gpsCoordinates',valid?`${lat.toFixed(5)}, ${lon.toFixed(5)}`:'Waiting for GPS fix');
-    if(!valid){this._ticket=(this._ticket||0)+1;r.getElementById('mapEmpty').hidden=this.config.show_empty===false;r.querySelector('.map-empty strong').textContent='Waiting for GPS position';r.querySelector('.map-empty p').textContent='The GPS source has not supplied a current position.';r.getElementById('mapCenter').hidden=true;r.getElementById('mapTiles').replaceChildren();this._mapKey=null;text(r,'mapModeText','Waiting for GPS');text(r,'mapBadge','NO GPS');return;}
-    r.querySelector('.map-empty strong').textContent=this.config.empty_title||'GPS connected · map tiles unavailable';r.querySelector('.map-empty p').textContent=this.config.empty_message||'Position is available. Install local tiles or enable online map fallback in this card’s editor.';
+    const r=this.shadowRoot,h=this._hass,a=gpsPosition(h,this.config.gps_entity||DEFAULTS.gps),valid=!!a;
+    this.loadNavigation();
+    const settings=this._navigation?.settings||defaultNavigation().settings;
+    let center=this._viewCenter||(valid&&this._followGPS?{lat:a.latitude,lon:a.longitude}:{lat:settings.lat,lon:settings.lon});
+    if(settings.usaOnly)center={lat:Math.max(18,Math.min(72,center.lat)),lon:center.lon>=170?center.lon:Math.max(-180,Math.min(-60,center.lon))};
+    const lat=center.lat,lon=center.lon;this._mapView={lat,lon};
+    text(r,'gpsCoordinates',`${valid?'GPS: '+a.latitude.toFixed(5)+', '+a.longitude.toFixed(5)+' · ':''}View: ${lat.toFixed(5)}, ${lon.toFixed(5)}`);
+    text(r,'gpsDetail',valid?'GPS connected · map available':'GPS disconnected · map and trip planning available');
+    r.getElementById('mapEmpty').hidden=true;
+    if(!valid)r.getElementById('mapCenter').hidden=true;
     const z=this._zoom,n=2**z,clamped=Math.max(-85.0511,Math.min(85.0511,lat)),phi=clamped*Math.PI/180;
     const x=(lon+180)/360*n,y=(1-Math.log(Math.tan(phi)+1/Math.cos(phi))/Math.PI)/2*n;
-    const surface=r.getElementById('mapSurface'),w=surface.clientWidth||500,height=surface.clientHeight||500,key=[z,x.toFixed(5),y.toFixed(5),w,height].join(':');
-    if(key===this._mapKey && (!this._mapRetryAt || Date.now()<this._mapRetryAt))return;this._mapKey=key;this._mapRetryAt=0;
+    const surface=r.getElementById('mapSurface'),w=surface.clientWidth||500,height=surface.clientHeight||500,key=[z,x.toFixed(5),y.toFixed(5),w,height,valid].join(':');
+    if(key===this._mapKey && (!this._mapRetryAt || Date.now()<this._mapRetryAt)){this.drawNavigation();return;}this._mapKey=key;this._mapRetryAt=0;
     const ticket=this._ticket=(this._ticket||0)+1,holder=r.getElementById('mapTiles');holder.replaceChildren();let loaded=0,onlineUsed=false;
-    r.getElementById('mapEmpty').hidden=this.config.show_empty===false;r.getElementById('mapCenter').hidden=true;text(r,'mapModeText','Looking for local map tiles');
-    let base;
-    try{if(this.config.tile_url){base=new URL(this.config.tile_url,location.href);if(!['http:','https:'].includes(base.protocol))return;}}catch(_){return;}
-    let attribution=r.getElementById('mapAttribution');if(!attribution){attribution=document.createElement('a');attribution.id='mapAttribution';attribution.href='https://www.openstreetmap.org/copyright';attribution.target='_blank';attribution.rel='noopener';attribution.textContent='© OpenStreetMap contributors';attribution.style.cssText='position:absolute;bottom:2px;right:2px;z-index:5;background:#071321dd;color:white;padding:2px 6px;font-size:11px';surface.append(attribution);}attribution.hidden=true;
+    r.getElementById('mapEmpty').hidden=true;r.getElementById('mapCenter').hidden=!valid;text(r,'mapModeText',valid?'GPS connected · loading map':'GPS disconnected · loading map at saved position');
+    let base;const tileTemplate=this.config.tile_url&&/\{[zxy]\}/.test(this.config.tile_url)?this.config.tile_url:null;
+    try{if(this.config.tile_url&&!tileTemplate){base=new URL(this.config.tile_url,location.href);if(!['http:','https:'].includes(base.protocol))return;}}catch(_){return;}
+    let attribution=r.getElementById('mapAttribution');if(!attribution){attribution=document.createElement('a');attribution.id='mapAttribution';attribution.href='https://www.usgs.gov/programs/national-geospatial-program/national-map';attribution.target='_blank';attribution.rel='noopener';attribution.textContent='Map: USGS The National Map';attribution.style.cssText='position:absolute;bottom:2px;right:2px;z-index:5;background:#071321dd;color:white;padding:2px 6px;font-size:11px';surface.append(attribution);}attribution.hidden=true;
     for(let tx=Math.floor(x-w/512);tx<=Math.floor(x+w/512);tx++)for(let ty=Math.floor(y-height/512);ty<=Math.floor(y+height/512);ty++){
       if(ty<0 || ty>=n)continue;
       const image=new Image();image.alt='';image.style.left=`${w/2+(tx-x)*256}px`;image.style.top=`${height/2+(ty-y)*256}px`;
-      image.onload=()=>{if(this._ticket!==ticket)return;loaded++;this._mapRetryAt=0;onlineUsed=onlineUsed||!!image.dataset.online;r.getElementById('mapEmpty').hidden=true;r.getElementById('mapCenter').hidden=false;text(r,'mapModeText',onlineUsed?'Online map · GPS connected':'Offline map · GPS connected');text(r,'mapBadge','GPS FIX');if(image.dataset.online)attribution.hidden=false;r.querySelector('.map-heading strong').textContent=this.config.title||(onlineUsed?'Navigation · online map':'Offline navigation');};
+      image.onload=()=>{if(this._ticket!==ticket)return;loaded++;this._mapRetryAt=0;onlineUsed=onlineUsed||!!image.dataset.online;r.getElementById('mapEmpty').hidden=true;r.getElementById('mapCenter').hidden=!valid;text(r,'mapModeText',`${onlineUsed?'Online USA map':'Local map'} · GPS ${valid?'connected':'disconnected'}`);text(r,'mapBadge',valid?'GPS FIX':'GPS DISCONNECTED');if(image.dataset.online)attribution.hidden=false;r.querySelector('.map-heading strong').textContent=this.config.title||(onlineUsed?'Navigation · USA map':'Navigation');};
       let objectURL;
-      const missing=()=>{if(this._ticket!==ticket)return;image.hidden=true;if(!loaded){this._mapRetryAt=Date.now()+15000;text(r,'mapModeText',onlineProviderBlocked?'GPS connected · map provider refused access':'GPS connected · map tiles unavailable');text(r,'mapBadge','GPS · NO MAP');if(onlineProviderBlocked){r.querySelector('.map-empty strong').textContent='GPS connected · online map blocked';r.querySelector('.map-empty p').textContent='The map provider refused access. No further online requests will be made this session. Install local tiles or configure an authorized tile source.';}}};
-      const fallback=()=>{if(this._ticket!==ticket)return;if(this.config.online_fallback===false){missing();return;}image.hidden=false;image.dataset.online='true';image.onerror=missing;onlineTile(`https://tile.openstreetmap.org/${z}/${((tx%n)+n)%n}/${ty}.png`).then(blob=>{if(this._ticket!==ticket)return;objectURL=URL.createObjectURL(blob);image.src=objectURL;}).catch(missing);};
+      const missing=()=>{if(this._ticket!==ticket)return;image.hidden=true;if(!loaded){this._mapRetryAt=Date.now()+15000;text(r,'mapModeText',`${valid?'GPS connected':'GPS disconnected'} · ${onlineProviderBlocked?'map provider refused access':'map tiles unavailable; planning available'}`);text(r,'mapBadge',valid?'GPS · NO MAP':'GPS DISCONNECTED');if(onlineProviderBlocked){r.querySelector('.map-empty strong').textContent='GPS connected · online map blocked';r.querySelector('.map-empty p').textContent='The map provider refused access. No further online requests will be made this session. Install local tiles or configure an authorized tile source.';}}};
+      const fallback=()=>{if(this._ticket!==ticket)return;if(this.config.online_fallback===false){missing();return;}image.hidden=false;image.dataset.online='true';image.onerror=missing;const scale=2**Math.max(0,z-16);image.style.width=image.style.height=(256*scale)+'px';image.style.left=(w/2+(Math.floor(tx/scale)*scale-x)*256)+'px';image.style.top=(height/2+(Math.floor(ty/scale)*scale-y)*256)+'px';onlineTile(`https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/${Math.min(z,16)}/${Math.floor(ty/2**Math.max(0,z-16))}/${Math.floor(((tx%n)+n)%n/2**Math.max(0,z-16))}`).then(blob=>{if(this._ticket!==ticket)return;objectURL=URL.createObjectURL(blob);image.src=objectURL;}).catch(missing);};
       const onload=image.onload;image.onload=()=>{if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null;}onload();};
       image.onerror=()=>{if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null;}fallback();};
       holder.append(image);
-      if(base)image.src=new URL(`${z}/${((tx%n)+n)%n}/${ty}.png`,base.href.endsWith('/')?base.href:base.href+'/').href;
+      if(tileTemplate){try{const url=new URL(tileTemplate.replaceAll('{z}',String(z)).replaceAll('{x}',String(((tx%n)+n)%n)).replaceAll('{y}',String(ty)),location.href);if(['http:','https:'].includes(url.protocol))image.src=url.href;else missing();}catch(_){missing();}}
+      else if(base)image.src=new URL(`${z}/${((tx%n)+n)%n}/${ty}.png`,base.href.endsWith('/')?base.href:base.href+'/').href;
       else if(h?.fetchWithAuth){
         h.fetchWithAuth(`/api/car_console/tiles/${z}/${((tx%n)+n)%n}/${ty}.png`).then(async response=>{
           if(!response.ok)throw Error('Local tile unavailable');const blob=await response.blob();if(this._ticket!==ticket)return;objectURL=URL.createObjectURL(blob);image.src=objectURL;
         }).catch(fallback);
       }else fallback();
     }
+    if(valid){const gps=project(a.latitude,a.longitude,z);r.getElementById('mapCenter').style.left=(w/2+(gps.x-x)*256)+'px';r.getElementById('mapCenter').style.top=(height/2+(gps.y-y)*256)+'px';}
+    this.drawNavigation();
   }
   updateMedia(){
     if(this.config?.widget!=='media')return;const r=this.shadowRoot;
@@ -213,7 +336,7 @@ const txt=name=>field(name,{text:{}}),flag=name=>field(name,{boolean:{}}),num=(n
 const choice=(name,options)=>field(name,{select:{options}}),entity=name=>field(name,{entity:{}});
 const group=(name,title,schema,expanded=false)=>({name,title,type:'expandable',flatten:true,expanded,schema});
 const PAGE_DEFAULTS={page_layout:'grid',columns:2,widget_gap:11,content_padding:16,show_header:true,show_rail:true,show_dock:true,show_tabs:true,show_clock:true,show_date:true,show_connections:true,show_theme_button:true,show_assistant_menu:true,show_volume:true,show_climate:true,show_home_button:true,show_back_button:true,compact_dock:true};
-const WIDGET_DEFAULTS={clock:{show_date:true,show_footer:true,date_format:'full',hour24:false},media:{show_art:true,show_picker:true,show_seek:true,show_controls:true},map:{online_fallback:true,show_map_controls:true,show_position:true,show_empty:true,zoom:13},vehicleArt:{show_illustration:true},gauges:{show_age:true,show_freshness:true,speed_unit:'mph',speed_decimals:0,rpm_decimals:1,rpm_divisor:'1000',rpm_max:6500},metrics:{temperature_unit:'F',visible_metrics:['coolant','voltage','fuel','load']},link:{new_tab:true},page:PAGE_DEFAULTS};
+const WIDGET_DEFAULTS={clock:{show_date:true,show_footer:true,date_format:'full',hour24:false},media:{show_art:true,show_picker:true,show_seek:true,show_controls:true},map:{online_fallback:true,show_map_controls:true,show_position:true,show_empty:true,zoom:5},vehicleArt:{show_illustration:true},gauges:{show_age:true,show_freshness:true,speed_unit:'mph',speed_decimals:0,rpm_decimals:1,rpm_divisor:'1000',rpm_max:6500},metrics:{temperature_unit:'F',visible_metrics:['coolant','voltage','fuel','load']},link:{new_tab:true},page:PAGE_DEFAULTS};
 function editorSchema(kind){
   const fields=[choice('widget',Object.entries(KINDS).map(([value,label])=>({value,label})))];
   if(kind==='page')return [...fields,
@@ -249,7 +372,7 @@ class DriveConsoleEditor extends HTMLElement {
   render(){
     if(!this.config || !this._hass)return;
     if(!this.form){this.form=document.createElement('ha-form');this.append(this.form);this.form.addEventListener('value-changed',e=>{this.config={...this.config,...e.detail.value};event(this,'config-changed',{config:this.config});});}
-    const labels={widget:'Widget',title:'Heading',page_layout:'Layout',columns:'Grid columns',widget_gap:'Space between widgets',content_padding:'Page padding',max_width:'Maximum content width (0 = full width)',compact_dock:'Compact bottom controls on short displays',left_width:'Cockpit left column ratio',map_width:'Cockpit map column ratio',right_width:'Cockpit right column ratio',accent:'Accent color',hour24:'24-hour clock',placement:'Position in the cockpit layout',tile_url:'Local tile folder URL',speed_unit:'Speed display unit',temperature_unit:'Temperature display unit',rpm_divisor:'RPM display scale',custom_css:'Custom CSS',navigation_items:'Custom sidebar items',dock_items:'Custom launcher items',column_span:'Columns occupied in grid layout',image_url:'Vehicle image URL',entity:'Sensor entity'};
+    const labels={widget:'Widget',title:'Heading',page_layout:'Layout',columns:'Grid columns',widget_gap:'Space between widgets',content_padding:'Page padding',max_width:'Maximum content width (0 = full width)',compact_dock:'Compact bottom controls on short displays',left_width:'Cockpit left column ratio',map_width:'Cockpit map column ratio',right_width:'Cockpit right column ratio',accent:'Accent color',hour24:'24-hour clock',placement:'Position in the cockpit layout',tile_url:'Tile folder or XYZ template URL ({z}/{x}/{y})',speed_unit:'Speed display unit',temperature_unit:'Temperature display unit',rpm_divisor:'RPM display scale',custom_css:'Custom CSS',navigation_items:'Custom sidebar items',dock_items:'Custom launcher items',column_span:'Columns occupied in grid layout',image_url:'Vehicle image URL',entity:'Sensor entity'};
     this.form.hass=this._hass;this.form.data={...structuredClone(WIDGET_DEFAULTS[this.config.widget]||{}),...this.config};if(this.config.widget==='gauges')this.form.data.rpm_divisor=String(this.form.data.rpm_divisor);if(this._schemaKind!==this.config.widget){this._schemaKind=this.config.widget;this.form.schema=editorSchema(this.config.widget);}
     this.form.computeLabel=({name})=>labels[name]||name.replaceAll('_',' ').replace(/^./,s=>s.toUpperCase());
     this.form.computeHelper=({name})=>['navigation_items','dock_items'].includes(name)?'Optional list of {label, icon, page} or {label, icon, url, new_tab} items. Leave blank to follow tabs automatically; an empty list hides all items.':name==='custom_css'?'CSS applies only to this widget, or to this page’s header, sidebar and bottom controls.':'';
@@ -327,7 +450,7 @@ class DriveConsoleLayout extends HTMLElement {
     this.chrome();
     const testing=document.createElement('details');testing.style.cssText='padding:8px 16px;background:#142238;color:white';
     const summary=document.createElement('summary');summary.id='previewStatus';testing.append(summary);
-    const instructions=document.createElement('p');instructions.textContent='GPS comes from the normal gpsd service. For a virtual serial GPS, run the external virtual_gps.py source tool on the Tiny. Stop that tool to restore the physical receiver. Test positions use normal recording and map rendering.';testing.append(instructions);
+    const instructions=document.createElement('p');instructions.textContent='GPS and vehicle measurements come from the configured devices. Map planning and saved trips remain available when GPS is disconnected.';testing.append(instructions);
     const original=document.createElement('button');original.textContent='Original console';original.onclick=()=>legacy('home');testing.append(original);
     r.getElementById('pageTabs').after(testing);
 
@@ -380,9 +503,9 @@ class DriveConsoleLayout extends HTMLElement {
   updateHeader(){
     const r=this.shadowRoot;if(!r.getElementById('topClock'))return;
     const now=new Date();text(r,'topClock',now.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}));text(r,'topDate',now.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}));
-    text(r,'previewStatus','GPS source: gpsd · source tools & original console');
+    text(r,'previewStatus','System tools · original console');
     const h=this._hass,p=this.settings,obd=h?.connected && h.states?.[p.obd_entity||'binary_sensor.car_obd_connection']?.state==='on',gps=!!gpsPosition(h,p.gps_entity||DEFAULTS.gps);
-    text(r,'telemetryState',obd?'OBD2 connected':'OBD2 unavailable');text(r,'gpsState',gps?'GPS fix':'GPS unavailable');r.getElementById('telemetryDot').className='led '+(obd?'good':'warning');r.getElementById('gpsDot').className='led '+(gps?'good':'');
+    text(r,'telemetryState',obd?'OBD2 connected':'OBD2 unavailable');text(r,'gpsState',gps?'GPS connected':'GPS disconnected');r.getElementById('telemetryDot').className='led '+(obd?'good':'warning');r.getElementById('gpsDot').className='led '+(gps?'good':'');
   }
 }
 customElements.define('drive-console-widget',DriveConsoleWidget);
@@ -390,4 +513,4 @@ customElements.define('drive-console-widget-editor',DriveConsoleEditor);
 customElements.define('drive-console-layout',DriveConsoleLayout);
 window.customCards=window.customCards||[];
 window.customCards.push({type:'drive-console-widget',name:'Drive Console widget',description:'Original car clock, local music, offline map, truck art and vehicle gauges',preview:true});
-export {number,display,temperature,bounded,currentPage,targetView,editorSchema,WIDGET_DEFAULTS,htmlDocument,gpsPosition};
+export {number,display,temperature,bounded,currentPage,targetView,editorSchema,WIDGET_DEFAULTS,htmlDocument,gpsPosition,project,unproject,defaultNavigation};

@@ -12,6 +12,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, build_opener, ProxyHandler
+from urllib.error import HTTPError
 
 sys.path.insert(0, '/src')
 from deploy.home_assistant import managed_files, DASHBOARD_MIGRATION, FORK_ARCHIVE_SHA
@@ -160,6 +161,19 @@ with (root / 'startup.log').open('w') as log:
                 break
             assert time.monotonic() < deadline, 'Car bridge/local integrations not ready: ' + str(components) + str(states.get('sensor.car_rpm'))
             time.sleep(1)
+
+        # Real HA auth + Store persistence, with no GPS fix or routing pack.
+        navigation=call('/api/car_console/navigation',token=token)
+        assert navigation['settings']['routingRegions']==['us']
+        navigation['revision']+=1
+        navigation['markers'].append({'id':'fixture-place','name':'Saved without GPS','lat':40,'lon':-100})
+        saved=call('/api/car_console/navigation',navigation,token=token)
+        assert saved['markers'][0]['name']=='Saved without GPS'
+        assert call('/api/car_console/navigation',token=token)==saved
+        try:
+            call('/api/car_console/navigation')
+            raise AssertionError('Navigation API accepted an unauthenticated request')
+        except HTTPError as exc:assert exc.code==401
 
         print(f'PASS: offline frontend in {elapsed:.1f}s; saved dashboard/editor in {layout_elapsed:.1f}s before reporting backend; recovered authenticated RPM; no home discovery/media/energy defaults')
         if os.getenv('CAR_NATIVE_BROWSER_HOLD')=='1':

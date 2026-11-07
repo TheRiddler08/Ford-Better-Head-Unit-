@@ -22,6 +22,7 @@ PORT = int(os.environ.get("CAR_PORT", "8787"))
 TIME_RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
 LOG = logging.getLogger("car-dashboard")
 TILE_ROOT = Path(os.environ.get("CAR_MAP_TILES", "/var/lib/car-dashboard/tiles"))
+MAP_MBTILES = Path(os.environ.get('CAR_MAP_MBTILES','/var/lib/car-dashboard/maps/usa.mbtiles'))
 TILE_ROUTE = re.compile(r"^/tiles/([0-9]{1,2})/([0-9]{1,8})/([0-9]{1,8})\.png$")
 
 
@@ -378,10 +379,14 @@ class Handler(BaseHTTPRequestHandler):
         tile = local_tile_path(url.path)
         if tile is not None:
             try:
+                if not tile.is_file():
+                    match=TILE_ROUTE.fullmatch(url.path)
+                    packed=mbtiles_tile(*map(int,match.groups()))
+                    if packed:return self.send_bytes(packed[0],mime=packed[1],cache='public, max-age=86400')
                 if not tile.is_file() or tile.stat().st_size > 2097152:
                     return self.send_json({"error": "Local map tile missing"}, 404)
                 return self.send_bytes(tile.read_bytes(), mime="image/png", cache="public, max-age=86400")
-            except OSError:
+            except (OSError,sqlite3.Error):
                 return self.send_json({"error": "Local map tile unavailable"}, 404)
         if url.path.startswith("/tiles/"):
             return self.send_json({"error": "Invalid tile path"}, 404)
@@ -505,6 +510,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         if not self.path.startswith("/api/live"):
             LOG.info("%s %s", self.address_string(), fmt % args)
+
+
+def mbtiles_tile(z,x,y,path=None):
+    path=Path(path) if path is not None else MAP_MBTILES
+    if not path.is_file() or path.is_symlink():return None
+    with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=2) as database:
+        row=database.execute('SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=? AND length(tile_data)<=2097152 LIMIT 1',(z,x,(1<<z)-1-y)).fetchone()
+    if not row:return None
+    data=bytes(row[0])
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):return data,'image/png'
+    if data.startswith(b'\xff\xd8\xff'):return data,'image/jpeg'
+    return None  # Vector PBF packs need a vector renderer, not a raster image tag.
 
 
 def main():

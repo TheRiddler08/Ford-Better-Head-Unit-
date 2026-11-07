@@ -140,7 +140,7 @@ is refused.
 
 The original car console remains installed independently of Car Assistant. On
 Duet, open `http://127.0.0.1:8877/cockpit.html` or choose **Original console**
-under the dashboard's **GPS source** controls. Keep both while deciding which
+under the dashboard's **System tools** controls. Keep both while deciding which
 editor you prefer. The standalone WSL HA preview does not start the original
 console server. To view it there too, run this in a second WSL terminal from
 this repository (leave that terminal running):

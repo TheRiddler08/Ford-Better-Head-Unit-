@@ -170,9 +170,9 @@ Local map tiles are fetched through an authenticated HA endpoint, so the existin
 HA SSH tunnel also carries map imagery; an extra localhost:8877 tunnel is no
 longer required for default tile access. Custom tile URLs remain supported.
 
-When local tiles are missing, the map card defaults to online OpenStreetMap tiles
+When local tiles are missing, the map card defaults to online USGS USA tiles
 with visible attribution and an online status. This requires Internet on the
-browser computer and requests the visible map area from OpenStreetMap. Disable
+browser computer and requests the visible map area from USGS The National Map. Disable
 **Online fallback** in the map card editor to keep map imagery local-only. No
 bulk tile downloader or offline pack is installed by this feature. Missing tiles
 are reported independently of GPS status and are retried after 15 seconds.
@@ -222,3 +222,8 @@ provider's actual timestamp and refuses to treat an old coordinate as fresh.
 Keep its terminal and SSH tunnel open; Ctrl+C stops sharing. Native Windows
 provider behavior requires testing on Windows; cloud tests cover the receiving
 GPS pipeline and browser lifecycle handling.
+
+For GPS-independent map planning, full-USA data selection, manual journey times,
+recorded replay and external ELM327 values, see [Navigation](NAVIGATION.md).
+Map and connection widgets do not expose a simulation mode. External source
+controllers remain independent utilities and their data follows ordinary paths.
