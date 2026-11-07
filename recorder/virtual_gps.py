@@ -14,6 +14,9 @@ import os
 from pathlib import Path
 import pty
 import pwd
+import re
+import stat
+import tempfile
 import select
 import shutil
 import signal
@@ -151,6 +154,60 @@ class BrowserSource:
         self.server.shutdown();self.server.server_close();self.thread.join(timeout=3)
 
 
+def policy_write(path, content):
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as pending:
+        temporary = Path(pending.name)
+        pending.write(content.encode())
+    try:
+        temporary.chmod(mode)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def serial_apparmor(device, profile=Path('/etc/apparmor.d/usr.sbin.gpsd')):
+    """Grant only this owner PTY while the source runs; preserve local policy."""
+    if not profile.exists():
+        yield
+        return
+    if not re.fullmatch(r'/dev/pts/[0-9]+', device):
+        raise ValueError('Expected a concrete virtual serial PTY')
+    if profile.is_symlink() or not profile.is_file():
+        raise RuntimeError('Unexpected gpsd AppArmor profile path')
+    enabled=Path('/sys/module/apparmor/parameters/enabled')
+    if enabled.exists() and enabled.read_text().strip()=='N':
+        yield
+        return
+    parser=shutil.which('apparmor_parser')
+    if os.geteuid()!=0 or not parser:
+        raise RuntimeError('gpsd AppArmor support requires sudo and apparmor_parser')
+    if not re.search(r'#?include\s+(?:if exists\s+)?[<"]local/usr\.sbin\.gpsd[>"]',profile.read_text()):
+        raise RuntimeError('gpsd profile has no standard local include; refusing to change it')
+    local=profile.parent/'local'/'usr.sbin.gpsd'
+    if local.parent.is_symlink() or local.is_symlink():
+        raise RuntimeError('Refusing symlinked AppArmor local policy')
+    local.parent.mkdir(exist_ok=True)
+    previous=local.read_text() if local.exists() else ''
+    if '# BEGIN car-virtual-gps' in previous:
+        raise RuntimeError('A previous virtual GPS policy remains; inspect local/usr.sbin.gpsd first')
+    block=f'\n# BEGIN car-virtual-gps\nowner {device} rw,\n# END car-virtual-gps\n'
+    def reload():
+        subprocess.run([parser,'-r',str(profile)],check=True)
+    try:
+        policy_write(local,previous+block)
+        reload()
+        yield
+    finally:
+        # Remove our exact block only, retaining unrelated admin changes.
+        current=local.read_text()
+        if block not in current:
+            raise RuntimeError('Virtual GPS AppArmor block changed externally; inspect local policy')
+        policy_write(local,current.replace(block,'',1))
+        reload()
+
+
 @contextmanager
 def source_lock(replace):
     if not replace:
@@ -238,6 +295,7 @@ def run(args):
                         os.chown(path, uid, account.pw_gid)
                         os.chmod(path, 0o600)
                         credentials = dict(user=uid, group=account.pw_gid, extra_groups=[])
+                    stack.enter_context(serial_apparmor(path))
                     process = subprocess.Popen([gpsd, '-N', '-n', '-S', str(args.port), path], **credentials)
                     print(f'Normal gpsd endpoint: 127.0.0.1:{args.port}', flush=True)
                 print('Virtual NMEA serial source active. Normal clients may record/transmit these positions. Ctrl+C restores the previous source.', flush=True)

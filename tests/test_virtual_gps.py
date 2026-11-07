@@ -54,6 +54,35 @@ class VirtualGPS(unittest.TestCase):
                 self.assertIn(b'GPRMC,,V',source.data())
         finally:source.server.server_close()
 
+    def test_apparmor_exact_owner_pty_and_cleanup_preserves_local_edits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile=Path(directory)/'usr.sbin.gpsd'
+            profile.write_text('/usr/sbin/gpsd {\n#include <local/usr.sbin.gpsd>\n}\n')
+            local=Path(directory)/'local'/'usr.sbin.gpsd'
+            local.parent.mkdir();local.write_text('# existing admin policy\n')
+            with patch.object(virtual.os,'geteuid',return_value=0),patch.object(virtual.shutil,'which',return_value='/sbin/apparmor_parser'),patch.object(virtual.subprocess,'run') as reload:
+                with self.assertRaisesRegex(RuntimeError,'test source failed'):
+                    with virtual.serial_apparmor('/dev/pts/12',profile):
+                        policy=local.read_text()
+                        self.assertIn('owner /dev/pts/12 rw,',policy)
+                        self.assertNotIn('/dev/pts/*',policy)
+                        local.write_text(policy+'# concurrent admin edit\n')
+                        raise RuntimeError('test source failed')
+                self.assertEqual(local.read_text(),'# existing admin policy\n# concurrent admin edit\n')
+                self.assertEqual(reload.call_count,2)
+
+    def test_apparmor_failed_load_restores_original_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile=Path(directory)/'usr.sbin.gpsd'
+            profile.write_text('#include if exists <local/usr.sbin.gpsd>\n')
+            local=Path(directory)/'local'/'usr.sbin.gpsd'
+            local.parent.mkdir();local.write_text('# original\n')
+            failure=subprocess.CalledProcessError(1,['apparmor_parser'])
+            with patch.object(virtual.os,'geteuid',return_value=0),patch.object(virtual.shutil,'which',return_value='/sbin/apparmor_parser'),patch.object(virtual.subprocess,'run',side_effect=[failure,None]):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    with virtual.serial_apparmor('/dev/pts/12',profile):pass
+            self.assertEqual(local.read_text(),'# original\n')
+
     @unittest.skipUnless(shutil.which('gpsd'), 'Optional real gpsd integration requires gpsd')
     def test_real_parser_recorder_and_ha_http_adapter(self):
         self.pipeline(False)

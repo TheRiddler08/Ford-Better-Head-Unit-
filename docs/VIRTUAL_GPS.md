@@ -141,3 +141,20 @@ Positions go into ordinary trip history. Keep the token private; it only lasts
 for this source process. No port is opened on the car Ethernet/Tailscale addresses.
 Keep the same local forwarding port (8790), since browser-origin checks include
 that port. This source does not grant remote command execution or HA access.
+
+### Ubuntu AppArmor
+
+Some Ubuntu installations confine `/usr/sbin/gpsd` and deny pseudo-terminal
+access. When that profile is present, the root source controller uses its
+standard `local/usr.sbin.gpsd` include to add only `owner /dev/pts/N rw,` for the
+specific PTY it created, then reloads the profile. It removes its exact block
+and reloads again on normal exit, a handled failure, or termination. Existing
+local rules and administrator edits are preserved. It does not disable AppArmor,
+allow all terminals, or add ptrace access to other services.
+
+The source controller needs sudo and `apparmor_parser` on confined systems. It
+fails rather than replace an unfamiliar profile without the standard local
+include. If an uncatchable SIGKILL or power loss leaves a block marked
+`car-virtual-gps` in `/etc/apparmor.d/local/usr.sbin.gpsd`, inspect and remove that
+block, then reload `/etc/apparmor.d/usr.sbin.gpsd` with `apparmor_parser -r` before
+starting another session. Normal source termination performs that cleanup.
