@@ -19,7 +19,9 @@ with BrowserSource(0) as source, sync_playwright() as p:
     assert source.fix['latitude']==40.25
     page.evaluate("latest.timestamp=Date.now()-35000;send()")
     expect(page.locator('#status')).to_contain_text('Location paused')
-    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    page.evaluate("window.refreshCalls=0;const originalGet=navigator.geolocation.getCurrentPosition.bind(navigator.geolocation);navigator.geolocation.getCurrentPosition=(...args)=>{window.refreshCalls++;return originalGet(...args);};window.dispatchEvent(new Event('focus'));")
+    assert page.evaluate('window.refreshCalls')>=1
+    context.set_geolocation({'latitude':40.26,'longitude':-76.5,'accuracy':10})
     expect(page.locator('#status')).to_contain_text('Sharing:',timeout=15000)
     code=page.evaluate("async()=>{const r=await fetch('/fix',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({latitude:40,longitude:-76,accuracy:20,timestamp:0})});return r.status;}")
     assert code==202
