@@ -617,6 +617,38 @@ WantedBy=timers.target
     run(['systemctl','disable' if disabled else 'enable','--now','car-dashboard-update.timer'])
 
 
+def settings_fingerprint(config):
+    link=load(Path('/etc/car-dashboard/update-link.json'),{})
+    value=config
+    if link.get('home_ssh_target'):
+        value=dict(config,_managed_home_tunnel={name:link.get(name) for name in ('home_ssh_target','home_tunnel_enabled')})
+    return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+
+
+def home_tunnel_unit(config,options):
+    host=options.get('home_ssh_target')
+    if not isinstance(host,str) or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*@[A-Za-z0-9][A-Za-z0-9.-]*',host):
+        raise ValueError('Invalid home SSH target')
+    user=config['user'];home=config['home']
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+',user) or not re.fullmatch(r'/[A-Za-z0-9_./-]+',home) or '..' in home.split('/'):
+        raise ValueError('Unsupported user/home for managed tunnel')
+    return f'''[Unit]
+Description=Restricted authenticated home application tunnel
+Wants=network-online.target
+After=network-online.target
+[Service]
+User={user}
+Environment=HOME={home}
+ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o IdentitiesOnly=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -i {home}/.ssh/car-home-tunnel -L 127.0.0.1:8791:127.0.0.1:8790 {host}
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+UMask=0077
+[Install]
+WantedBy=multi-user.target
+'''
+
+
 def systemd_units(role):
     current=BASE/'fleet-current'
     unit('car-fleet.service',f'''[Unit]
@@ -642,6 +674,9 @@ ExecStart=/usr/bin/python3 -I {current}/fleet.py refresh
 TimeoutStartSec=900
 ''')
     config=load(CONFIG,{})
+    link=load(Path('/etc/car-dashboard/update-link.json'),{})
+    managed_tunnel=role=='tiny' and bool(link.get('home_ssh_target'))
+    if managed_tunnel:unit('car-home-tunnel.service',home_tunnel_unit(config,link))
     user=config.get('user','nobody');repo=config.get('repo','/nonexistent');home=config.get('home','/nonexistent')
     for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-data','control.car_data')]:
         limits='Environment=CAR_STATE_DB_LIMIT_BYTES=16777216\n' if role=='pi' and config.get('pi_storage_client',True) else ''
@@ -717,6 +752,10 @@ WantedBy=timers.target
 ''')
     if role=='laptop':install_laptop_power(config)
     run(['systemctl','daemon-reload'])
+    if managed_tunnel:
+        enabled=link.get('home_tunnel_enabled',True)
+        run(['systemctl','enable' if enabled else 'disable','--now','car-home-tunnel.service'])
+        if enabled:run(['systemctl','try-restart','car-home-tunnel.service'],check=False)
     run(['systemctl','disable','--now','car-duet-ethernet-'+role+'.timer'],check=False)
     run(['systemctl','enable','--now','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-data.service'])
     run(['systemctl','restart','car-update-link.service','car-radio-adapter.service','car-data.service'])
@@ -815,7 +854,7 @@ def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False
     defaults.update(config)
     if commit:defaults['commit']=commit
     installed=load(STATE/'installed.json',{})
-    configuration_hash=hashlib.sha256(json.dumps(defaults,sort_keys=True).encode()).hexdigest()
+    configuration_hash=settings_fingerprint(defaults)
     reconfigure=(not retry_missing or installed.get('configurationHash')!=configuration_hash or
         installed.get('version')!=destination.name or installed.get('commit')!=defaults['commit'])
     if role=='duet' and commit and not missing:advance_duet(defaults,commit)
@@ -842,7 +881,7 @@ def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False
             previous=load(standby,{});previous['armed']=False;save(standby,previous)
     if not defaults.get('enabled',True):
         if Path('/run/systemd/system').exists():
-            for service in ['car-laptop-power.service','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
+            for service in ['car-home-tunnel.service','car-laptop-power.service','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
                 run(['systemctl','disable','--now',service],check=False)
         elif Path('/run/openrc').exists():
             for service in ['car-laptop-power','car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-data','car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount','car-fleet-boot','car-wake-status']:
@@ -1160,7 +1199,7 @@ def refresh_locked(config):
     if not re.fullmatch('[0-9a-f]{40}',commit):raise ValueError('Invalid source commit')
     if config['role']!='duet' and not approved_root_source(config,commit):raise ValueError('Checkout tip is not independently verified for root role updates')
     installed=load(STATE/'installed.json',{})
-    configuration_hash=hashlib.sha256(json.dumps(config,sort_keys=True).encode()).hexdigest()
+    configuration_hash=settings_fingerprint(config)
     if installed.get('commit')==commit and not installed.get('missing') and installed.get('configurationHash')==configuration_hash:return
     if config.get('commit'):git(config,'merge-base','--is-ancestor',config['commit'],commit,bare=bare)
     sources={name:source_bytes(config,commit,source,bare=bare) for name,source in SOURCES.items()}

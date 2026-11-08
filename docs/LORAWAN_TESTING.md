@@ -99,6 +99,43 @@ Class C switching and automatic rejoins are intentionally not implemented here.
 
 ## Automatic encrypted round-trip check
 
+### One-time pairing for the commissioned Tiny
+
+After installing the home services, configuring their ChirpStack application and
+MQTT connection, and updating the Tiny through its normal verified update path,
+close picocom and run as the Tiny's ordinary dashboard user:
+
+```bash
+cd ~/car-dashboard
+python3 -m control.pair_radio --home cayden@100.121.219.15 \
+  --device /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+```
+
+This deployment-specific pairing entry point checks the previously commissioned
+DevEUI `ac1f09fffe29d8b2` and joined US915 OTAA Class A status using read-only
+queries. It temporarily releases/restores the radio service to probe as the
+ordinary user with dialout access. It does not change radio settings. Initial
+Tiny sudo authorization and the home user's SSH password/host verification may
+each be needed once. The home device token is transferred inside authenticated
+SSH, captured in memory, stored mode 0600 and never printed. An existing different
+Tiny device token or changed application public-key pin is not overwritten.
+
+A dedicated Ed25519 forwarding key is authorized on home with `restrict`, one
+`permitopen="127.0.0.1:8790"` destination, and a forced `/bin/false` command;
+it cannot run commands or copy files. Existing home authorized keys are preserved.
+The normal verified Tiny role installer manages `car-home-tunnel.service`, with
+loopback-only local port 8791, strict host checking, unattended authentication,
+keepalives and automatic restart. The setup command requests sudo only to copy
+validated settings as data and start existing verified reconciliation/services;
+it does not execute editable Python as root. Explicit opt-outs remain preserved.
+
+The existing role configuration fingerprint includes managed tunnel settings, so
+later configuration changes and normal automatic updates reconcile this unit.
+The port forward is unrelated to the laptop browser's ChirpStack UI tunnel.
+Pairing closes with an authenticated application enrollment and starts the normal
+radio service. Missing MQTT, altered credentials, no route to home, a closed
+serial device or exhausted airtime budget still leaves a pending/failed test.
+
 Once a Tiny has explicit RAK3172 configuration, the normal radio service has its
 existing link key and pinned home public key, and the home bridge has the Tiny's
 public key, the service starts **one persisted self-test** automatically. No
