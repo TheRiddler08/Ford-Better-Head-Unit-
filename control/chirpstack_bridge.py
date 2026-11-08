@@ -124,7 +124,7 @@ class Bridge:
                 self.diagnostic().receive(payload)
             elif payload[:1]==b'\x05':
                 from control.telemetry import decode,store
-                store(ROOT/'radio/sensors.sqlite3',decode(payload,radio_key()))
+                store(ROOT/'radio/sensors.sqlite3',decode(payload,radio_key()),transport='lorawan')
             elif payload[:1]==b'\x02':
                 from control.update_transfer import decode
                 _,short,*_=decode(payload,radio_key())
@@ -138,7 +138,7 @@ class Bridge:
                     status_reply(self.events(),sample,'home',ROOT)
                     if sample.get('type') in ('file','file-receipt'):
                         from control.file_sync import home_files
-                        home_files(ROOT,sample['source'],radio_key()).receive(sample,received['id'])
+                        home_files(ROOT,sample['source'],radio_key()).receive_available(sample,received['id'])
                 if sample and sample.get('type')=='gps':
                     from control.coverage import ingest
                     registry_file=ROOT/'gateways.json'

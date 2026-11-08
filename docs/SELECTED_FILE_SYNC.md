@@ -46,6 +46,14 @@ of `idle` means no transfer has run yet; `last-transfer-applied` describes the
 last confirmed transfer, not a claim that an unplugged device is currently
 reachable. `not-selected` means the receiving endpoint has not allowed the file.
 
+A local file that is oversized, unreadable, symlinked or invalid UTF-8 is shown
+as `blocked` with a short reason. That file's pending sends pause; its original,
+baseline and transfer ID are retained. Other selected files and signed software
+updates continue. Repair the file in its existing folder to resume. An unwritable
+receiving folder produces no applied receipt, so the sender retains its copy
+and retries; repairing the destination allows the same transfer to finish.
+Removing a blocked original does not authorize deletion on the other endpoint.
+
 Executable UI/recorder/Duet source updates keep their independent Ed25519 signed
 manifest and safe activation path. This data service never relaxes those source
 allowlists or executes received text. Small data objects use the existing shared

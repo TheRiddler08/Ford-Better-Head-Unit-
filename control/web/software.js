@@ -9,7 +9,23 @@
     $("softwareQueue").textContent=result.updates.length?result.updates.map(item=>`${item.role || "receiving"} · ${item.path || item.id} · ${item.phase} · ${item.acknowledged}/${item.total} confirmed fragments · ${item.lastTransport || "waiting"}`).join("\n"):"No software updates queued.";
     $("softwareRadio").textContent=result.radioConfigured?"ChirpStack configured; actual radio delivery is shown by device receipts.":"Radio credentials/modem are not configured. Wi-Fi transfer can operate independently.";
     if(result.radioDiagnostic)$("softwareRadio").textContent+=" Radio test: "+result.radioDiagnostic.phase+" — "+result.radioDiagnostic.message;
-    const homeHa=document.getElementById('homeHaStatus');if(homeHa)homeHa.textContent='Home Home Assistant: '+(result.homeAssistant?.phase||'unknown')+'. Sensor, signed-update and selected-file sync states use the home MQTT integration.';
+    const homeHa=document.getElementById('homeHaStatus');
+    if(homeHa){
+      const phase=result.homeAssistant?.phase||'unknown';
+      const hints={'unconfigured':'Enter the existing broker settings in the private home control.env file.','status-stale':'The bridge heartbeat is stale. Check car-home-ha on the home server.','mqtt-rejected':'The broker rejected the connection. Check its credentials and access rules.','mqtt-retrying':'The bridge is retrying discovery and state publication.','mqtt-disconnected-retrying':'The broker connection is down; reconnection is automatic.'};
+      homeHa.textContent='Home Home Assistant: '+phase+'. '+(hints[phase]||'Entities and current state are republished when Home Assistant restarts.');
+    }
+    const devices=document.getElementById('homeHaDevices');
+    if(devices){
+      const rows=Object.entries(result.carLinks||{}).map(([name,item])=>{
+        const row=document.createElement('p'),report=item.report,updates=item.updates,sync=item.sync;
+        const age=report.age===null?'No sensor report yet':`${report.fresh?'Fresh':'Stale'} observations · ${report.age<60?report.age+' seconds':Math.floor(report.age/60)+' minutes'} old · ${report.transport}`;
+        row.textContent=`${name.toUpperCase()}: ${age}. Updates: ${updates.phase} · ${updates.progress}% fragments received · ${updates.pending} pending. Data sync: ${sync.phase} · ${sync.pending} pending · ${sync.conflicts} conflicts · ${sync.blocked} blocked.`;
+        for(const file of sync.files.filter(file=>file.error)){const detail=document.createElement('small');detail.textContent=` ${file.name}: ${file.error}`;row.append(document.createElement('br'),detail);}
+        return row;
+      });
+      devices.replaceChildren(...rows);
+    }
   }
   role.addEventListener("change",choices);file.addEventListener("change",()=>{baseline=null;});
   $("loadSoftware").addEventListener("click",async()=>{
@@ -28,6 +44,7 @@
     }catch(error){notice.textContent=error.message;}
   });
   $("refreshSoftware").addEventListener("click",()=>status().catch(error=>notice.textContent=error.message));
+  document.getElementById('refreshHomeHa')?.addEventListener('click',()=>status().catch(error=>document.getElementById('homeHaStatus').textContent='Unable to refresh integration: '+error.message));
   document.addEventListener("panel-connected",()=>status().catch(error=>notice.textContent=error.message));
   document.addEventListener("panel-device",()=>{baseline=null;status().catch(error=>notice.textContent=error.message);});
   setInterval(()=>{if(!$("editor").hidden)status().catch(()=>{});},15000);

@@ -81,10 +81,33 @@ health request. A separate **Car radio update delivery** switch pauses/resumes
 home-side radio update scheduling. It does not cancel installed/staged work,
 change signature checks, or pause ordinary IP updates.
 
+The additional diagnostics show the latest observation's age, its last accepted
+transport, and whether any sensor observation is still fresh. A newly received
+but old radio sample remains stale. Fragment progress reaching 100% means all
+fragments were received; the delivery state remains `awaiting-application`
+until an applied receipt arrives. File-sync errors are counted separately from
+conflicts. Repeated health-button presses are limited to one queued request per
+role every five minutes, including across bridge restarts, to conserve airtime.
+
 The MQTT bridge has a retained offline will. Stale retained sensor values are
 replaced before bridge availability goes online on reconnect. Read-only status
 is saved at `~/.local/share/car-home-control/home-ha-status.json`. Missing broker
 settings or a disconnected client are not reported as a working integration.
+
+The bridge automatically reconnects with a bounded backoff when the broker is
+unavailable. It watches the standard `homeassistant/status` birth topic and
+republishes discovery and fresh states after Home Assistant restarts. Include
+subscribe access to this topic in an existing restrictive broker ACL. SQLite
+and command processing run outside the MQTT network callback so a slow disk
+does not block its keepalive. Retained commands are ignored and the incoming
+command queue is bounded.
+
+The authenticated home panel's **Home Home Assistant integration** section now
+shows report age, transport, fragment progress and file errors for all four car
+roles. A bridge heartbeat older than 45 seconds is shown as `status-stale`;
+it cannot leave an old `mqtt-connected` status looking current. These reports
+describe observations and delivery receipts, not proof that an unplugged car
+is reachable right now.
 
 ## Updates, syncing and limits
 

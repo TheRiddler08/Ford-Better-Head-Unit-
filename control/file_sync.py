@@ -20,6 +20,10 @@ from control.update_agent import atomic
 LIMIT=16384
 
 
+class LocalFileError(ValueError):
+    """A local file needs attention; other files and software updates may proceed."""
+
+
 def digest(text):return hashlib.sha256(text.encode()).hexdigest()
 
 
@@ -52,6 +56,7 @@ class Files:
         with closing(self.db()) as db,db:
             db.execute('CREATE TABLE IF NOT EXISTS files(name TEXT PRIMARY KEY,confirmed TEXT,pending TEXT,doc TEXT,phase TEXT,last REAL)')
             db.execute('CREATE TABLE IF NOT EXISTS applied(id TEXT PRIMARY KEY,hash TEXT,reply TEXT)')
+            db.execute('CREATE TABLE IF NOT EXISTS problems(name TEXT PRIMARY KEY,detail TEXT)')
             paused=db.execute('SELECT name,pending FROM files WHERE pending IS NOT NULL').fetchall()
             for name,ident in paused:
                 if name not in self.selected:
@@ -65,37 +70,59 @@ class Files:
 
     def read(self,name):
         if name not in self.selected:raise ValueError('File not selected')
-        if self.root.is_symlink() or self.root.parent.is_symlink():raise ValueError('Symlinked sync folder rejected')
+        if self.root.is_symlink() or self.root.parent.is_symlink():raise LocalFileError('Symlinked sync folder rejected')
         path=self.root/filename(name)
-        if path.is_symlink():raise ValueError('Symlinked sync file rejected')
+        if path.is_symlink():raise LocalFileError('Symlinked sync file rejected')
         if not path.exists():return ''
-        if not path.is_file() or path.stat().st_size>LIMIT:raise ValueError('Sync file exceeds 16 KiB limit')
-        return path.read_bytes().decode('utf-8')
+        try:
+            if not path.is_file() or path.stat().st_size>LIMIT:raise LocalFileError('Sync file exceeds 16 KiB limit or is not a regular file')
+            raw=path.read_bytes()
+            if len(raw)>LIMIT:raise LocalFileError('Sync file exceeds 16 KiB limit')
+            return raw.decode('utf-8')
+        except UnicodeError:raise LocalFileError('Sync file is not valid UTF-8') from None
+        except OSError:raise LocalFileError('Sync file cannot be read') from None
+
+    def problem(self,name,detail=None):
+        with closing(self.db()) as db,db:
+            if detail:
+                db.execute('INSERT INTO problems VALUES(?,?) ON CONFLICT(name) DO UPDATE SET detail=excluded.detail',(name,detail))
+                row=db.execute('SELECT pending FROM files WHERE name=?',(name,)).fetchone()
+                if row and row[0]:
+                    with closing(self.events.db()) as events_db,events_db:events_db.execute('UPDATE jobs SET done=2 WHERE id=? AND done=0',(row[0],))
+            else:db.execute('DELETE FROM problems WHERE name=?',(name,))
 
     def scan(self):
         for name in sorted(self.selected):
-            if not (self.root/name).exists():continue # No implicit deletions.
-            current=self.read(name)
-            with closing(self.db()) as db:row=db.execute('SELECT confirmed,pending,doc,phase,last FROM files WHERE name=?',(name,)).fetchone()
-            if row and row[1]:
-                if row[4]<time.time()-600:
-                    with closing(self.events.db()) as db:sent=db.execute('SELECT done FROM jobs WHERE id=?',(row[1],)).fetchone()
-                    ident=row[1]
-                    if sent and sent[0]==1:
-                        ident='sync:'+uuid.uuid4().hex
-                        with closing(self.db()) as db,db:db.execute('UPDATE files SET pending=? WHERE name=?',(ident,name))
-                    self.queue(ident,json.loads(row[2]))
-                continue
-            baseline=row[0] if row else ''
-            if current==baseline:continue
-            hunks=[[a,b,current[c:d]] for tag,a,b,c,d in difflib.SequenceMatcher(a=baseline,b=current,autojunk=False).get_opcodes() if tag!='equal']
-            doc={'type':'file','source':self.role,'destination':self.peer,'name':name,'base':digest(baseline),'target':digest(current),'hunks':hunks}
-            validate(doc);ident='sync:'+uuid.uuid4().hex
-            from control.lorawan_protocol import canonical
-            phase='waiting-ip' if len(canonical(doc))>800 else 'queued'
-            with closing(self.db()) as db,db:db.execute('INSERT INTO files VALUES(?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET pending=excluded.pending,doc=excluded.doc,phase=excluded.phase,last=excluded.last',
-                (name,baseline,ident,json.dumps(doc),phase,time.time()))
-            self.queue(ident,doc)
+            try:self.scan_file(name)
+            except LocalFileError as error:self.problem(name,str(error))
+
+    def scan_file(self,name):
+        current=self.read(name)
+        with closing(self.db()) as db:was_blocked=db.execute('SELECT 1 FROM problems WHERE name=?',(name,)).fetchone()
+        if not (self.root/name).exists():return # No implicit deletions.
+        self.problem(name)
+        with closing(self.db()) as db:row=db.execute('SELECT confirmed,pending,doc,phase,last FROM files WHERE name=?',(name,)).fetchone()
+        if row and row[1]:
+            if was_blocked or row[4]<time.time()-600:
+                with closing(self.events.db()) as db:sent=db.execute('SELECT done FROM jobs WHERE id=?',(row[1],)).fetchone()
+                ident=row[1]
+                if sent and sent[0]==1:
+                    ident='sync:'+uuid.uuid4().hex
+                    with closing(self.db()) as db,db:db.execute('UPDATE files SET pending=? WHERE name=?',(ident,name))
+                self.queue(ident,json.loads(row[2]))
+            return
+        baseline=row[0] if row else ''
+        if current==baseline:return
+        hunks=[[a,b,current[c:d]] for tag,a,b,c,d in difflib.SequenceMatcher(a=baseline,b=current,autojunk=False).get_opcodes() if tag!='equal']
+        doc={'type':'file','source':self.role,'destination':self.peer,'name':name,'base':digest(baseline),'target':digest(current),'hunks':hunks}
+        try:validate(doc)
+        except ValueError:raise LocalFileError('Delta too complex; simplify this file before syncing') from None
+        ident='sync:'+uuid.uuid4().hex
+        from control.lorawan_protocol import canonical
+        phase='waiting-ip' if len(canonical(doc))>800 else 'queued'
+        with closing(self.db()) as db,db:db.execute('INSERT INTO files VALUES(?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET pending=excluded.pending,doc=excluded.doc,phase=excluded.phase,last=excluded.last',
+            (name,baseline,ident,json.dumps(doc),phase,time.time()))
+        self.queue(ident,doc)
 
     def queue(self,ident,doc):
         from control.lorawan_protocol import canonical
@@ -105,8 +132,15 @@ class Files:
         with closing(self.db()) as db,db:db.execute('UPDATE files SET last=? WHERE pending=?',(time.time(),ident))
 
     def pending(self):
-        with closing(self.db()) as db:rows=db.execute('SELECT pending,doc FROM files WHERE pending IS NOT NULL').fetchall()
+        with closing(self.db()) as db:rows=db.execute('SELECT pending,doc FROM files WHERE pending IS NOT NULL AND name NOT IN (SELECT name FROM problems)').fetchall()
         return [{'id':ident,'doc':json.loads(doc)} for ident,doc in rows if json.loads(doc)['name'] in self.selected]
+
+    def receive_available(self,doc,ident,via_ip=False):
+        """Defer a blocked local file without rejecting unrelated source updates."""
+        try:return self.receive(doc,ident,via_ip)
+        except LocalFileError as error:
+            self.problem(doc['name'],str(error))
+            return None # No applied receipt: sender must retain its original.
 
     def receive(self,doc,ident,via_ip=False):
         validate(doc)
@@ -124,7 +158,7 @@ class Files:
                 else:db.execute('UPDATE files SET phase=? WHERE name=?',(doc['status'],name))
             return
         if not isinstance(ident,str) or not re.fullmatch('sync:[a-f0-9]{32}',ident):raise ValueError('Invalid transfer identity')
-        if name in self.selected and (self.root.is_symlink() or self.root.parent.is_symlink() or (self.root/name).is_symlink()):raise ValueError('Symlinked sync target rejected')
+        if name in self.selected and (self.root.is_symlink() or self.root.parent.is_symlink() or (self.root/name).is_symlink()):raise LocalFileError('Symlinked sync target rejected')
         fingerprint=hashlib.sha256(json.dumps(doc,sort_keys=True).encode()).hexdigest()
         with closing(self.db()) as db:old=db.execute('SELECT hash,reply FROM applied WHERE id=?',(ident,)).fetchone()
         if old:
@@ -140,8 +174,12 @@ class Files:
             else:
                 changed=apply_hunks(previous,doc['hunks'])
                 if len(changed.encode())>LIMIT or digest(changed)!=doc['target']:raise ValueError('Sync checksum or size failed')
-                self.root.mkdir(parents=True,exist_ok=True);atomic(self.root/name,changed.encode());status='applied'
+                try:
+                    self.root.mkdir(parents=True,exist_ok=True);atomic(self.root/name,changed.encode())
+                except OSError:raise LocalFileError('Sync target cannot be written') from None
+                status='applied'
             if status=='applied':
+                self.problem(name)
                 with closing(self.db()) as db,db:
                     db.execute('INSERT INTO files VALUES(?,?,NULL,NULL,?,?) ON CONFLICT(name) DO UPDATE SET confirmed=CASE WHEN files.pending IS NULL THEN excluded.confirmed ELSE files.confirmed END,phase=CASE WHEN files.pending IS NULL THEN excluded.phase ELSE files.phase END',
                                (name,self.read(name),'applied',time.time()))
@@ -155,7 +193,11 @@ class Files:
         return {'id':receipt,'doc':reply}
 
     def status(self):
-        with closing(self.db()) as db:return [{'name':name,'phase':phase,'id':pending} for name,phase,pending in db.execute('SELECT name,phase,pending FROM files')]
+        with closing(self.db()) as db:
+            rows={name:{'name':name,'phase':phase,'id':pending} for name,phase,pending in db.execute('SELECT name,phase,pending FROM files')}
+            for name,detail in db.execute('SELECT name,detail FROM problems'):
+                if name in self.selected:rows[name]=dict(rows.get(name,{'name':name,'id':None}),phase='blocked',error=detail)
+            return list(rows.values())
 
     def receipts(self):
         with closing(self.events.db()) as db:rows=db.execute("SELECT id,doc FROM jobs WHERE done=0 AND json_extract(doc,'$.type')='file-receipt' LIMIT 8").fetchall()
@@ -191,7 +233,7 @@ def worker():
                 data,peer=receiver.recvfrom(128)
                 if peer[0] in LAN.values() and data[:3]==b'D\x01\x06':
                     result=files.events.receive(data[1:],with_id=True)
-                    if result and result['doc'].get('type') in ('file','file-receipt'):files.receive(result['doc'],result['id'])
+                    if result and result['doc'].get('type') in ('file','file-receipt'):files.receive_available(result['doc'],result['id'])
                 elif peer[0] in LAN.values() and data[:3]==b'R\x01\x06':
                     files.events.sent(data[1:],ack=True);files.events.sent(data[1:])
             except (socket.timeout,ValueError):pass

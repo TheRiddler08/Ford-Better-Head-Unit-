@@ -285,8 +285,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.response(software().source(name,query.get("role",["tiny"])[0],query.get("path",[""])[0]))
             if req.path=="/api/software/status":
                 result=ROOT/'radio/diagnostic-result.json'
-                ha=ROOT/'home-ha-status.json'
-                return self.response({"updates":software().journal.status(),"homeAssistant":json.loads(ha.read_text()) if ha.exists() else {'phase':'not-installed'},"radioConfigured":bool(os.getenv("CAR_CHIRPSTACK_APP_ID") and os.getenv("CAR_CHIRPSTACK_DEV_EUI")),"radio":json.loads((ROOT/"radio-status.json").read_text()) if (ROOT/"radio-status.json").exists() else {"phase":"unconfigured"},"radioDiagnostic":json.loads(result.read_text()) if result.exists() else {"phase":"pending","message":"Waiting for configured car radio, pinned encryption keys and home bridge."}})
+                from control.home_ha import overview
+                monitoring=overview(ROOT)
+                return self.response({"updates":software().journal.status(),"homeAssistant":monitoring['bridge'],'carLinks':monitoring['roles'],"radioConfigured":bool(os.getenv("CAR_CHIRPSTACK_APP_ID") and os.getenv("CAR_CHIRPSTACK_DEV_EUI")),"radio":json.loads((ROOT/"radio-status.json").read_text()) if (ROOT/"radio-status.json").exists() else {"phase":"unconfigured"},"radioDiagnostic":json.loads(result.read_text()) if result.exists() else {"phase":"pending","message":"Waiting for configured car radio, pinned encryption keys and home bridge."}})
             if req.path=="/api/layout-status":
                 state=LayoutStore(ROOT/"layouts.sqlite3").get(name)
                 return self.response({"generation":state["generation"],"revision":state["published"]["revision"],
@@ -318,7 +319,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(raw,str) or len(raw)>92:raise ValueError('Invalid sensor batch')
                     sample=decode_sensors(bytes.fromhex(raw),radio_key())
                     if sample['source']!=role:raise ValueError('Sensor batch belongs to another role')
-                    store_sensors(ROOT/'radio/sensors.sqlite3',sample)
+                    store_sensors(ROOT/'radio/sensors.sqlite3',sample,transport='ip')
                 if role in ('tiny','pi') and 'radioPublicKey' in data:
                     from control.radio_crypto import pin
                     pin(ROOT/'radio/car.pub',data['radioPublicKey'])
@@ -336,9 +337,9 @@ class Handler(BaseHTTPRequestHandler):
                 accepted=[]
                 for item in receipts:
                     if item['doc'].get('type')!='file-receipt':raise ValueError('Receipt required')
-                    files.receive(item['doc'],item['id'],via_ip=True);accepted.append(item['id'])
+                    files.receive_available(item['doc'],item['id'],via_ip=True);accepted.append(item['id'])
                 for item in objects:
-                    result=files.receive(item['doc'],item['id'],via_ip=True)
+                    result=files.receive_available(item['doc'],item['id'],via_ip=True)
                     if result:results.append(result)
                 files.scan()
                 return self.response({"frames":service.outgoing(DEVICE_NAME,role),'fileResults':results,'fileObjects':files.pending(),'fileReceiptsAccepted':accepted})

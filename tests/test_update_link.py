@@ -15,6 +15,43 @@ from control.update_transfer import digest,decode,ACK
 @unittest.skipUnless(importlib.util.find_spec('cryptography'),'native cryptography is not installed yet')
 class LinkTests(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec('nacl'),'PyNaCl enrollment dependency pending')
+    def test_blocked_files_do_not_interrupt_signed_source_update_or_other_recovery(self):
+        from control.file_sync import car_files,home_files
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);repo=root/'repo';(repo/'app/web').mkdir(parents=True)
+            (repo/'app/web/cockpit.js').write_text('let speed = 10;\n')
+            home=root/'device';creds=home/'.config/car-dashboard';creds.mkdir(parents=True)
+            token='d'*40;(creds/'device-token').write_text(token)
+            local=home/'car-console/sync';local.mkdir(parents=True)
+            (local/'notes.txt').write_text('x'*20000);(local/'other.txt').write_text('valid car data')
+            state=root/'server';state.mkdir();(state/'sync-settings.json').write_text(json.dumps({'files':['notes.txt','other.txt']}))
+            remote=state/'sync/tiny';remote.mkdir(parents=True);(remote/'other.txt').write_bytes(b'\xff')
+            server=ThreadingHTTPServer(('127.0.0.1',0),panel.Handler);thread=threading.Thread(target=server.serve_forever,daemon=True)
+            with patch.object(panel,'ROOT',state),patch.object(panel,'DEVICE_TOKEN',token),patch.object(panel,'DEVICE_NAME','car-1'):
+                thread.start()
+                try:
+                    config={'role':'tiny','home':str(home),'repo':str(repo),'overrides':str(root/'overlays'),
+                        'sync_files':['notes.txt','other.txt'],'home_url':f'http://127.0.0.1:{server.server_port}'}
+                    agent=Agent(config);agent.exchange();service=Software(state/'software')
+                    source=service.source('car-1','tiny','app/web/cockpit.js')
+                    service.publish('car-1','tiny',source['path'],source['base'],'let speed = 20;\n')
+                    for _ in range(50):
+                        agent.exchange()
+                        if service.journal.status()[0]['phase']=='applied':break
+                    else:self.fail('A blocked data file interrupted signed source delivery')
+                    self.assertEqual((root/'overlays/app/web/cockpit.js').read_text(),'let speed = 20;\n')
+                    self.assertEqual(next(row for row in car_files(config).status() if row['name']=='notes.txt')['phase'],'blocked')
+                    self.assertEqual(home_files(state,'tiny',agent.key()).status()[0]['phase'],'blocked')
+                    pending_id=car_files(config).pending()[0]['id']
+                    (remote/'other.txt').unlink();(local/'notes.txt').write_text('repaired local file')
+                    agent.exchange();agent.exchange()
+                    self.assertEqual((remote/'notes.txt').read_text(),'repaired local file')
+                    self.assertEqual((remote/'other.txt').read_text(),'valid car data')
+                    self.assertFalse(car_files(config).pending())
+                    with home_files(state,'tiny',agent.key()).db() as db:self.assertIsNotNone(db.execute('SELECT 1 FROM applied WHERE id=?',(pending_id,)).fetchone())
+                finally:server.shutdown();server.server_close();thread.join()
+
+    @unittest.skipUnless(importlib.util.find_spec('nacl'),'PyNaCl enrollment dependency pending')
     def test_real_http_selected_file_sync_is_bidirectional_and_confirms_applied(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);repo=root/'repo';repo.mkdir();home=root/'device';creds=home/'.config/car-dashboard';creds.mkdir(parents=True)

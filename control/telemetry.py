@@ -60,26 +60,32 @@ def decode(raw,key):
     return {'source':next(name for name,code in ROLES.items() if code==role),'observedAt':stamp,'values':values}
 
 
-def store(path,sample,now=None):
+def store(path,sample,now=None,transport='unknown'):
     now=time.time() if now is None else now
+    if transport not in ('unknown','ip','lorawan'):raise ValueError('Invalid sensor transport')
     if not 0<=now-sample['observedAt']<=86400:return False
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
     with closing(sqlite3.connect(path)) as db,db:
         db.execute('CREATE TABLE IF NOT EXISTS sensors(role TEXT,name TEXT,value REAL,observed REAL,received REAL,PRIMARY KEY(role,name))')
+        if 'transport' not in {row[1] for row in db.execute('PRAGMA table_info(sensors)')}:
+            db.execute("ALTER TABLE sensors ADD COLUMN transport TEXT NOT NULL DEFAULT 'unknown'")
         for name,value in sample['values'].items():
             if name not in METRICS:raise ValueError('Sensor not allowlisted')
-            db.execute('INSERT INTO sensors VALUES(?,?,?,?,?) ON CONFLICT(role,name) DO UPDATE SET value=excluded.value,observed=excluded.observed,received=excluded.received WHERE excluded.observed>sensors.observed',
-                       (sample['source'],name,value,sample['observedAt'],now))
+            db.execute('INSERT INTO sensors(role,name,value,observed,received,transport) VALUES(?,?,?,?,?,?) ON CONFLICT(role,name) DO UPDATE SET value=excluded.value,observed=excluded.observed,received=excluded.received,transport=excluded.transport WHERE excluded.observed>sensors.observed',
+                       (sample['source'],name,value,sample['observedAt'],now,transport))
     path.chmod(0o600);return True
 
 
 def snapshot(path,now=None,max_age=1800):
-    now=time.time() if now is None else now;result={role:{'values':{name:None for name in METRICS},'observed':{name:None for name in METRICS},'observedAt':None} for role in ROLES}
+    now=time.time() if now is None else now;result={role:{'values':{name:None for name in METRICS},'observed':{name:None for name in METRICS},'observedAt':None,'receivedAt':None,'transport':'none'} for role in ROLES}
     path=Path(path)
     if not path.exists():return result
     with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)) as db:
-        for role,name,value,observed in db.execute('SELECT role,name,value,observed FROM sensors'):
+        # Read older databases during rolling home-service upgrades as well.
+        transport='transport' if 'transport' in {row[1] for row in db.execute('PRAGMA table_info(sensors)')} else "'unknown'"
+        for role,name,value,observed,received,via in db.execute('SELECT role,name,value,observed,received,'+transport+' FROM sensors'):
             if role not in result or name not in METRICS:continue
+            if received>(result[role]['receivedAt'] or 0):result[role].update(receivedAt=received,transport=via)
             result[role]['observedAt']=max(result[role]['observedAt'] or 0,observed)
             result[role]['observed'][name]=observed
             if 0<=now-observed<=max_age:result[role]['values'][name]=value

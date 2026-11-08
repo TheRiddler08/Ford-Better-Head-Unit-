@@ -121,3 +121,33 @@ class FileSyncTests(unittest.TestCase):
                 raw=car.events.outgoing();received=home.events.receive(raw,with_id=True);car.events.sent(raw)
                 if received and received['id']==newer:break
             self.assertEqual(received['id'],newer)
+
+    def test_invalid_file_is_isolated_and_recovers_without_restarting_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);car,home=self.pair(root);car.selected={'notes.txt','other.txt'}
+            (car.root/'notes.txt').write_bytes(b'\xff');(car.root/'other.txt').write_text('still works')
+            car.scan();self.assertEqual([item['doc']['name'] for item in car.pending()],['other.txt'])
+            blocked=next(row for row in car.status() if row['name']=='notes.txt')
+            self.assertEqual(blocked['phase'],'blocked');self.assertIn('UTF-8',blocked['error'])
+            (car.root/'notes.txt').write_text('repaired');car.scan()
+            self.assertEqual({item['doc']['name'] for item in car.pending()},{'notes.txt','other.txt'})
+            self.assertFalse(any(row['phase']=='blocked' for row in car.status()))
+
+    def test_blocked_pending_transfer_pauses_then_resumes_with_same_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            car,home=self.pair(Path(directory));(car.root/'notes.txt').write_text('original');car.scan();item=car.pending()[0]
+            (car.root/'notes.txt').write_text('x'*20000);car.scan()
+            self.assertEqual(car.pending(),[]);self.assertIsNone(car.events.outgoing())
+            (car.root/'notes.txt').write_text('original');car.scan()
+            self.assertEqual(car.pending()[0]['id'],item['id']);self.assertIsNotNone(car.events.outgoing())
+
+    def test_receive_defers_unwritable_target_without_applied_receipt(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            car,home=self.pair(Path(directory));(car.root/'notes.txt').write_text('retain source');car.scan();item=car.pending()[0]
+            with patch('control.file_sync.atomic',side_effect=PermissionError('sensitive path')):
+                self.assertIsNone(home.receive_available(item['doc'],item['id'],via_ip=True))
+            self.assertEqual(home.status()[0]['phase'],'blocked')
+            self.assertNotIn('sensitive',json.dumps(home.status()));self.assertEqual(car.pending()[0]['id'],item['id'])
+            reply=home.receive_available(item['doc'],item['id'],via_ip=True)
+            self.assertEqual(reply['doc']['status'],'applied');self.assertEqual(home.status()[0]['phase'],'applied')

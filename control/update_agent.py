@@ -113,8 +113,8 @@ class Agent:
             data['radioPublicKey']=bytes(identity(self.credentials/'radio-private.key').public_key).hex()
         if fingerprint!=self.inventory_fingerprint or time.monotonic()-self.inventory_sent_at>3600:data['sources']=sources
         response=self.call('/api/device/software/exchange',data)
-        for item in response.get('fileResults',[]):files.receive(item['doc'],item['id'],via_ip=True)
-        for item in response.get('fileObjects',[]):files.receive(item['doc'],item['id'])
+        for item in response.get('fileResults',[]):files.receive_available(item['doc'],item['id'],via_ip=True)
+        for item in response.get('fileObjects',[]):files.receive_available(item['doc'],item['id'])
         with files.events.db() as db:
             for ident in response.get('fileReceiptsAccepted',[]):db.execute('UPDATE jobs SET done=1 WHERE id=?',(ident,))
         if 'sources' in data:self.inventory_fingerprint=fingerprint;self.inventory_sent_at=time.monotonic()
