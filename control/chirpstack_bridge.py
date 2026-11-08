@@ -36,6 +36,7 @@ class Bridge:
         self.last=0.0
         self.day=int(time.time()//86400)
         self.sent=0
+        self.queue_slot=0
 
     def events(self):
         from control.event_transfer import Events
@@ -60,13 +61,20 @@ class Bridge:
         diagnostic=self.diagnostic().outgoing()
         event=self.events().outgoing(ack=True) if (ROOT/'radio/catalog.sqlite3').exists() else None
         text_frame=self.events().outgoing(kinds=['message']) if (ROOT/'radio/catalog.sqlite3').exists() else None
-        item=None if event or text_frame or diagnostic else export_next(NAME)
+        file_frame=self.events().outgoing(kinds=['file','file-receipt']) if (ROOT/'radio/catalog.sqlite3').exists() else None
+        paused=(ROOT/'radio/update-delivery-paused').exists()
+        item=None if paused else export_next(NAME)
         modern=None
-        if not item and not event and not text_frame and not diagnostic:
+        if not paused:
             frames=self.software.outgoing(NAME,limit=1,mark=False)
-            if not frames:return
-            modern=bytes.fromhex(frames[0])
-        frame=event or text_frame or diagnostic or (modern if modern else bytes.fromhex(item["frame_hex"]))
+            if frames:modern=bytes.fromhex(frames[0])
+        candidates=[(kind,raw) for kind,raw in (
+            ('message',text_frame),('file',file_frame),('modern',modern),
+            ('legacy',bytes.fromhex(item['frame_hex']) if item else None),('diagnostic',diagnostic)) if raw]
+        if event:kind,frame='event',event
+        elif candidates:
+            kind,frame=candidates[self.queue_slot%len(candidates)];self.queue_slot+=1
+        else:return
         if not self.software.journal.budget('mqtt-downlinks',COOLDOWN,DAILY_LIMIT):return
         cipher=self.cipher()
         if not cipher.peer.exists():return # Never send application plaintext before enrollment.
@@ -79,13 +87,15 @@ class Bridge:
             return
         self.last=time.monotonic();self.sent+=1
         if not cipher.sent(frame):return
-        if frame==diagnostic:return
+        if kind=='diagnostic':return
         # This acknowledges broker queueing, NOT successful over-air delivery.
-        if event:
+        if kind=='event':
             self.events().sent(frame,ack=True);return
-        if text_frame:
+        if kind=='message':
             self.events().sent(frame);return
-        if modern:
+        if kind=='file':
+            self.events().sent(frame);return
+        if kind=='modern':
             self.software.journal.mark_sent(modern,radio_key(),"lorawan")
             print("Queued resumable update fragment; awaiting durable device receipt",flush=True)
             return
@@ -112,16 +122,23 @@ class Bridge:
             if payload is None:return
             if payload[:1]==b'\x04':
                 self.diagnostic().receive(payload)
+            elif payload[:1]==b'\x05':
+                from control.telemetry import decode,store
+                store(ROOT/'radio/sensors.sqlite3',decode(payload,radio_key()))
             elif payload[:1]==b'\x02':
                 from control.update_transfer import decode
                 _,short,*_=decode(payload,radio_key())
                 with self.software.journal.db() as db:row=db.execute('SELECT doc FROM jobs WHERE short=?',(short,)).fetchone()
                 if row:self.software.receipts(NAME,json.loads(row[0])['role'],[payload.hex()],transport='lorawan')
             elif payload[:2]==b'\x01\x06':
-                sample=self.events().receive(payload)
+                received=self.events().receive(payload,with_id=True)
+                sample=received['doc'] if received else None
                 if sample:
                     from control.messages import status_reply
                     status_reply(self.events(),sample,'home',ROOT)
+                    if sample.get('type') in ('file','file-receipt'):
+                        from control.file_sync import home_files
+                        home_files(ROOT,sample['source'],radio_key()).receive(sample,received['id'])
                 if sample and sample.get('type')=='gps':
                     from control.coverage import ingest
                     registry_file=ROOT/'gateways.json'

@@ -14,6 +14,28 @@ from control.update_transfer import digest,decode,ACK
 
 @unittest.skipUnless(importlib.util.find_spec('cryptography'),'native cryptography is not installed yet')
 class LinkTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec('nacl'),'PyNaCl enrollment dependency pending')
+    def test_real_http_selected_file_sync_is_bidirectional_and_confirms_applied(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);repo=root/'repo';repo.mkdir();home=root/'device';creds=home/'.config/car-dashboard';creds.mkdir(parents=True)
+            token='d'*40;(creds/'device-token').write_text(token)
+            local=home/'car-console/sync';local.mkdir(parents=True);(local/'notes.txt').write_text('car '+'x'*3000)
+            state=root/'server';state.mkdir();(state/'sync-settings.json').write_text(json.dumps({'files':['notes.txt']}))
+            server=ThreadingHTTPServer(('127.0.0.1',0),panel.Handler);thread=threading.Thread(target=server.serve_forever,daemon=True)
+            with patch.object(panel,'ROOT',state),patch.object(panel,'DEVICE_TOKEN',token),patch.object(panel,'DEVICE_NAME','car-1'):
+                thread.start()
+                try:
+                    config={'role':'tiny','home':str(home),'repo':str(repo),'overrides':str(root/'overrides'),'sync_files':['notes.txt'],'home_url':f'http://127.0.0.1:{server.server_port}'}
+                    agent=Agent(config);agent.exchange()
+                    remote=state/'sync/tiny/notes.txt';self.assertEqual(remote.read_text(),(local/'notes.txt').read_text())
+                    from control.file_sync import car_files,home_files
+                    self.assertEqual(car_files(config).status()[0]['phase'],'applied')
+                    remote.write_text('home '+'y'*7000)
+                    agent.exchange();agent.exchange()
+                    self.assertEqual((local/'notes.txt').read_text(),remote.read_text())
+                    self.assertEqual(home_files(state,'tiny',agent.key()).pending(),[])
+                finally:server.shutdown();server.server_close();thread.join()
+
     @unittest.skipUnless(importlib.util.find_spec('nacl'),'PyNaCl is installed during role provisioning; allow old receiver bootstrap')
     def test_real_authenticated_http_editor_publish_and_automatic_overlay(self):
         with tempfile.TemporaryDirectory() as temp:

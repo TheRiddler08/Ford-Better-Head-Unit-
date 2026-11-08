@@ -45,7 +45,7 @@ with path.open('a') as file:
   if name.startswith('CAR_') and name not in known and '\n' not in value and '\0' not in value:file.write(name+'='+shlex.quote(value)+'\n')
 path.chmod(0o600)
 PYKEY
-for entry in 'car-home-control control.home_server' 'car-home-radio control.chirpstack_bridge'; do
+for entry in 'car-home-control control.home_server' 'car-home-radio control.chirpstack_bridge' 'car-home-ha control.home_ha' 'car-home-sync control.file_sync'; do
  read -r NAME MODULE <<< "$entry"
  sudo tee "/etc/systemd/system/$NAME.service" >/dev/null <<UNIT
 [Unit]
@@ -67,8 +67,8 @@ done
 # Retire only that managed predecessor; keep its files, state and credentials.
 (cd "$ROOT" && python3 -m home_server.migrate_control)
 sudo systemctl daemon-reload
-sudo systemctl enable --now car-home-control.service car-home-radio.service
-sudo systemctl restart car-home-control.service car-home-radio.service
+sudo systemctl enable --now car-home-control.service car-home-radio.service car-home-ha.service car-home-sync.service
+sudo systemctl restart car-home-control.service car-home-radio.service car-home-ha.service car-home-sync.service
 (cd "$ROOT" && python3 - "$ENVFILE" <<'PYHEALTH'
 from pathlib import Path
 import sys,time
@@ -94,6 +94,7 @@ for attempt in range(15):
 else:raise SystemExit('Home control is not ready. Inspect car-home-control.service logs; installation is not yet verified.')
 PYHEALTH
 )
-echo 'Home panel, signing keys and radio bridge services are installed.'
+echo 'Home panel, radio bridge, selected-file sync and home Home Assistant MQTT services are installed.'
+echo 'Home HA discovery waits for CAR_HA_MQTT_HOST and your existing broker credentials in control.env.'
 echo 'Radio waits for its real ChirpStack application/DevEUI configuration; no guessed modem or credentials are used.'
 echo 'Existing authentication credentials in ~/.config/car-home/control.env were preserved.'

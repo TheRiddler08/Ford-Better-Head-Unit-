@@ -79,10 +79,11 @@ configuration.** An explicitly configured `radio_adapter` command still takes
 precedence. No automatic port selection or key changes occur. Missing enrollment
 keeps the service unconfigured; the manual radio join does not enroll application
 encryption keys. Do not enable production queues until enrollment and downlink
-tests are complete. The default 11-byte payload is conservative for US915 DR0;
-use the same encrypted frame budget on the home bridge. Increasing it requires
-checking the actual data rate. Encryption overhead means one short application
-message may require many uplinks; airtime budgets remain active.
+tests are complete. Automatic RAK3172 payload sizing now queries the actual
+US915 data rate: 11 bytes at DR0, up to 46 at supported higher rates. Fixed mode
+is available with `radio_auto_payload:false`. See [home HA integration](HOME_HA_LORAWAN.md)
+for the separate US915 downlink setting. Encryption overhead and airtime budgets
+still apply.
 
 The adapter implements the existing JSON-lines boundary:
 `{"id":"attempt-id","uplink":"sealed-fragment-hex"}` emits

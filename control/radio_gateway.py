@@ -43,6 +43,8 @@ def main():
     with journal.db() as db:
         db.execute('CREATE TABLE IF NOT EXISTS uplinks(id TEXT PRIMARY KEY,frame TEXT,sent INTEGER DEFAULT 0,attempt REAL DEFAULT 0)')
         db.execute('CREATE TABLE IF NOT EXISTS modem_attempts(id TEXT PRIMARY KEY,inner_id TEXT,created REAL)')
+        if 'budget' not in {row[1] for row in db.execute('PRAGMA table_info(modem_attempts)')}:
+            db.execute('ALTER TABLE modem_attempts ADD COLUMN budget INTEGER DEFAULT 11')
     while True:
         config=Path('/etc/car-dashboard/update-link.json')
         options=json.loads(config.read_text()) if config.exists() else {}
@@ -61,10 +63,13 @@ def main():
         process=None
         try:
             from control.radio_crypto import RadioBox
-            cipher=RadioBox(Path(fleet['home'])/'.config/car-dashboard/radio-private.key',
+            def make_cipher(budget):return RadioBox(Path(fleet['home'])/'.config/car-dashboard/radio-private.key',
                             Path(fleet['home'])/'.config/car-dashboard/radio-home.pub',
-                            state/'sealed-radio.sqlite3',b'U',int(options.get('max_app_bytes',11 if options.get('radio_model')=='RAK3172' else 46)))
+                            state/'sealed-radio.sqlite3',b'U',budget)
+            cipher=make_cipher(int(options.get('max_app_bytes',11 if options.get('radio_model')=='RAK3172' else 46)))
             if not cipher.peer.exists():raise ValueError('Pinned home encryption key required')
+            if not options.get('telemetry_radio_enabled',True):
+                with journal.db() as db:db.execute("UPDATE uplinks SET sent=2 WHERE substr(frame,1,2)='05'")
             if role=='tiny' and not options.get('gps_radio_enabled',False):suppress_deferred_gps(journal,fleet['home'],key)
             diagnostic=None
             if role=='tiny' and options.get('radio_model')=='RAK3172' and options.get('radio_self_test',True):
@@ -88,6 +93,7 @@ def main():
                                 with journal.db() as db:db.execute('UPDATE uplinks SET sent=2 WHERE id=?',(hashlib.sha256(data[1:]).hexdigest(),))
                         if peer[0] in LAN.values() and data[:1]==b'U':
                             authenticate_application_frame(data[1:],key)
+                            if data[1:2]==b'\x05' and not options.get('telemetry_radio_enabled',True):continue
                             ident=hashlib.sha256(data[1:]).hexdigest()
                             with journal.db() as db:
                                 db.execute('INSERT INTO uplinks(id,frame) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET sent=CASE WHEN uplinks.sent=2 THEN 0 ELSE uplinks.sent END',(ident,data[1:].hex()))
@@ -118,11 +124,19 @@ def main():
                                 atomic(status,json.dumps({'phase':'receiving','time':time.time()}).encode())
                             elif 'sent' in message:
                                 with journal.db() as db:
-                                    row=db.execute('SELECT uplinks.frame,uplinks.id FROM uplinks JOIN modem_attempts ON uplinks.id=modem_attempts.inner_id WHERE modem_attempts.id=?',(message['sent'],)).fetchone()
+                                    row=db.execute('SELECT uplinks.frame,uplinks.id,modem_attempts.budget FROM uplinks JOIN modem_attempts ON uplinks.id=modem_attempts.inner_id WHERE modem_attempts.id=?',(message['sent'],)).fetchone()
                                     db.execute('DELETE FROM modem_attempts WHERE id=?',(message['sent'],))
-                                    if row and cipher.sent(bytes.fromhex(row[0])):
+                                    sent_cipher=make_cipher(row[2]) if row and row[2]!=cipher.max_bytes else cipher
+                                    if row and sent_cipher.sent(bytes.fromhex(row[0])):
                                         db.execute('UPDATE uplinks SET sent=1 WHERE id=?',(row[1],))
                                         sender.sendto(b'R'+bytes.fromhex(row[0]),('172.16.42.255',PORT))
+                            elif 'status' in message and options.get('radio_model')=='RAK3172' and options.get('radio_auto_payload',True):
+                                from control.rak3172 import payload_ceiling
+                                dr=message['status'].get('dr')
+                                if dr in ('0','1','2','3','4'):
+                                    budget=min(payload_ceiling(options),11 if dr=='0' else 46)
+                                    if budget!=cipher.max_bytes:cipher=make_cipher(budget)
+                                    atomic(status,json.dumps({'phase':'radio-data-rate-observed','dataRate':int(dr),'payloadBytes':budget,'time':time.time()}).encode())
                     spacing=max(60,int(options.get('uplink_spacing',60)));limit=min(200,int(options.get('uplinks_per_day',120)))
                     if diagnostic:
                         test=diagnostic.outgoing()
@@ -149,14 +163,14 @@ def main():
                             next_idle=time.monotonic()+max(60,int(options.get('idle_uplink_spacing',900)))
                     with journal.db() as db:
                         db.execute("UPDATE uplinks SET sent=0 WHERE sent=1 AND substr(frame,1,4)='0106' AND attempt<?",(time.time()-600,))
-                        row=db.execute("SELECT id,frame FROM uplinks WHERE sent=0 AND attempt<? ORDER BY CASE WHEN substr(frame,1,2)='04' THEN 2 WHEN substr(frame,1,4)='0106' THEN 1 ELSE 0 END,attempt LIMIT 1",(time.time()-spacing,)).fetchone()
+                        row=db.execute("SELECT id,frame FROM uplinks WHERE sent=0 AND attempt<? ORDER BY CASE WHEN substr(frame,1,2)='04' THEN 3 WHEN substr(frame,1,2)='05' THEN 2 WHEN substr(frame,1,4)='0106' THEN 1 ELSE 0 END,attempt LIMIT 1",(time.time()-spacing,)).fetchone()
                     if row and journal.budget('modem-uplinks',spacing,limit):
                         attempt=uuid.uuid4().hex
                         packet={'id':attempt,'uplink':cipher.next(bytes.fromhex(row[1])).hex()} if row else {'poll':True}
                         if row:
                             with journal.db() as db:
                                 db.execute('DELETE FROM modem_attempts WHERE created<?',(time.time()-86400,))
-                                db.execute('INSERT INTO modem_attempts VALUES(?,?,?)',(attempt,row[0],time.time()))
+                                db.execute('INSERT INTO modem_attempts(id,inner_id,created,budget) VALUES(?,?,?,?)',(attempt,row[0],time.time(),cipher.max_bytes))
                         _,writable,_=select.select([],[process.stdin],[],2)
                         if not writable:raise TimeoutError('Modem adapter input stalled')
                         process.stdin.write(json.dumps(packet).encode()+b'\n');process.stdin.flush()

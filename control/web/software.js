@@ -9,6 +9,7 @@
     $("softwareQueue").textContent=result.updates.length?result.updates.map(item=>`${item.role || "receiving"} · ${item.path || item.id} · ${item.phase} · ${item.acknowledged}/${item.total} confirmed fragments · ${item.lastTransport || "waiting"}`).join("\n"):"No software updates queued.";
     $("softwareRadio").textContent=result.radioConfigured?"ChirpStack configured; actual radio delivery is shown by device receipts.":"Radio credentials/modem are not configured. Wi-Fi transfer can operate independently.";
     if(result.radioDiagnostic)$("softwareRadio").textContent+=" Radio test: "+result.radioDiagnostic.phase+" — "+result.radioDiagnostic.message;
+    const homeHa=document.getElementById('homeHaStatus');if(homeHa)homeHa.textContent='Home Home Assistant: '+(result.homeAssistant?.phase||'unknown')+'. Sensor, signed-update and selected-file sync states use the home MQTT integration.';
   }
   role.addEventListener("change",choices);file.addEventListener("change",()=>{baseline=null;});
   $("loadSoftware").addEventListener("click",async()=>{

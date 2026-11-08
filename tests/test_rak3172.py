@@ -12,10 +12,11 @@ from control.rak3172 import RUI, adapter_command
 
 
 class Modem:
-    def __init__(self, version='RUI_4.2.4_RAK3172-E', joined='1', finish=True):
+    def __init__(self, version='RUI_4.2.4_RAK3172-E', joined='1', finish=True,dr='0'):
         self.master, self.slave = pty.openpty()
         self.output, self.commands = [], []
         self.version, self.joined, self.finish = version, joined, finish
+        self.dr=dr
         self.stopped = threading.Event()
         self.radio = RUI(os.ttyname(self.slave), self.output.append, timeout=.5)
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -39,6 +40,7 @@ class Modem:
                 if not command:
                     continue
                 self.commands.append(command)
+                values['DR']=self.dr
                 if command.startswith('AT+SEND='):
                     self.write('OK\r\n')
                     if self.finish:
@@ -58,6 +60,20 @@ class Modem:
 
 
 class AdapterTests(unittest.TestCase):
+    def test_auto_us915_budget_never_sends_large_frame_at_dr0_and_rechecks_changes(self):
+        modem=self.modem();modem.radio.auto_payload=True
+        raw=('03'+'00'*7+'01'+'aa'*25)
+        with self.assertRaisesRegex(ValueError,'capacity changed'):
+            modem.radio.request({'id':'first','uplink':raw},46)
+        self.assertFalse(any(command.startswith('AT+SEND=') for command in modem.commands))
+        self.assertIn({'status':{'dr':'0'}},modem.output)
+        modem.dr='3';modem.radio.request({'id':'higher-rate','uplink':raw},46)
+        self.assertIn({'sent':'higher-rate'},modem.output)
+        modem.dr='0'
+        with self.assertRaisesRegex(ValueError,'capacity changed'):
+            modem.radio.request({'id':'lower-rate','uplink':raw},46)
+        self.assertNotIn({'sent':'lower-rate'},modem.output)
+
     def modem(self, **kwargs):
         modem = Modem(**kwargs)
         self.addCleanup(modem.close)
@@ -143,7 +159,10 @@ class AdapterTests(unittest.TestCase):
         options = {'radio_model': 'RAK3172', 'radio_device': '/dev/serial/by-id/ch340'}
         command = adapter_command(options)
         self.assertEqual(command[:4], ['/usr/bin/python3', '-m', 'control.rak3172', '--device'])
-        self.assertEqual(command[command.index('--max-app-bytes') + 1], '11')
+        self.assertEqual(command[command.index('--max-app-bytes') + 1], '46')
+        self.assertIn('--auto-payload',command)
+        fixed=adapter_command(dict(options,radio_auto_payload=False))
+        self.assertEqual(fixed[fixed.index('--max-app-bytes')+1],'11')
         for change in ({'radio_device': '/dev/ttyUSB0'}, {'radio_fport': 0},
                        {'max_app_bytes': True}, {'radio_device': '/dev/serial/by-id/../ttyUSB0'}):
             with self.subTest(change=change), self.assertRaises(ValueError):

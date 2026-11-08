@@ -32,6 +32,8 @@ class RUI:
             raise
         self.emit, self.timeout, self.buffer = emit, timeout, b''
         self.fport = 10
+        self.auto_payload=False
+        self.last_dr=None
 
     def close(self):
         try:
@@ -97,7 +99,7 @@ class RUI:
         if not any('RAK3172' in row and 'RUI_' in row for row in version):
             raise ValueError('Explicit device is not a recognized RAK3172 RUI radio')
         status = {'firmware': version}
-        for field in ('NWM', 'BAND', 'MASK', 'NJM', 'CLASS', 'DEVEUI', 'NJS'):
+        for field in ('NWM', 'BAND', 'MASK', 'NJM', 'CLASS', 'DEVEUI', 'NJS', 'DR'):
             replies = self.command('AT+' + field + '=?')
             values = [row.split('=', 1)[1] for row in replies if row.startswith('AT+' + field + '=')]
             status[field.lower()] = values[-1] if values else None
@@ -118,6 +120,12 @@ class RUI:
         raw = bytes.fromhex(value)
         if not 9 < len(raw) <= max_bytes or raw[0] != 3 or not raw[7] < raw[8]:
             raise ValueError('Only bounded sealed radio fragments may be transmitted')
+        if self.auto_payload:
+            replies=self.command('AT+DR=?')
+            dr=next((row.split('=',1)[1] for row in replies if row.startswith('AT+DR=')),None)
+            if dr not in ('0','1','2','3','4'):raise ValueError('Unknown US915 data rate; retaining queued data')
+            if dr!=self.last_dr:self.emit({'status':{'dr':dr}});self.last_dr=dr
+            if len(raw)>(11 if dr=='0' else 46):raise ValueError('US915 payload capacity changed; retaining data for refragmentation')
         joined = self.command('AT+NJS=?')
         if 'AT+NJS=1' not in joined:
             raise ValueError('Radio is not joined; preserve queue and provision explicitly')
@@ -134,18 +142,28 @@ def adapter_command(options):
     device = options.get('radio_device')
     if not isinstance(device, str) or not device.startswith('/dev/serial/by-id/') or '..' in device.split('/'):
         raise ValueError('RAK3172 requires an explicit stable serial-by-id path')
-    budget = options.get('max_app_bytes', 11)
+    budget = payload_ceiling(options)
     port = options.get('radio_fport', 10)
     if type(budget) is not int or not 10 <= budget <= 242 or type(port) is not int or not 1 <= port <= 223:
         raise ValueError('Invalid radio payload budget or application port')
     return ['/usr/bin/python3', '-m', 'control.rak3172', '--device', device,
-            '--max-app-bytes', str(budget), '--fport', str(port)]
+            '--max-app-bytes', str(budget), '--fport', str(port)]+(['--auto-payload'] if options.get('radio_auto_payload',True) else [])
+
+
+def payload_ceiling(options):
+    if type(options.get('radio_auto_payload',True)) is not bool:raise ValueError('radio_auto_payload must be a boolean')
+    budget=options.get('max_app_bytes',11)
+    if type(budget) is not int:raise ValueError('Invalid payload budget')
+    # 11 was the commissioned conservative default. Automatic mode uses up to
+    # 46 only after querying the actual US915 DR; explicit fixed mode retains it.
+    return 46 if options.get('radio_auto_payload',True) and budget==11 else budget
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--device', required=True)
     parser.add_argument('--probe', action='store_true')
+    parser.add_argument('--auto-payload',action='store_true')
     parser.add_argument('--fport', type=int, default=10, choices=range(1, 224))
     parser.add_argument('--max-app-bytes', type=int, default=11, choices=range(10, 243))
     args = parser.parse_args()
@@ -153,13 +171,16 @@ def main():
         print(json.dumps(value, separators=(',', ':')), flush=True)
     radio = RUI(args.device, emit)
     radio.fport = args.fport
+    radio.auto_payload=args.auto_payload
     try:
         status = radio.probe()
+        radio.last_dr=status.get('dr')
         emit({'status': status})
         if args.probe:
             return
         if status['nwm'] != '1' or status['njm'] != '1' or status['class'] != 'A':
             raise ValueError('Adapter requires explicitly provisioned LoRaWAN OTAA Class A')
+        if radio.auto_payload and status['band']!='5':raise ValueError('Automatic payload sizing requires US915')
         buffer = b''
         while True:
             ready, _, _ = select.select([sys.stdin.buffer, radio.fd], [], [], 1)

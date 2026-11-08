@@ -285,7 +285,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.response(software().source(name,query.get("role",["tiny"])[0],query.get("path",[""])[0]))
             if req.path=="/api/software/status":
                 result=ROOT/'radio/diagnostic-result.json'
-                return self.response({"updates":software().journal.status(),"radioConfigured":bool(os.getenv("CAR_CHIRPSTACK_APP_ID") and os.getenv("CAR_CHIRPSTACK_DEV_EUI")),"radio":json.loads((ROOT/"radio-status.json").read_text()) if (ROOT/"radio-status.json").exists() else {"phase":"unconfigured"},"radioDiagnostic":json.loads(result.read_text()) if result.exists() else {"phase":"pending","message":"Waiting for configured car radio, pinned encryption keys and home bridge."}})
+                ha=ROOT/'home-ha-status.json'
+                return self.response({"updates":software().journal.status(),"homeAssistant":json.loads(ha.read_text()) if ha.exists() else {'phase':'not-installed'},"radioConfigured":bool(os.getenv("CAR_CHIRPSTACK_APP_ID") and os.getenv("CAR_CHIRPSTACK_DEV_EUI")),"radio":json.loads((ROOT/"radio-status.json").read_text()) if (ROOT/"radio-status.json").exists() else {"phase":"unconfigured"},"radioDiagnostic":json.loads(result.read_text()) if result.exists() else {"phase":"pending","message":"Waiting for configured car radio, pinned encryption keys and home bridge."}})
             if req.path=="/api/layout-status":
                 state=LayoutStore(ROOT/"layouts.sqlite3").get(name)
                 return self.response({"generation":state["generation"],"revision":state["published"]["revision"],
@@ -310,6 +311,14 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 data=self.request_json();role=data["role"];service=software()
                 if role not in ("tiny","duet","pi","laptop"):raise ValueError("Invalid role")
+                telemetry=data.get('telemetryFrames',[])
+                if not isinstance(telemetry,list) or len(telemetry)>2:raise ValueError('Too many sensor batches')
+                from control.telemetry import decode as decode_sensors,store as store_sensors
+                for raw in telemetry:
+                    if not isinstance(raw,str) or len(raw)>92:raise ValueError('Invalid sensor batch')
+                    sample=decode_sensors(bytes.fromhex(raw),radio_key())
+                    if sample['source']!=role:raise ValueError('Sensor batch belongs to another role')
+                    store_sensors(ROOT/'radio/sensors.sqlite3',sample)
                 if role in ('tiny','pi') and 'radioPublicKey' in data:
                     from control.radio_crypto import pin
                     pin(ROOT/'radio/car.pub',data['radioPublicKey'])
@@ -318,7 +327,21 @@ class Handler(BaseHTTPRequestHandler):
                     record_report(ROOT/'radio/diagnostic-result.json',data['radioDiagnostic'])
                 service.receipts(DEVICE_NAME,role,data.get("receipts",[]))
                 if "sources" in data:service.inventory(DEVICE_NAME,role,data["sources"])
-                return self.response({"frames":service.outgoing(DEVICE_NAME,role)})
+                from control.file_sync import home_files
+                files=home_files(ROOT,role,radio_key());results=[]
+                objects=data.get('fileObjects',[])
+                if not isinstance(objects,list) or len(objects)>4:raise ValueError('Too many sync objects')
+                receipts=data.get('fileReceipts',[])
+                if not isinstance(receipts,list) or len(receipts)>8:raise ValueError('Too many sync receipts')
+                accepted=[]
+                for item in receipts:
+                    if item['doc'].get('type')!='file-receipt':raise ValueError('Receipt required')
+                    files.receive(item['doc'],item['id'],via_ip=True);accepted.append(item['id'])
+                for item in objects:
+                    result=files.receive(item['doc'],item['id'],via_ip=True)
+                    if result:results.append(result)
+                files.scan()
+                return self.response({"frames":service.outgoing(DEVICE_NAME,role),'fileResults':results,'fileObjects':files.pending(),'fileReceiptsAccepted':accepted})
             except (KeyError,TypeError,ValueError,OSError) as exc:return self.fail(exc)
         if self.path=="/api/device/layout-ack":
             if not self.device_access():return

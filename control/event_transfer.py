@@ -12,7 +12,7 @@ from control.lorawan_protocol import HEADER,Assembler,split_message,authenticate
 
 
 class Events:
-    def __init__(self,path,key,destination=None,types=('dashcam','gps','message')):
+    def __init__(self,path,key,destination=None,types=('dashcam','gps','message','file','file-receipt')):
         self.destination=destination
         self.types=types
         self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True);self.key=key
@@ -22,6 +22,7 @@ class Events:
           CREATE TABLE IF NOT EXISTS received(id TEXT PRIMARY KEY,doc TEXT,ts REAL);
           CREATE TABLE IF NOT EXISTS replies(id TEXT PRIMARY KEY,frames TEXT,cursor INTEGER DEFAULT 0);
         ''')
+        self.path.chmod(0o600)
     def db(self):
         from control.storage_policy import bounded_db
         return bounded_db(sqlite3.connect(self.path,timeout=10))
@@ -58,7 +59,7 @@ class Events:
                     frames=split_message('status',1,{'catalog':json.loads(row[1]),'id':row[0]},self.key)
                     if frames[row[2]%len(frames)]==raw:
                         db.execute('UPDATE jobs SET cursor=cursor+1 WHERE id=?',(row[0],));return
-    def receive(self,raw):
+    def receive(self,raw,with_id=False):
         authenticate_application_frame(raw,self.key)
         _,kind,seq,index,count,digest,*_=HEADER.unpack(raw[:HEADER.size])
         if kind!=6:return
@@ -78,9 +79,14 @@ class Events:
                 db.execute('UPDATE jobs SET done=1 WHERE id=? AND done=0',(doc['received'],))
             else:
                 event=doc['id'];catalog=doc['catalog']
-                if not isinstance(event,str) or len(event)>100 or not isinstance(catalog,dict) or catalog.get('type') not in ('dashcam','gps','message'):raise ValueError('Invalid catalog message')
+                if not isinstance(event,str) or len(event)>100 or not isinstance(catalog,dict) or catalog.get('type') not in ('dashcam','gps','message','file','file-receipt'):raise ValueError('Invalid catalog message')
                 if catalog['type'] not in self.types:
                     db.execute('DELETE FROM parts WHERE identity=?',(ident,));return
+                if catalog['type'] in ('file','file-receipt'):
+                    from control.file_sync import validate
+                    validate(catalog)
+                    if self.destination and catalog['destination']!=self.destination:
+                        db.execute('DELETE FROM parts WHERE identity=?',(ident,));return
                 if catalog.get('type')=='message':
                     from control.messages import validate
                     validate(catalog)
@@ -92,7 +98,8 @@ class Events:
                 frames=[frame.hex() for frame in split_message('status',1,{'received':event},self.key)]
                 db.execute('INSERT OR IGNORE INTO replies(id,frames) VALUES(?,?)',(event,json.dumps(frames)))
             db.execute('DELETE FROM parts WHERE identity=?',(ident,))
-            return doc.get('catalog') if 'catalog' in doc else {'received':doc['received']}
+            result=doc.get('catalog') if 'catalog' in doc else {'received':doc['received']}
+            return {'id':doc.get('id'),'doc':result} if with_id else result
 
     def completed_frames(self,ident=None,raw=None):
         with closing(self.db()) as db:

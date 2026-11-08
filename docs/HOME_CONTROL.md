@@ -1,5 +1,8 @@
 # Current update path
 
+Current home integration: [Home Home Assistant, sensor states and update status](HOME_HA_LORAWAN.md).
+Current data synchronization: [selected non-executable text/JSON files over radio and IP](SELECTED_FILE_SYNC.md).
+
 See [LoRaWAN feature and hardware test tracker](LORAWAN_TESTING.md) for the
 confirmed RAK7266S/RAK3172 commissioning results, current serial adapter, and
 deferred automatic GPS reporting. The legacy notes below predate that hardware

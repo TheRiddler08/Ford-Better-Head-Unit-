@@ -99,6 +99,11 @@ class Agent:
         sources=self.inventory()
         fingerprint=digest(canonical([(row['path'],row['sha256']) for row in sources]))
         data={'role':self.role,'receipts':queued[:128]}
+        from control.file_sync import car_files
+        files=car_files(self.config);files.scan();data['fileObjects']=files.pending();data['fileReceipts']=files.receipts()
+        if self.config.get('telemetry_radio_enabled',True):
+            from control.telemetry import encode,collect
+            data['telemetryFrames']=[raw.hex() for raw in encode(self.role,collect(self.home,self.role),self.key())]
         result=self.state/'radio-test-result.json'
         if self.role=='tiny' and result.exists():
             report=json.loads(result.read_text())
@@ -108,6 +113,10 @@ class Agent:
             data['radioPublicKey']=bytes(identity(self.credentials/'radio-private.key').public_key).hex()
         if fingerprint!=self.inventory_fingerprint or time.monotonic()-self.inventory_sent_at>3600:data['sources']=sources
         response=self.call('/api/device/software/exchange',data)
+        for item in response.get('fileResults',[]):files.receive(item['doc'],item['id'],via_ip=True)
+        for item in response.get('fileObjects',[]):files.receive(item['doc'],item['id'])
+        with files.events.db() as db:
+            for ident in response.get('fileReceiptsAccepted',[]):db.execute('UPDATE jobs SET done=1 WHERE id=?',(ident,))
         if 'sources' in data:self.inventory_fingerprint=fingerprint;self.inventory_sent_at=time.monotonic()
         # Preserve receipts appended locally during a later exchange/restart.
         atomic(self.pending,json.dumps(queued[128:]).encode())

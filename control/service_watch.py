@@ -24,14 +24,14 @@ def environment(path):
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--env',required=True);parser.add_argument('--module',required=True);args=parser.parse_args()
-    if args.module not in ('control.home_server','control.chirpstack_bridge'):raise ValueError('Unknown home service')
+    if args.module not in ('control.home_server','control.chirpstack_bridge','control.home_ha','control.file_sync'):raise ValueError('Unknown home service')
     child=None
     def stop(*_):raise SystemExit(0)
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     try:
         while True:
             stamp=Path(args.env).stat().st_mtime_ns
-            child=subprocess.Popen([sys.executable,'-m',args.module],env=environment(args.env))
+            child=subprocess.Popen([sys.executable,'-m',args.module]+(['--home'] if args.module=='control.file_sync' else []),env=environment(args.env))
             while child.poll() is None and Path(args.env).stat().st_mtime_ns==stamp:time.sleep(1)
             if child.poll() is None:
                 child.terminate()

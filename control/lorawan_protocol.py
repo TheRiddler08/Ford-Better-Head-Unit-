@@ -111,6 +111,9 @@ class Assembler:
 
 def authenticate_application_frame(frame,secret):
     """Validate either application version at the modem relay, without applying it."""
+    if frame[:1]==b'\x05':
+        from control.telemetry import decode
+        decode(frame,secret);return
     if frame[:1]==b'\x04':
         from control.radio_diagnostic import decode
         decode(frame,secret);return
