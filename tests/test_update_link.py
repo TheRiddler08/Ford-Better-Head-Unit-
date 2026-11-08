@@ -28,6 +28,15 @@ class LinkTests(unittest.TestCase):
                 try:
                     agent=Agent({'role':'tiny','device':'car-1','home':str(home),'repo':str(repo),'overrides':str(root/'overlays'),'home_url':f'http://127.0.0.1:{server.server_port}'})
                     agent.exchange()
+                    from control.radio_crypto import identity
+                    self.assertEqual((root/'server/radio/car.pub').read_bytes(),bytes(identity(home/'.config/car-dashboard/radio-private.key').public_key))
+                    from control.radio_diagnostic import Diagnostic
+                    diagnostic=Diagnostic(agent.state/'radio-test-result.json',agent.key())
+                    diagnostic.start()
+                    agent.exchange()
+                    report=json.loads((root/'server/radio/diagnostic-result.json').read_text())
+                    self.assertEqual(report['phase'],'running')
+                    self.assertEqual(report['source'],'authenticated-car-report')
                     service=Software(root/'server/software')
                     source=service.source('car-1','tiny','app/web/cockpit.js')
                     job=service.publish('car-1','tiny',source['path'],source['base'],'let speed = 20;\n')
@@ -42,7 +51,7 @@ class LinkTests(unittest.TestCase):
                 finally:server.shutdown();server.server_close();thread.join()
 
     @unittest.skipUnless(importlib.util.find_spec('nacl'),'PyNaCl enrollment dependency pending')
-    def test_pi_automatically_enrolls_bidirectional_public_keys(self):
+    def test_explicit_pi_radio_still_enrolls_bidirectional_public_keys(self):
         from control.radio_crypto import RadioBox
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);home=root/'pi';repo=root/'repo';repo.mkdir()
@@ -53,7 +62,7 @@ class LinkTests(unittest.TestCase):
             with patch.object(panel,'ROOT',root/'server'),patch.object(panel,'DEVICE_TOKEN',token):
                 thread.start()
                 try:
-                    agent=Agent({'role':'pi','home':str(home),'repo':str(repo),'home_url':f'http://127.0.0.1:{server.server_port}'})
+                    agent=Agent({'role':'pi','radio_model':'RAK3172','home':str(home),'repo':str(repo),'home_url':f'http://127.0.0.1:{server.server_port}'})
                     agent.exchange()
                     car=RadioBox(creds/'radio-private.key',creds/'radio-home.pub',root/'car.db',b'U')
                     remote=RadioBox(root/'server/radio/private.key',root/'server/radio/car.pub',root/'remote.db',b'D')

@@ -33,6 +33,7 @@ manual commissioning sample, not the production encrypted application protocol.
 | RAK3172 serial adapter | PTY tests; explicit device, read-only probe, TX event handling, asynchronous RX | Run probe on actual RUI 4.2.4; verify event format and downlink |
 | Class A downlink | RX parser and server bridge tests | Queue a downlink, then trigger uplink; RX follows uplink only |
 | Public-key encrypted application frames | PyNaCl sealed boxes, tamper/wrong-key rejection, fragmentation, restart tests | Enroll pinned keys over authenticated IP; encrypted round trip still pending |
+| Automatic encrypted radio self-test | Durable random challenge/echo; serial + MQTT encrypted integration test, wrong-nonce/replay/expiry tests | Pending on physical devices; join/Hello/Pong alone do not establish application enrollment |
 | Shared Tiny/Duet/laptop queue | Existing Ethernet relay and durable transfer tests | Submit from two car LAN devices and verify scheduling on the Tiny |
 | Small messages/status | Existing authenticated frames | Application message UI/inbox and encrypted ping/pong need integration |
 | Small settings/file deltas | Existing signed, resumable transfer tests | Loss, duplicate, restart and IP/radio handoff on real hardware |
@@ -95,6 +96,47 @@ The adapter exits on device loss; the normal role service retries.
 heartbeat or open a Class A receive window. Scheduled encrypted keepalives for
 idle downlink reception remain TODO; until then downlinks require a queued uplink.
 Class C switching and automatic rejoins are intentionally not implemented here.
+
+## Automatic encrypted round-trip check
+
+Once a Tiny has explicit RAK3172 configuration, the normal radio service has its
+existing link key and pinned home public key, and the home bridge has the Tiny's
+public key, the service starts **one persisted self-test** automatically. No
+manual ping injection is needed. Set `radio_self_test` to `false` in the existing
+link settings to opt out. It never enables GPS reporting, scans ports, changes
+OTAA keys or sends plaintext. Application enrollment now reports the Tiny's
+public key; older Pi radio deployments remain accepted, but a different existing
+pin still requires an explicit trusted migration rather than silent rotation.
+
+The test has a random challenge, shared-key application authentication and the
+existing libsodium encryption in both directions. Only a matching authenticated
+radio echo at the Tiny changes the result to `passed`. An IP result report,
+MQTT publication or modem TX event cannot pass the Tiny's test. Encrypted
+challenges repeat under the existing persisted radio budget to open Class A
+receive windows until completion or a three-hour timeout. With conservative
+11-byte uplinks and 60-second spacing this can take roughly an hour or longer;
+do not raise the rate or payload size just to speed up testing. A depleted
+daily budget, missing bridge or key pin, and radio loss are not success.
+
+The result and plain-language completion message are saved at
+`~/.local/state/drive-console/software/radio-test-result.json` on the Tiny.
+Completion is printed to `car-radio-adapter`'s journal. The original Updates API
+includes `radioDiagnostic`; the normal authenticated IP exchange reports it to
+the home panel, which refreshes its result message automatically. The home copy
+is labelled an authenticated car report. A completed test is not repeated merely
+because a process or machine restarts; its result timestamp identifies that run.
+
+After the normal software update, inspect/wait on the Tiny with:
+
+```bash
+python3 -m control.radio_diagnostic --wait
+```
+
+This watcher does not configure or transmit anything itself. If pairing or
+ChirpStack MQTT integration has not been configured, it says `pending`, not
+`passed`. This repository/cloud test runner cannot send a later chat message or
+claim a physical result without access to the machines; the running services
+publish their result in the journal and dashboard.
 
 ## Next hardware test: downlink before application features
 

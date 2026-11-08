@@ -51,6 +51,11 @@ def main():
                             Path(fleet['home'])/'.config/car-dashboard/radio-home.pub',
                             state/'sealed-radio.sqlite3',b'U',int(options.get('max_app_bytes',11 if options.get('radio_model')=='RAK3172' else 46)))
             if not cipher.peer.exists():raise ValueError('Pinned home encryption key required')
+            diagnostic=None
+            if role=='tiny' and options.get('radio_model')=='RAK3172' and options.get('radio_self_test',True):
+                from control.radio_diagnostic import Diagnostic
+                diagnostic=Diagnostic(state/'radio-test-result.json',key)
+                diagnostic.start()
             with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as receiver,socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sender:
                 receiver.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);receiver.bind(('',PORT))
                 sender.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1);sender.bind((LAN[role],0))
@@ -80,6 +85,9 @@ def main():
                                 raw=cipher.accept(bytes.fromhex(message['downlink']))
                                 if raw is None:continue
                                 authenticate_application_frame(raw,key)
+                                if raw[:1]==b'\x04':
+                                    if diagnostic:diagnostic.receive(raw)
+                                    continue
                                 kind,short,index,count,_=decode(raw,key) if raw[:1]==b'\x02' else (None,None,None,None,None)
                                 if kind in (MANIFEST,DATA):
                                     receipt=encode(ACK,short,0 if kind==MANIFEST else index,count,b'M' if kind==MANIFEST else b'd',key)
@@ -97,6 +105,14 @@ def main():
                                         db.execute('UPDATE uplinks SET sent=1 WHERE id=?',(row[1],))
                                         sender.sendto(b'R'+bytes.fromhex(row[0]),('172.16.42.255',PORT))
                     spacing=max(60,int(options.get('uplink_spacing',60)));limit=min(200,int(options.get('uplinks_per_day',120)))
+                    if diagnostic:
+                        test=diagnostic.outgoing()
+                        with journal.db() as db:
+                            if test:
+                                ident=hashlib.sha256(test).hexdigest()
+                                db.execute('INSERT OR IGNORE INTO uplinks(id,frame) VALUES(?,?)',(ident,test.hex()))
+                                db.execute('UPDATE uplinks SET sent=0 WHERE id=? AND sent=1',(ident,))
+                            else:db.execute("UPDATE uplinks SET sent=2 WHERE substr(frame,1,2)='04'")
                     with journal.db() as db:
                         db.execute("UPDATE uplinks SET sent=0 WHERE sent=1 AND substr(frame,1,4)='0106' AND attempt<?",(time.time()-600,))
                         row=db.execute("SELECT id,frame FROM uplinks WHERE sent=0 AND attempt<? ORDER BY CASE WHEN substr(frame,1,4)='0106' THEN 1 ELSE 0 END,attempt LIMIT 1",(time.time()-spacing,)).fetchone()

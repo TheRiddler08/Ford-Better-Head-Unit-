@@ -280,7 +280,8 @@ class Handler(BaseHTTPRequestHandler):
                 query=parse_qs(req.query)
                 return self.response(software().source(name,query.get("role",["tiny"])[0],query.get("path",[""])[0]))
             if req.path=="/api/software/status":
-                return self.response({"updates":software().journal.status(),"radioConfigured":bool(os.getenv("CAR_CHIRPSTACK_APP_ID") and os.getenv("CAR_CHIRPSTACK_DEV_EUI")),"radio":json.loads((ROOT/"radio-status.json").read_text()) if (ROOT/"radio-status.json").exists() else {"phase":"unconfigured"}})
+                result=ROOT/'radio/diagnostic-result.json'
+                return self.response({"updates":software().journal.status(),"radioConfigured":bool(os.getenv("CAR_CHIRPSTACK_APP_ID") and os.getenv("CAR_CHIRPSTACK_DEV_EUI")),"radio":json.loads((ROOT/"radio-status.json").read_text()) if (ROOT/"radio-status.json").exists() else {"phase":"unconfigured"},"radioDiagnostic":json.loads(result.read_text()) if result.exists() else {"phase":"pending","message":"Waiting for configured car radio, pinned encryption keys and home bridge."}})
             if req.path=="/api/layout-status":
                 state=LayoutStore(ROOT/"layouts.sqlite3").get(name)
                 return self.response({"generation":state["generation"],"revision":state["published"]["revision"],
@@ -305,9 +306,12 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 data=self.request_json();role=data["role"];service=software()
                 if role not in ("tiny","duet","pi","laptop"):raise ValueError("Invalid role")
-                if role=='pi' and 'radioPublicKey' in data:
+                if role in ('tiny','pi') and 'radioPublicKey' in data:
                     from control.radio_crypto import pin
                     pin(ROOT/'radio/car.pub',data['radioPublicKey'])
+                if role=='tiny' and 'radioDiagnostic' in data:
+                    from control.radio_diagnostic import record_report
+                    record_report(ROOT/'radio/diagnostic-result.json',data['radioDiagnostic'])
                 service.receipts(DEVICE_NAME,role,data.get("receipts",[]))
                 if "sources" in data:service.inventory(DEVICE_NAME,role,data["sources"])
                 return self.response({"frames":service.outgoing(DEVICE_NAME,role)})

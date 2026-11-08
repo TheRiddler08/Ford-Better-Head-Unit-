@@ -99,7 +99,11 @@ class Agent:
         sources=self.inventory()
         fingerprint=digest(canonical([(row['path'],row['sha256']) for row in sources]))
         data={'role':self.role,'receipts':queued[:128]}
-        if self.role=='pi':
+        result=self.state/'radio-test-result.json'
+        if self.role=='tiny' and result.exists():
+            report=json.loads(result.read_text())
+            if report.get('phase') in ('running','passed','timed-out'):data['radioDiagnostic']=report
+        if self.role=='tiny' or self.role=='pi' and (self.config.get('radio_adapter') or self.config.get('radio_model')):
             from control.radio_crypto import identity
             data['radioPublicKey']=bytes(identity(self.credentials/'radio-private.key').public_key).hex()
         if fingerprint!=self.inventory_fingerprint or time.monotonic()-self.inventory_sent_at>3600:data['sources']=sources

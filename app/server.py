@@ -366,12 +366,14 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError,ValueError):reboot_status=None
             try:radio_status=json.loads((Path.home()/'.local/state/drive-console/software/radio-status.json').read_text())
             except (OSError,ValueError):radio_status={"phase":"unconfigured"}
+            try:radio_test=json.loads((Path.home()/'.local/state/drive-console/software/radio-test-result.json').read_text())
+            except (OSError,ValueError):radio_test={"phase":"pending","message":"Waiting for configured radio and pinned application encryption keys."}
             return self.send_json({"revision": revision, "updateTimer": timer,
                                    "overlayRevision":overlay_revision,"softwareUpdates":software_status,"reboot":reboot_status,
                                    "fleet":fleet_status,
                                    "courierProgress":courier_progress,
                                    "courier": courier,
-                                   "lorawan": "Local radio: "+radio_status.get("phase","unconfigured"),"radio":radio_status,
+                                   "lorawan": "Local radio: "+radio_status.get("phase","unconfigured")+"; encrypted test: "+radio_test.get('phase','pending'),"radio":radio_status,"radioDiagnostic":radio_test,
                                    "configRevision": config_rev,
                                    "packagesExecutable": False})
         if url.path == "/api/gps":

@@ -46,6 +46,10 @@ class Bridge:
         return RadioBox(ROOT/'radio/private.key',ROOT/'radio/car.pub',ROOT/'radio/sealed.sqlite3',b'D',
                         int(os.getenv('CAR_RADIO_MAX_APP_BYTES','46')))
 
+    def diagnostic(self):
+        from control.radio_diagnostic import Responder
+        return Responder(ROOT/'radio/diagnostic.json',radio_key())
+
     def may_send(self):
         day=int(time.time()//86400)
         if day!=self.day:self.sent=0;self.day=day
@@ -53,14 +57,15 @@ class Bridge:
 
     def send_one(self):
         if not self.may_send():return
+        diagnostic=self.diagnostic().outgoing()
         event=self.events().outgoing(ack=True) if (ROOT/'radio/catalog.sqlite3').exists() else None
-        item=None if event else export_next(NAME)
+        item=None if event or diagnostic else export_next(NAME)
         modern=None
-        if not item and not event:
+        if not item and not event and not diagnostic:
             frames=self.software.outgoing(NAME,limit=1,mark=False)
             if not frames:return
             modern=bytes.fromhex(frames[0])
-        frame=event or (modern if modern else bytes.fromhex(item["frame_hex"]))
+        frame=diagnostic or event or (modern if modern else bytes.fromhex(item["frame_hex"]))
         if not self.software.journal.budget('mqtt-downlinks',COOLDOWN,DAILY_LIMIT):return
         cipher=self.cipher()
         if not cipher.peer.exists():return # Never send application plaintext before enrollment.
@@ -73,6 +78,7 @@ class Bridge:
             return
         self.last=time.monotonic();self.sent+=1
         if not cipher.sent(frame):return
+        if diagnostic:return
         # This acknowledges broker queueing, NOT successful over-air delivery.
         if event:
             self.events().sent(frame,ack=True);return
@@ -101,7 +107,9 @@ class Bridge:
             atomic(ROOT/'radio-status.json',json.dumps({'phase':'uplink-received','time':time.time()}).encode())
             payload=self.cipher().accept(base64.b64decode(wire.get("data",""),validate=True))
             if payload is None:return
-            if payload[:1]==b'\x02':
+            if payload[:1]==b'\x04':
+                self.diagnostic().receive(payload)
+            elif payload[:1]==b'\x02':
                 from control.update_transfer import decode
                 _,short,*_=decode(payload,radio_key())
                 with self.software.journal.db() as db:row=db.execute('SELECT doc FROM jobs WHERE short=?',(short,)).fetchone()
