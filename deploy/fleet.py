@@ -678,7 +678,7 @@ TimeoutStartSec=900
     managed_tunnel=role=='tiny' and bool(link.get('home_ssh_target'))
     if managed_tunnel:unit('car-home-tunnel.service',home_tunnel_unit(config,link))
     user=config.get('user','nobody');repo=config.get('repo','/nonexistent');home=config.get('home','/nonexistent')
-    for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-data','control.car_data')]:
+    for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-messages','control.messages run'),('car-data','control.car_data')]:
         limits='Environment=CAR_STATE_DB_LIMIT_BYTES=16777216\n' if role=='pi' and config.get('pi_storage_client',True) else ''
         unit(name+'.service',f'''[Unit]
 Description=Automatic resumable software link ({module})
@@ -757,8 +757,8 @@ WantedBy=timers.target
         run(['systemctl','enable' if enabled else 'disable','--now','car-home-tunnel.service'])
         if enabled:run(['systemctl','try-restart','car-home-tunnel.service'],check=False)
     run(['systemctl','disable','--now','car-duet-ethernet-'+role+'.timer'],check=False)
-    run(['systemctl','enable','--now','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-data.service'])
-    run(['systemctl','restart','car-update-link.service','car-radio-adapter.service','car-data.service'])
+    run(['systemctl','enable','--now','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-messages.service','car-data.service'])
+    run(['systemctl','restart','car-update-link.service','car-radio-adapter.service','car-messages.service','car-data.service'])
     # Never force suspend the SSH session that installed an update. Arming is
     # automatic, but the once-per-boot timer starts on the next device boot.
     extras=['car-wake-first.timer','car-wake-retry.timer','car-wake-status.service'] if role=='pi' else [] if role=='laptop' else ['car-boot-standby.timer']
@@ -803,7 +803,7 @@ depend() {{ need car-fleet; }}
         run(['rc-service','car-wake-status','restart'])
     cfg=load(CONFIG,{})
     if role=='laptop':install_laptop_power(cfg)
-    for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-data','control.car_data')]:
+    for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-messages','control.messages run'),('car-data','control.car_data')]:
         limits='export CAR_STATE_DB_LIMIT_BYTES=16777216\n' if role=='pi' and cfg.get('pi_storage_client',True) else ''
         save(Path('/etc/init.d')/name,f'''#!/sbin/openrc-run
 name="Automatic resumable update transport"
@@ -881,10 +881,10 @@ def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False
             previous=load(standby,{});previous['armed']=False;save(standby,previous)
     if not defaults.get('enabled',True):
         if Path('/run/systemd/system').exists():
-            for service in ['car-home-tunnel.service','car-laptop-power.service','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
+            for service in ['car-home-tunnel.service','car-laptop-power.service','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-messages.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
                 run(['systemctl','disable','--now',service],check=False)
         elif Path('/run/openrc').exists():
-            for service in ['car-laptop-power','car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-data','car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount','car-fleet-boot','car-wake-status']:
+            for service in ['car-laptop-power','car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-messages','car-data','car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount','car-fleet-boot','car-wake-status']:
                 run(['rc-update','del',service,'default'],check=False);run(['rc-service',service,'stop'],check=False)
         return {'provisioning':VERSION,'disabled':True,'missing':missing}
     if Path('/run/systemd/system').exists():

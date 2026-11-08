@@ -267,6 +267,10 @@ class Handler(BaseHTTPRequestHandler):
             if req.path=="/api/gps-relay":
                 from control.event_transfer import Events
                 return self.response({'items':Events(ROOT/'radio/catalog.sqlite3',radio_key()).catalog('gps')})
+            if req.path=="/api/messages":
+                from control.messages import listing
+                from control.event_transfer import Events
+                return self.response(listing(Events(ROOT/'radio/catalog.sqlite3',radio_key(),destination='home')))
             if req.path=="/api/dashcam":
                 from control.event_transfer import Events
                 return self.response({'items':Events(ROOT/'radio/catalog.sqlite3',radio_key()).catalog(),
@@ -349,6 +353,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data=self.request_json()
             if not isinstance(data,dict):raise ValueError("Invalid object")
+            if self.path=="/api/messages":
+                from control.messages import enqueue
+                from control.event_transfer import Events
+                return self.response(enqueue(Events(ROOT/'radio/catalog.sqlite3',radio_key(),destination='home'),
+                                             'home',data.get('destination','tiny'),data.get('text'),data.get('action','text')))
             if self.path=="/api/software/publish":
                 return self.response(software().publish(safe_device(data.get("device","car-1")),data["role"],data["path"],data["base"],data["source"]))
             if self.path=="/api/layout":

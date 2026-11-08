@@ -264,6 +264,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_bytes(json.dumps(obj, allow_nan=False, default=str).encode(), status)
 
     def do_GET(self):
+        if urlsplit(self.path).path=='/api/messages':
+            if self.client_address[0] not in ('127.0.0.1','::1'):return self.send_json({'error':'Localhost required'},403)
+            try:
+                from control.messages import local_events,listing
+                return self.send_json(listing(local_events(json.loads(FLEET_FILE.read_text()))))
+            except (OSError,ValueError):return self.send_json({'error':'Application pairing required'},503)
+        if urlsplit(self.path).path in ('/radio-messages','/radio-messages.js'):
+            name='radio-messages.js' if urlsplit(self.path).path.endswith('.js') else 'radio-messages.html'
+            return self.send_bytes((WEB_DIR/name).read_bytes(),mime='text/javascript' if name.endswith('.js') else 'text/html; charset=utf-8')
         url = urlsplit(self.path)
         if url.path=="/home-assistant":
             try:ha_status=json.loads(Path('/etc/car-dashboard/home-assistant.json').read_text())
@@ -489,7 +498,8 @@ class Handler(BaseHTTPRequestHandler):
             if gps is not None:gps.close()
 
     def do_POST(self):
-        if urlsplit(self.path).path != "/api/headunit-prefs":
+        endpoint=urlsplit(self.path).path
+        if endpoint not in ("/api/headunit-prefs","/api/messages"):
             return self.send_json({"error": "Not found"}, 404)
         # Local kiosk settings only; never send commands to the vehicle.
         if self.client_address[0] not in ("127.0.0.1", "::1"):
@@ -504,9 +514,13 @@ class Handler(BaseHTTPRequestHandler):
             if size < 1 or size > 12000:
                 return self.send_json({"error": "Invalid request size"}, 413)
             incoming = json.loads(self.rfile.read(size))
+            if endpoint=='/api/messages':
+                from control.messages import enqueue,local_events
+                config=json.loads(FLEET_FILE.read_text())
+                return self.send_json(enqueue(local_events(config),config['role'],incoming.get('destination','home'),incoming.get('text'),incoming.get('action','text')))
             saved = update_prefs(PREFS_FILE, incoming)
             return self.send_json(saved)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError) as exc:
             return self.send_json({"error": str(exc)}, 400)
 
     def log_message(self, fmt, *args):

@@ -253,8 +253,10 @@ def radio_catalog(store,home,role):
     from control.update_agent import LAN,PORT
     key=Path(home)/'.config/car-dashboard/update-link.key'
     if not key.exists():return 'waiting-for-enrollment'
-    events=Events(store.state/'radio-catalog.sqlite3',bytes.fromhex(key.read_text().strip()))
-    if role=='tiny':
+    events=Events(store.state/'radio-catalog.sqlite3',bytes.fromhex(key.read_text().strip()),destination=role,types=('dashcam','gps'))
+    settings=Path('/etc/car-dashboard/update-link.json')
+    gps_enabled=json.loads(settings.read_text()).get('gps_radio_enabled',False) if settings.exists() else False
+    if role=='tiny' and gps_enabled:
         gps=recorder_paths(home)[1]
         with closing(events.db()) as db:
             pending=db.execute("SELECT COUNT(*) FROM jobs WHERE id LIKE 'gps:%' AND done=0").fetchone()[0]
@@ -276,9 +278,9 @@ def radio_catalog(store,home,role):
                                       'size':info['size'],'importedAt':info['created'],'channel':info.get('channel','unspecified')})
     with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sender:
         sender.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1);sender.bind((LAN[role],0))
-        raw=events.outgoing()
+        raw=events.outgoing(ack=True) or events.outgoing(kinds=['dashcam','gps'] if gps_enabled else ['dashcam'])
         if raw:sender.sendto(b'U'+raw,('172.16.42.255',PORT))
-    return 'queued-encrypted-gps-and-catalog'
+    return 'queued-encrypted-catalog; gps-radio-enabled' if gps_enabled else 'queued-encrypted-catalog; gps-radio-deferred'
 
 
 def main():
@@ -297,7 +299,7 @@ def main():
             from control.event_transfer import Events
             key=home/'.config/car-dashboard/update-link.key'
             if key.exists():
-                events=Events(store.state/'radio-catalog.sqlite3',bytes.fromhex(key.read_text().strip()))
+                events=Events(store.state/'radio-catalog.sqlite3',bytes.fromhex(key.read_text().strip()),destination=role,types=('dashcam','gps'))
                 while True:
                     try:data,peer=receiver.recvfrom(128)
                     except BlockingIOError:break

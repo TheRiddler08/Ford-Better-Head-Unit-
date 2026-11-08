@@ -19,6 +19,20 @@ from control.update_transfer import Journal,decode,encode,ACK,APPLIED,MANIFEST,D
 from control.lorawan_protocol import authenticate_application_frame
 
 
+def suppress_deferred_gps(journal,home,key):
+    """Retire old queued GPS frames locally when GPS radio reporting is deferred."""
+    from contextlib import closing
+    from control.lorawan_protocol import split_message
+    path=Path(home)/'.local/share/car-data/radio-catalog.sqlite3'
+    if not path.exists():return
+    with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)) as source:
+        rows=source.execute("SELECT id,doc FROM jobs WHERE json_extract(doc,'$.type')='gps'").fetchall()
+    with journal.db() as db:
+        for ident,doc in rows:
+            for frame in split_message('status',1,{'id':ident,'catalog':json.loads(doc)},key):
+                db.execute('UPDATE uplinks SET sent=2 WHERE id=?',(hashlib.sha256(frame).hexdigest(),))
+
+
 def main():
     def stop(*_):raise SystemExit(0)
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
@@ -51,6 +65,7 @@ def main():
                             Path(fleet['home'])/'.config/car-dashboard/radio-home.pub',
                             state/'sealed-radio.sqlite3',b'U',int(options.get('max_app_bytes',11 if options.get('radio_model')=='RAK3172' else 46)))
             if not cipher.peer.exists():raise ValueError('Pinned home encryption key required')
+            if role=='tiny' and not options.get('gps_radio_enabled',False):suppress_deferred_gps(journal,fleet['home'],key)
             diagnostic=None
             if role=='tiny' and options.get('radio_model')=='RAK3172' and options.get('radio_self_test',True):
                 from control.radio_diagnostic import Diagnostic
@@ -61,12 +76,16 @@ def main():
                 sender.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1);sender.bind((LAN[role],0))
                 process=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
                 atomic(status,json.dumps({'phase':'adapter-running-awaiting-network','time':time.time()}).encode())
-                next_poll=0;buffer=b''
+                next_poll=0;next_idle=0;buffer=b''
                 while process.poll() is None:
                     if (config.stat().st_mtime_ns if config.exists() else 0)!=stamp:break
                     ready,_,_=select.select([receiver,process.stdout],[],[],1)
                     if receiver in ready:
                         data,peer=receiver.recvfrom(128)
+                        if peer[0] in LAN.values() and data[:1]==b'F':
+                            authenticate_application_frame(data[1:],key)
+                            if data[1:3]==b'\x01\x06':
+                                with journal.db() as db:db.execute('UPDATE uplinks SET sent=2 WHERE id=?',(hashlib.sha256(data[1:]).hexdigest(),))
                         if peer[0] in LAN.values() and data[:1]==b'U':
                             authenticate_application_frame(data[1:],key)
                             ident=hashlib.sha256(data[1:]).hexdigest()
@@ -113,10 +132,25 @@ def main():
                                 db.execute('INSERT OR IGNORE INTO uplinks(id,frame) VALUES(?,?)',(ident,test.hex()))
                                 db.execute('UPDATE uplinks SET sent=0 WHERE id=? AND sent=1',(ident,))
                             else:db.execute("UPDATE uplinks SET sent=2 WHERE substr(frame,1,2)='04'")
+                    # Class A needs actual uplinks to receive home messages.
+                    # A compact sealed keepalive contains no telemetry or GPS.
+                    if options.get('radio_model')=='RAK3172' and options.get('radio_keepalive',True) and time.monotonic()>=next_idle:
+                        with journal.db() as db:busy=db.execute('SELECT 1 FROM uplinks WHERE sent=0 LIMIT 1').fetchone()
+                        if not busy:
+                            from control.radio_diagnostic import packet
+                            import secrets
+                            nonce_path=state/'radio-keepalive.json'
+                            if not nonce_path.exists():atomic(nonce_path,json.dumps({'nonce':secrets.token_hex(16)}).encode())
+                            pulse=packet(3,bytes.fromhex(json.loads(nonce_path.read_text())['nonce']),key)
+                            ident=hashlib.sha256(pulse).hexdigest()
+                            with journal.db() as db:
+                                db.execute('INSERT OR IGNORE INTO uplinks(id,frame) VALUES(?,?)',(ident,pulse.hex()))
+                                db.execute('UPDATE uplinks SET sent=0 WHERE id=?',(ident,))
+                            next_idle=time.monotonic()+max(60,int(options.get('idle_uplink_spacing',900)))
                     with journal.db() as db:
                         db.execute("UPDATE uplinks SET sent=0 WHERE sent=1 AND substr(frame,1,4)='0106' AND attempt<?",(time.time()-600,))
-                        row=db.execute("SELECT id,frame FROM uplinks WHERE sent=0 AND attempt<? ORDER BY CASE WHEN substr(frame,1,4)='0106' THEN 1 ELSE 0 END,attempt LIMIT 1",(time.time()-spacing,)).fetchone()
-                    if (row or time.monotonic()>=next_poll) and journal.budget('modem-uplinks',spacing,limit):
+                        row=db.execute("SELECT id,frame FROM uplinks WHERE sent=0 AND attempt<? ORDER BY CASE WHEN substr(frame,1,2)='04' THEN 2 WHEN substr(frame,1,4)='0106' THEN 1 ELSE 0 END,attempt LIMIT 1",(time.time()-spacing,)).fetchone()
+                    if row and journal.budget('modem-uplinks',spacing,limit):
                         attempt=uuid.uuid4().hex
                         packet={'id':attempt,'uplink':cipher.next(bytes.fromhex(row[1])).hex()} if row else {'poll':True}
                         if row:

@@ -17,14 +17,14 @@ SIZE = 34
 
 
 def packet(kind, nonce, key):
-    if kind not in (1, 2) or len(nonce) != 16 or len(key) < 32:
+    if kind not in (1, 2, 3) or len(nonce) != 16 or len(key) < 32:
         raise ValueError('Invalid diagnostic packet')
     body = bytes([VERSION, kind]) + nonce
     return body + hmac.new(key, b'car-radio-diagnostic-v1\0' + body, hashlib.sha256).digest()[:16]
 
 
 def decode(raw, key):
-    if len(raw) != SIZE or raw[0] != VERSION or raw[1] not in (1, 2) or len(key) < 32:
+    if len(raw) != SIZE or raw[0] != VERSION or raw[1] not in (1, 2, 3) or len(key) < 32:
         raise ValueError('Invalid diagnostic frame')
     expected = packet(raw[1], raw[2:18], key)
     if not hmac.compare_digest(expected, raw):

@@ -39,7 +39,7 @@ class Bridge:
 
     def events(self):
         from control.event_transfer import Events
-        return Events(ROOT/'radio/catalog.sqlite3',radio_key())
+        return Events(ROOT/'radio/catalog.sqlite3',radio_key(),destination='home')
 
     def cipher(self):
         from control.radio_crypto import RadioBox
@@ -59,13 +59,14 @@ class Bridge:
         if not self.may_send():return
         diagnostic=self.diagnostic().outgoing()
         event=self.events().outgoing(ack=True) if (ROOT/'radio/catalog.sqlite3').exists() else None
-        item=None if event or diagnostic else export_next(NAME)
+        text_frame=self.events().outgoing(kinds=['message']) if (ROOT/'radio/catalog.sqlite3').exists() else None
+        item=None if event or text_frame or diagnostic else export_next(NAME)
         modern=None
-        if not item and not event and not diagnostic:
+        if not item and not event and not text_frame and not diagnostic:
             frames=self.software.outgoing(NAME,limit=1,mark=False)
             if not frames:return
             modern=bytes.fromhex(frames[0])
-        frame=diagnostic or event or (modern if modern else bytes.fromhex(item["frame_hex"]))
+        frame=event or text_frame or diagnostic or (modern if modern else bytes.fromhex(item["frame_hex"]))
         if not self.software.journal.budget('mqtt-downlinks',COOLDOWN,DAILY_LIMIT):return
         cipher=self.cipher()
         if not cipher.peer.exists():return # Never send application plaintext before enrollment.
@@ -78,10 +79,12 @@ class Bridge:
             return
         self.last=time.monotonic();self.sent+=1
         if not cipher.sent(frame):return
-        if diagnostic:return
+        if frame==diagnostic:return
         # This acknowledges broker queueing, NOT successful over-air delivery.
         if event:
             self.events().sent(frame,ack=True);return
+        if text_frame:
+            self.events().sent(frame);return
         if modern:
             self.software.journal.mark_sent(modern,radio_key(),"lorawan")
             print("Queued resumable update fragment; awaiting durable device receipt",flush=True)
@@ -116,6 +119,9 @@ class Bridge:
                 if row:self.software.receipts(NAME,json.loads(row[0])['role'],[payload.hex()],transport='lorawan')
             elif payload[:2]==b'\x01\x06':
                 sample=self.events().receive(payload)
+                if sample:
+                    from control.messages import status_reply
+                    status_reply(self.events(),sample,'home',ROOT)
                 if sample and sample.get('type')=='gps':
                     from control.coverage import ingest
                     registry_file=ROOT/'gateways.json'

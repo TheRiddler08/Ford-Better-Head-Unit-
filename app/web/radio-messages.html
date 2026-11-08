@@ -1,0 +1,4 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Car radio messages</title><link rel="stylesheet" href="/styles.css"><script defer src="/radio-messages.js"></script></head>
+<body><main><h1>Radio messages</h1><p>Short encrypted messages. Delivery can take minutes or longer. Delivered means saved by the receiving application, not read.</p>
+<form id="messageForm"><label>To: Home</label><label>Message <textarea id="messageText" rows="3" required maxlength="240"></textarea></label><button type="submit">Queue message</button></form><p id="messageNotice" role="status"></p><button id="requestStatus">Request home health status</button><button id="refreshMessages">Refresh</button><div id="messageList" aria-live="polite"></div><p><a href="/">Return to dashboard</a></p></main></body></html>
