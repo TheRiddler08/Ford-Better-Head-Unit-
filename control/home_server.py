@@ -222,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def request_json(self):
         length=int(self.headers.get("Content-Length","0"))
-        limit=1048576 if self.path.startswith("/api/device/software/") or self.path.startswith("/api/software/") else 512000 if self.path=="/api/layout" else 8192
+        limit=1048576 if self.path.startswith("/api/device/software/") or self.path.startswith("/api/software/") else 131072 if self.path=="/api/sync/file" else 512000 if self.path=="/api/layout" else 8192
         if length<=0 or length>limit:raise ValueError("Invalid request length")
         return json.loads(self.rfile.read(length))
 
@@ -251,12 +251,13 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 cfg_file,_=paths(DEVICE_NAME)
                 return self.response({"device":DEVICE_NAME,"config":read_config(cfg_file)})
-        if req.path in ("/","/panel.js","/panel.css","/builder.js","/builder.css","/layout-runtime.js","/software.js","/radio-messages.js","/radio-messages.css"):
+        if req.path in ("/","/panel.js","/panel.css","/builder.js","/builder.css","/layout-runtime.js","/software.js","/sync.js","/radio-messages.js","/radio-messages.css"):
             name,mime={"/radio-messages.js":("radio-messages.js","text/javascript; charset=utf-8"),"/radio-messages.css":("radio-messages.css","text/css; charset=utf-8"),"/":("index.html","text/html; charset=utf-8"),
                        "/panel.js":("panel.js","text/javascript; charset=utf-8"),
                        "/panel.css":("panel.css","text/css; charset=utf-8"),
                        "/builder.js":("builder.js","text/javascript; charset=utf-8"),
                        "/software.js":("software.js","text/javascript; charset=utf-8"),
+                       "/sync.js":("sync.js","text/javascript; charset=utf-8"),
                        "/layout-runtime.js":("layout-runtime.js","text/javascript; charset=utf-8"),
                        "/builder.css":("builder.css","text/css; charset=utf-8")}[req.path]
             return self.response((UI/name).read_bytes(),mime=mime)
@@ -283,6 +284,15 @@ class Handler(BaseHTTPRequestHandler):
             if req.path=="/api/software/source":
                 query=parse_qs(req.query)
                 return self.response(software().source(name,query.get("role",["tiny"])[0],query.get("path",[""])[0]))
+            if req.path in ('/api/sync','/api/sync/file'):
+                from control.file_sync import home_files,home_selection
+                query=parse_qs(req.query);role=query.get('role',['tiny'])[0]
+                selected=home_selection(ROOT,role);files=home_files(ROOT,role,radio_key())
+                if req.path=='/api/sync/file':return self.response(files.inspect(query.get('name',[''])[0]))
+                files.scan();rows={row['name']:row for row in files.status()}
+                peer=ROOT/'sync-peer'/(role+'.json')
+                return self.response(dict(selected,peer=json.loads(peer.read_text()) if peer.exists() else None,
+                    items=[rows.get(name,{'name':name,'phase':'idle','id':None}) for name in selected['files']]))
             if req.path=="/api/software/status":
                 result=ROOT/'radio/diagnostic-result.json'
                 from control.home_ha import overview
@@ -330,6 +340,10 @@ class Handler(BaseHTTPRequestHandler):
                 if "sources" in data:service.inventory(DEVICE_NAME,role,data["sources"])
                 from control.file_sync import home_files
                 files=home_files(ROOT,role,radio_key());results=[]
+                if 'fileSelection' in data:
+                    from control.file_sync import selected_names
+                    from control.update_agent import atomic
+                    atomic(ROOT/'sync-peer'/(role+'.json'),json.dumps({'files':selected_names(data['fileSelection']),'reportedAt':time.time()}).encode())
                 objects=data.get('fileObjects',[])
                 if not isinstance(objects,list) or len(objects)>4:raise ValueError('Too many sync objects')
                 receipts=data.get('fileReceipts',[])
@@ -385,6 +399,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.response(enqueue(events,'home',data.get('destination','tiny'),data.get('text'),data.get('action','text'),data.get('clientId')))
             if self.path=="/api/software/publish":
                 return self.response(software().publish(safe_device(data.get("device","car-1")),data["role"],data["path"],data["base"],data["source"]))
+            if self.path in ('/api/sync','/api/sync/file'):
+                from control.file_sync import home_files,save_home_selection
+                role=data.get('role','tiny')
+                if self.path=='/api/sync':return self.response(save_home_selection(ROOT,role,data['files'],data['revision']))
+                files=home_files(ROOT,role,radio_key())
+                if data.get('action')=='save':return self.response(files.edit(data['name'],data['sha256'],data['source']))
+                if data.get('action')=='resolve':return self.response(files.resolve(data['name'],data['id'],data['sha256'],data['choice'],data.get('source')))
+                raise ValueError('Unknown file operation')
             if self.path=="/api/layout":
                 if data.get("action")=="validate":
                     return self.response({"project":validate_project(data.get("project"))})

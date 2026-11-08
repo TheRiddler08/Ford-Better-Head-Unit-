@@ -100,7 +100,7 @@ class Agent:
         fingerprint=digest(canonical([(row['path'],row['sha256']) for row in sources]))
         data={'role':self.role,'receipts':queued[:128]}
         from control.file_sync import car_files
-        files=car_files(self.config);files.scan();data['fileObjects']=files.pending();data['fileReceipts']=files.receipts()
+        files=car_files(self.config);files.scan();data['fileObjects']=files.pending();data['fileReceipts']=files.receipts();data['fileSelection']=sorted(files.selected)
         if self.config.get('telemetry_radio_enabled',True):
             from control.telemetry import encode,collect
             data['telemetryFrames']=[raw.hex() for raw in encode(self.role,collect(self.home,self.role),self.key())]

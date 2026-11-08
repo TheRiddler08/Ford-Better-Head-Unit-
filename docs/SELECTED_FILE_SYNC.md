@@ -5,6 +5,56 @@ installers. Select the same basenames at both ends. Nothing is selected by
 default: existing navigation routes, GPS history, camera files, databases and
 system configuration are not automatically uploaded.
 
+## Manage from the home panel
+
+The authenticated home panel now includes **Selected data files**. Choose the
+Tiny, Duet, Pi or laptop role, enter up to four basenames, and save that role's
+home selection. Existing copies are retained when a name is removed. The panel
+shows the car's last reported selection and its timestamp after an authenticated
+IP exchange; it does not mistake that old report for current connectivity.
+Car allowlists remain local and are not silently expanded by home selection.
+
+Open a selected home copy to edit its text, or create a new selected file. JSON
+edits must parse as JSON. Saving makes a normal data delta and shows the pending
+transfer; it does not claim remote application. Edited bytes stay in the browser
+tab's memory, and are not saved to browser storage. Unsaved edits must be saved
+or explicitly discarded before opening another copy or changing roles. The
+download button saves the current editor text. Windows line endings are
+preserved when editing a file that uses CRLF.
+
+Saving uses the loaded content hash. An outdated tab is rejected rather than
+overwriting a newer copy. The editor and automatic receivers share a Linux file
+lock so concurrent application writers serialize their updates.
+
+### Review a conflict
+
+The editor shows the home original alongside the **reported car copy**. A car
+copy can only be reconstructed when the saved common baseline and target hash
+verify. Without that baseline the choice buttons stay disabled; compare the
+originals manually rather than guessing the incoming bytes.
+
+Choose **Use reported car copy**, **Keep saved home copy**, or **Use edited
+text**. The home original is backed up before it is replaced. Keeping or merging
+the home copy first durably accepts the verified car baseline, then queues a
+return delta with a new identity. The car's applied receipt is still required
+to finish that return transfer. Stale receipts or replayed old transfers cannot
+overwrite a later local edit.
+
+Resolution choices are journaled before file replacement. If interrupted, the
+normal home sync worker resumes them. If a newer external edit appears during
+recovery, it keeps that edit and shows the earlier saved choice for review.
+Unrelated files and signed software updates continue while a resolution is
+blocked. No plaintext radio path or source-update privilege is added.
+
+Private backups are ordinary files next to the file journal: for example,
+`~/.local/share/car-home-control/sync-state/tiny-backups/` at home. There are at
+most 32 backup files per role. At capacity, replacements pause until you archive
+older backups elsewhere; originals are never silently deleted to make room.
+Up to 32 unresolved received conflicts are retained at a time. Reviewing one
+marks older conflicts for that filename resolved and frees unresolved capacity.
+
+## Local configuration
+
 On a car device, merge into `/etc/car-dashboard/update-link.json` (retain its
 existing pairing fields):
 
@@ -17,6 +67,13 @@ home server, create `~/.local/share/car-home-control/sync-settings.json`:
 
 ```json
 {"files":["notes.txt","preferences.json"]}
+```
+
+That legacy `files` list remains the fallback for all roles. The panel preserves
+it and writes independent overrides under `roles`, for example:
+
+```json
+{"files":[],"roles":{"tiny":["notes.txt"],"duet":["preferences.json"]}}
 ```
 
 Home copies live under `~/.local/share/car-home-control/sync/tiny/`, `/duet/`,

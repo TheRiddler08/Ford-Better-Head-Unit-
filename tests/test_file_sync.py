@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from control.event_transfer import Events
-from control.file_sync import Files,digest,filename
+from control.file_sync import Files,digest,filename,home_selection,save_home_selection
 
 KEY=bytes(range(32))
 
@@ -13,6 +13,137 @@ class FileSyncTests(unittest.TestCase):
         car=Files(root/'car',root/'car-state.db',Events(root/'car-events.db',KEY,destination='tiny',types=('file','file-receipt')),'tiny','home',['notes.txt'])
         home=Files(root/'home',root/'home-state.db',Events(root/'home-events.db',KEY,destination='home'),'home','tiny',['notes.txt'])
         car.root.mkdir();home.root.mkdir();return car,home
+
+    def conflict_pair(self,root):
+        car,home=self.pair(root)
+        (car.root/'notes.txt').write_text('common');car.scan();item=car.pending()[0]
+        reply=home.receive(item['doc'],item['id'],via_ip=True);car.receive(reply['doc'],reply['id'])
+        (car.root/'notes.txt').write_text('car edit');(home.root/'notes.txt').write_text('home edit')
+        car.scan();home.scan();item=car.pending()[0]
+        reply=home.receive(item['doc'],item['id'],via_ip=True);car.receive(reply['doc'],reply['id'])
+        return car,home,item
+
+    def settle(self,car,home):
+        for _ in range(6):
+            for source,target in ((car,home),(home,car)):
+                source.scan()
+                for item in source.pending():
+                    reply=target.receive(item['doc'],item['id'],via_ip=True)
+                    if reply:source.receive(reply['doc'],reply['id'],via_ip=True)
+                for item in source.receipts():target.receive(item['doc'],item['id'],via_ip=True)
+
+    def test_home_selection_is_per_role_and_concurrent_changes_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'sync-settings.json').write_text('{"files":["legacy.txt"]}')
+            tiny=home_selection(root,'tiny');save_home_selection(root,'tiny',['notes.txt'],tiny['revision'])
+            self.assertEqual(home_selection(root,'tiny')['files'],['notes.txt'])
+            self.assertEqual(home_selection(root,'duet')['files'],['legacy.txt'])
+            with self.assertRaises(ValueError):save_home_selection(root,'tiny',[],tiny['revision'])
+            with self.assertRaises(ValueError):save_home_selection(root,'tiny',['../private.txt'],home_selection(root,'tiny')['revision'])
+
+    def test_editor_uses_hash_preconditions_backups_and_preserves_crlf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            car,home=self.pair(Path(directory));(home.root/'notes.txt').write_bytes(b'original\r\n')
+            loaded=home.inspect('notes.txt');edited=home.edit('notes.txt',loaded['sha256'],'next\r\n')
+            self.assertIsNotNone(edited['pending']);self.assertEqual((home.root/'notes.txt').read_bytes(),b'next\r\n')
+            backups=list((home.state.parent/(home.state.stem+'-backups')).glob('*.bak'))
+            self.assertEqual(backups[0].read_bytes(),b'original\r\n')
+            with self.assertRaises(ValueError):home.edit('notes.txt',loaded['sha256'],'stale overwrite')
+            self.assertEqual(home.read('notes.txt'),'next\r\n')
+
+    def test_conflict_choices_converge_and_keep_originals_in_backups(self):
+        for choice,expected in [('car','car edit'),('home','home edit'),('merge','merged 🚗\r\n')]:
+            with self.subTest(choice=choice),tempfile.TemporaryDirectory() as directory:
+                car,home,item=self.conflict_pair(Path(directory));loaded=home.inspect('notes.txt')
+                self.assertEqual(loaded['conflicts'][0]['incoming'],'car edit')
+                home.resolve('notes.txt',item['id'],loaded['sha256'],choice,'merged 🚗\r\n')
+                self.settle(car,home)
+                self.assertEqual(home.read('notes.txt'),expected);self.assertEqual(car.read('notes.txt'),expected)
+                self.assertFalse(car.pending());self.assertFalse(home.pending())
+                backups=list((home.state.parent/(home.state.stem+'-backups')).glob('*.bak'))
+                self.assertIn('home edit',[path.read_bytes().decode() for path in backups])
+
+    def test_resolution_refuses_stale_browser_and_missing_verified_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            car,home,item=self.conflict_pair(Path(directory));loaded=home.inspect('notes.txt')
+            (home.root/'notes.txt').write_text('newer edit')
+            with self.assertRaises(ValueError):home.resolve('notes.txt',item['id'],loaded['sha256'],'car')
+            self.assertEqual(home.read('notes.txt'),'newer edit')
+            with home.db() as db:db.execute('UPDATE conflicts SET incoming=NULL')
+            with self.assertRaises(ValueError):home.resolve('notes.txt',item['id'],digest('newer edit'),'car')
+
+    def test_resolution_intent_recovers_after_restart_without_losing_home_choice(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);car,home,item=self.conflict_pair(root)
+            with patch.object(home,'edit',side_effect=RuntimeError('simulated process interruption')):
+                with self.assertRaises(RuntimeError):home.resolve('notes.txt',item['id'],digest('home edit'),'home')
+            self.assertEqual(home.read('notes.txt'),'car edit')
+            restarted=Files(root/'home',root/'home-state.db',Events(root/'home-events.db',KEY,destination='home'),'home','tiny',['notes.txt'])
+            restarted.scan();self.settle(car,restarted)
+            self.assertEqual(car.read('notes.txt'),'home edit');self.assertEqual(restarted.read('notes.txt'),'home edit')
+
+    def test_recovery_preserves_external_edit_and_allows_a_reviewed_new_choice(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);car,home,item=self.conflict_pair(root)
+            with patch.object(home,'edit',side_effect=RuntimeError('simulated process interruption')):
+                with self.assertRaises(RuntimeError):home.resolve('notes.txt',item['id'],digest('home edit'),'home')
+            (home.root/'notes.txt').write_text('newer external edit');home.scan()
+            view=home.inspect('notes.txt')
+            self.assertEqual(view['phase'],'resolution-changed-locally');self.assertEqual(view['recovery']['saved'],'home edit')
+            self.assertFalse(home.pending());self.assertEqual(view['source'],'newer external edit')
+            home.resolve('notes.txt',item['id'],view['sha256'],'home');self.settle(car,home)
+            self.assertEqual(car.read('notes.txt'),'newer external edit')
+
+    def test_blocked_resolution_keeps_choice_and_other_files_continue(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            car,home,item=self.conflict_pair(Path(directory));home.selected.add('other.txt')
+            (home.root/'other.txt').write_text('unrelated file')
+            with patch.object(home,'edit',side_effect=PermissionError('temporary disk permission')):
+                view=home.resolve('notes.txt',item['id'],digest('home edit'),'home');home.scan()
+            self.assertEqual(view['phase'],'resolution-pending');self.assertEqual(view['recovery']['saved'],'home edit')
+            self.assertEqual([item['doc']['name'] for item in home.pending()],['other.txt'])
+            home.scan();self.assertEqual(home.read('notes.txt'),'home edit')
+            self.assertEqual({item['doc']['name'] for item in home.pending()},{'notes.txt','other.txt'})
+
+    def test_concurrent_editors_serialize_and_do_not_overwrite_each_other(self):
+        import threading
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);car,home=self.pair(root);(home.root/'notes.txt').write_text('original')
+            other=Files(home.root,home.state,home.events,'home','tiny',['notes.txt'])
+            barrier=threading.Barrier(2);results=[]
+            def edit(files,value):
+                barrier.wait()
+                try:files.edit('notes.txt',digest('original'),value);results.append('saved')
+                except ValueError:results.append('stale')
+            threads=[threading.Thread(target=edit,args=(files,value)) for files,value in [(home,'one'),(other,'two')]]
+            for thread in threads:thread.start()
+            for thread in threads:thread.join(timeout=5)
+            self.assertEqual(sorted(results),['saved','stale']);self.assertIn(home.read('notes.txt'),('one','two'))
+
+    def test_full_backup_folder_stops_editing_without_deleting_originals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            car,home=self.pair(Path(directory));(home.root/'notes.txt').write_text('original')
+            folder=home.state.parent/(home.state.stem+'-backups');folder.mkdir()
+            for index in range(32):(folder/str(index)).write_text('preserved backup')
+            with self.assertRaises(ValueError):home.edit('notes.txt',digest('original'),'replacement')
+            self.assertEqual(home.read('notes.txt'),'original');self.assertEqual(len(list(folder.iterdir())),32)
+
+    def test_reordered_return_transfer_and_superseded_old_frames_do_not_undo_choice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            car,home,item=self.conflict_pair(Path(directory));superseded=home.pending()[0]
+            home.resolve('notes.txt',item['id'],digest('home edit'),'merge','reviewed merge')
+            # The return data can arrive before the acceptance receipt for the
+            # original car transfer, especially over delayed radio downlinks.
+            reverse=home.pending()[0];receipt=car.receive(reverse['doc'],reverse['id'],via_ip=True)
+            home.receive(receipt['doc'],receipt['id'],via_ip=True)
+            delayed=car.receive(superseded['doc'],superseded['id'],via_ip=True)
+            self.assertEqual(delayed['doc']['status'],'conflict');self.assertEqual(car.read('notes.txt'),'reviewed merge')
+            self.settle(car,home)
+            self.assertEqual(car.read('notes.txt'),'reviewed merge');self.assertEqual(home.read('notes.txt'),'reviewed merge')
+            self.assertFalse(car.pending());self.assertFalse(home.pending())
 
     def test_bidirectional_ip_keeps_same_ids_and_confirms_applied(self):
         with tempfile.TemporaryDirectory() as directory:
