@@ -26,7 +26,7 @@ class Events:
         from control.storage_policy import bounded_db
         return bounded_db(sqlite3.connect(self.path,timeout=10))
     def enqueue(self,ident,doc):
-        if len(canonical(doc))>800:raise ValueError('Catalog message exceeds radio budget')
+        if len(canonical(doc))>(1600 if doc.get('type')=='message' else 800):raise ValueError('Catalog message exceeds radio budget')
         with closing(self.db()) as db,db:
             old=db.execute('SELECT doc FROM jobs WHERE id=?',(ident,)).fetchone()
             if old and json.loads(old[0])!=doc:raise ValueError('Event identity conflicts with saved content')
@@ -75,7 +75,7 @@ class Events:
             for part in parts:result=assembler.accept(part[0])
             doc=result['payload']
             if 'received' in doc:
-                db.execute('UPDATE jobs SET done=1 WHERE id=?',(doc['received'],))
+                db.execute('UPDATE jobs SET done=1 WHERE id=? AND done=0',(doc['received'],))
             else:
                 event=doc['id'];catalog=doc['catalog']
                 if not isinstance(event,str) or len(event)>100 or not isinstance(catalog,dict) or catalog.get('type') not in ('dashcam','gps','message'):raise ValueError('Invalid catalog message')
@@ -96,7 +96,7 @@ class Events:
 
     def completed_frames(self,ident=None,raw=None):
         with closing(self.db()) as db:
-            rows=db.execute('SELECT id,doc FROM jobs WHERE done=1'+(' AND id=?' if ident else ''),() if ident is None else (ident,)).fetchall()
+            rows=db.execute('SELECT id,doc FROM jobs WHERE done IN (1,2)'+(' AND id=?' if ident else ''),() if ident is None else (ident,)).fetchall()
         for name,doc in rows:
             frames=split_message('status',1,{'catalog':json.loads(doc),'id':name},self.key)
             if raw is None or raw in frames:return frames if raw is None else [raw]

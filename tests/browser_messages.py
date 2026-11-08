@@ -16,5 +16,12 @@ with tempfile.TemporaryDirectory() as directory:
    page.goto(f'http://127.0.0.1:{http.server_port}/radio-messages');page.locator('#messageText').fill('Hello <script>never execute</script>');page.get_by_role('button',name='Queue message').click()
    expect(page.locator('#messageList')).to_contain_text('Hello <script>never execute</script>');expect(page.locator('#messageList')).to_contain_text('queued')
    page.reload();expect(page.locator('#messageList')).to_contain_text('Hello <script>never execute</script>');assert not errors,errors
+   page.locator('#messageText').fill('Draft survives reload');page.reload();expect(page.locator('#messageText')).to_have_value('Draft survives reload')
+   page.locator('#messageSearch').fill('no matching text');expect(page.locator('#messageList')).to_contain_text('No messages match');page.locator('#messageSearch').fill('')
+   page.locator('#messageText').fill('é'*121);expect(page.locator('#messageBytes')).to_have_text('242 / 240 bytes');expect(page.locator('#sendMessage')).to_be_disabled()
+   page.locator('#messageText').fill('Draft survives reload');page.get_by_role('button',name='Cancel local retries').click();expect(page.locator('#messageList')).to_contain_text('cancelled')
+   page.locator('#messageFilter').select_option('received');expect(page.locator('#messageList')).to_contain_text('No messages match');page.locator('#messageFilter').select_option('all')
+   page.route('**/api/messages',lambda route:route.abort());page.locator('#refreshMessages').click();expect(page.locator('#messageConnection')).to_contain_text('Connection unavailable');expect(page.locator('#messageList')).to_contain_text('cancelled');expect(page.locator('#messageText')).to_have_value('Draft survives reload')
+   page.set_viewport_size({'width':390,'height':844});assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
    page.screenshot(path='/tmp/car-radio-messages.png');browser.close();print('Browser messaging queue, persistence and safe text rendering passed')
  finally:http.shutdown();http.server_close();thread.join()

@@ -34,6 +34,26 @@ are rejected. Health requests return only role, uptime, local free space and
 pending-message count. There is no shell execution, GPS/OBD collection, file
 access API, vehicle control, or arbitrary remote-command feature here.
 
+The home and car pages now share a responsive interface with sent/received and
+waiting/cancelled filters, search, queue counts, a live UTF-8 byte counter, and
+readable health replies. Browser drafts survive reload and connection failures;
+credentials are never put in draft storage. Send retries use a client identity
+so a lost HTTP response does not create a second copy of the same message.
+
+Queued messages show waiting, transport progress or awaiting-receipt detail.
+These counters describe application-fragment transport attempts, not confirmed
+radio reception or a delivery-time estimate. Cancellation stops local retries
+and sends authenticated retirement notices to the relay; it cannot recall data
+already transmitted or queued at the gateway. A late receipt never changes a
+cancelled item to delivered. Delivered items cannot be recalled. CLI cancellation:
+
+```bash
+python3 -m control.messages cancel 'MESSAGE_ID_FROM_LIST'
+```
+
+Car-origin radio messages target home; home can select Tiny, Duet, Pi or laptop.
+Direct car-to-car chat is not configured by this feature.
+
 ## Delivery behavior
 
 Messages remain `queued` after modem/broker transmission. They become `delivered`

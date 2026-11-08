@@ -251,8 +251,8 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 cfg_file,_=paths(DEVICE_NAME)
                 return self.response({"device":DEVICE_NAME,"config":read_config(cfg_file)})
-        if req.path in ("/","/panel.js","/panel.css","/builder.js","/builder.css","/layout-runtime.js","/software.js"):
-            name,mime={"/":("index.html","text/html; charset=utf-8"),
+        if req.path in ("/","/panel.js","/panel.css","/builder.js","/builder.css","/layout-runtime.js","/software.js","/radio-messages.js","/radio-messages.css"):
+            name,mime={"/radio-messages.js":("radio-messages.js","text/javascript; charset=utf-8"),"/radio-messages.css":("radio-messages.css","text/css; charset=utf-8"),"/":("index.html","text/html; charset=utf-8"),
                        "/panel.js":("panel.js","text/javascript; charset=utf-8"),
                        "/panel.css":("panel.css","text/css; charset=utf-8"),
                        "/builder.js":("builder.js","text/javascript; charset=utf-8"),
@@ -354,10 +354,11 @@ class Handler(BaseHTTPRequestHandler):
             data=self.request_json()
             if not isinstance(data,dict):raise ValueError("Invalid object")
             if self.path=="/api/messages":
-                from control.messages import enqueue
+                from control.messages import enqueue,cancel
                 from control.event_transfer import Events
-                return self.response(enqueue(Events(ROOT/'radio/catalog.sqlite3',radio_key(),destination='home'),
-                                             'home',data.get('destination','tiny'),data.get('text'),data.get('action','text')))
+                events=Events(ROOT/'radio/catalog.sqlite3',radio_key(),destination='home')
+                if data.get('action')=='cancel':return self.response(cancel(events,data.get('id')))
+                return self.response(enqueue(events,'home',data.get('destination','tiny'),data.get('text'),data.get('action','text'),data.get('clientId')))
             if self.path=="/api/software/publish":
                 return self.response(software().publish(safe_device(data.get("device","car-1")),data["role"],data["path"],data["base"],data["source"]))
             if self.path=="/api/layout":

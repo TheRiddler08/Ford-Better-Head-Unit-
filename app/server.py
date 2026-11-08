@@ -270,9 +270,10 @@ class Handler(BaseHTTPRequestHandler):
                 from control.messages import local_events,listing
                 return self.send_json(listing(local_events(json.loads(FLEET_FILE.read_text()))))
             except (OSError,ValueError):return self.send_json({'error':'Application pairing required'},503)
-        if urlsplit(self.path).path in ('/radio-messages','/radio-messages.js'):
-            name='radio-messages.js' if urlsplit(self.path).path.endswith('.js') else 'radio-messages.html'
-            return self.send_bytes((WEB_DIR/name).read_bytes(),mime='text/javascript' if name.endswith('.js') else 'text/html; charset=utf-8')
+        if urlsplit(self.path).path in ('/radio-messages','/radio-messages.js','/radio-messages.css'):
+            suffix=Path(urlsplit(self.path).path).suffix
+            path=WEB_DIR/'radio-messages.html' if not suffix else WEB_DIR.parent.parent/'control/web'/('radio-messages'+suffix)
+            return self.send_bytes(path.read_bytes(),mime={'.js':'text/javascript','.css':'text/css','':'text/html; charset=utf-8'}[suffix])
         url = urlsplit(self.path)
         if url.path=="/home-assistant":
             try:ha_status=json.loads(Path('/etc/car-dashboard/home-assistant.json').read_text())
@@ -515,9 +516,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "Invalid request size"}, 413)
             incoming = json.loads(self.rfile.read(size))
             if endpoint=='/api/messages':
-                from control.messages import enqueue,local_events
+                from control.messages import enqueue,local_events,cancel
                 config=json.loads(FLEET_FILE.read_text())
-                return self.send_json(enqueue(local_events(config),config['role'],incoming.get('destination','home'),incoming.get('text'),incoming.get('action','text')))
+                events=local_events(config)
+                if incoming.get('action')=='cancel':return self.send_json(cancel(events,incoming.get('id')))
+                return self.send_json(enqueue(events,config['role'],incoming.get('destination','home'),incoming.get('text'),incoming.get('action','text'),incoming.get('clientId')))
             saved = update_prefs(PREFS_FILE, incoming)
             return self.send_json(saved)
         except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError) as exc:

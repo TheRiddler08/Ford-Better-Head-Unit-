@@ -30,11 +30,5 @@
   document.addEventListener("panel-connected",()=>status().catch(error=>notice.textContent=error.message));
   document.addEventListener("panel-device",()=>{baseline=null;status().catch(error=>notice.textContent=error.message);});
   setInterval(()=>{if(!$("editor").hidden)status().catch(()=>{});},15000);
-  async function messages(){const result=await call('/api/messages');$('radioMessageList').textContent=result.items.map(row=>`${row.source} → ${row.destination} · ${row.phase} · ${new Date(row.created*1000).toLocaleString()}\n${row.text}`).join('\n\n')||'No messages yet.';}
-  $('sendRadioMessage').onclick=async()=>{try{await call('/api/messages',{destination:$('messageDestination').value,text:$('messageText').value});$('messageText').value='';$('radioMessageNotice').textContent='Queued; awaiting recipient receipt.';await messages();}catch(error){$('radioMessageNotice').textContent=error.message;}};
-  $('requestRadioStatus').onclick=async()=>{try{await call('/api/messages',{destination:$('messageDestination').value,action:'status-request'});$('radioMessageNotice').textContent='Read-only health request queued.';await messages();}catch(error){$('radioMessageNotice').textContent=error.message;}};
-  $('refreshRadioMessages').onclick=()=>messages().catch(error=>$('radioMessageNotice').textContent=error.message);
-  document.addEventListener('panel-connected',()=>messages().catch(()=>{}));
-  setInterval(()=>{if(!$('editor').hidden)messages().catch(()=>{});},15000);
   choices();
 })();

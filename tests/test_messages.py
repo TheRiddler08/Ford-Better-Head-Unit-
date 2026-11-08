@@ -5,12 +5,47 @@ import unittest
 from unittest.mock import patch,MagicMock
 
 from control.event_transfer import Events
-from control.messages import enqueue,listing,validate,status_reply
+from control.messages import enqueue,listing,validate,status_reply,cancel
 
 KEY=bytes(range(32))
 
 
 class MessageTests(unittest.TestCase):
+    def test_retry_identity_reuses_original_and_rejects_different_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            events=Events(Path(directory)/'events.db',KEY)
+            first=enqueue(events,'tiny','home','One message',request_id='a'*32)
+            again=enqueue(events,'tiny','home','One message',request_id='a'*32)
+            self.assertEqual(first,again);self.assertEqual(len(listing(events)['items']),1)
+            with self.assertRaises(ValueError):enqueue(events,'tiny','home','Different',request_id='a'*32)
+            with self.assertRaises(ValueError):enqueue(events,'tiny','home','Bad',request_id='../bad')
+
+    def test_progress_is_transport_attempts_and_cancel_stays_cancelled_after_late_ack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);car=Events(root/'car.db',KEY,destination='tiny');home=Events(root/'home.db',KEY,destination='home')
+            item=enqueue(car,'tiny','home','Queued for delivery')
+            self.assertEqual(listing(car)['items'][0]['progress']['state'],'waiting')
+            raw=car.outgoing();home.receive(raw);car.sent(raw)
+            self.assertEqual(listing(car)['items'][0]['progress']['state'],'sending')
+            self.drain(car,home)
+            while listing(car)['items'][0]['progress']['state']!='awaiting-receipt':
+                raw=car.outgoing();car.sent(raw)
+            self.assertEqual(listing(car)['items'][0]['phase'],'queued')
+            cancel(car,item['id']);self.assertIsNone(car.outgoing());self.assertTrue(car.completed_frames(item['id']))
+            self.drain(home,car,ack=True)
+            self.assertEqual(listing(car)['items'][0]['phase'],'cancelled')
+            self.assertEqual(listing(car)['counts']['cancelled'],1)
+            with self.assertRaises(ValueError):cancel(car,'unknown')
+
+    def test_delivered_cannot_be_recalled_and_unicode_byte_limit_is_consistent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);car=Events(root/'car.db',KEY);home=Events(root/'home.db',KEY,destination='home')
+            item=enqueue(car,'tiny','home','🚗'*60)
+            self.drain(car,home);self.drain(home,car,ack=True)
+            self.assertEqual(listing(car)['items'][0]['phase'],'delivered')
+            with self.assertRaisesRegex(ValueError,'cannot be recalled'):cancel(car,item['id'])
+            with self.assertRaises(ValueError):enqueue(car,'tiny','home','🚗'*61)
+
     def test_only_fixed_read_only_status_action_and_idempotent_reply(self):
         with tempfile.TemporaryDirectory() as directory:
             events=Events(Path(directory)/'events.db',KEY,destination='tiny')
