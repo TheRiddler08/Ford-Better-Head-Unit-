@@ -27,6 +27,23 @@ SLOW = {"FUEL_LEVEL": 40, "INTAKE_TEMP": 40,
         "SHORT_FUEL_TRIM_1": 20, "LONG_FUEL_TRIM_1": 40}
 STOP = False
 
+
+def peripheral_conflict(port,radio_settings='/etc/car-dashboard/update-link.json',by_id='/dev/serial/by-id'):
+    """Never send ELM initialization to an explicitly configured radio/GNSS port."""
+    candidate=Path(port)
+    if not candidate.exists():return None
+    try:
+        path=Path(radio_settings)
+        options=json.loads(path.read_text()) if path.is_file() and path.stat().st_size<=65536 else {}
+        if not isinstance(options,dict):return 'Peripheral configuration is invalid; check the explicit OBD serial selection'
+        radio=options.get('radio_device')
+        if isinstance(radio,str) and Path(radio).exists() and candidate.resolve()==Path(radio).resolve():
+            return 'OBD serial selection is the configured LoRaWAN radio; select the actual OBD adapter'
+        for gps in Path(by_id).glob('*u-blox*'):
+            if gps.exists() and candidate.resolve()==gps.resolve():return 'OBD serial selection is a u-blox GPS receiver; select the actual OBD adapter'
+    except (OSError,ValueError,TypeError):return 'Peripheral identity cannot be verified; check the explicit OBD serial selection'
+    return None
+
 def timestamp():
     return int(time.time())
 
@@ -252,7 +269,10 @@ def main(argv=None):
             while not STOP:
                 connection = None
                 try:
-                    if not Path(args.port).exists():
+                    conflict=peripheral_conflict(args.port)
+                    if conflict:
+                        record_event(db,'peripheral_conflict',conflict)
+                    elif not Path(args.port).exists():
                         record_event(db, "ecu_offline", f"Adapter missing: {args.port}")
                     else:
                         connection = obd.OBD(portstr=args.port, fast=False,

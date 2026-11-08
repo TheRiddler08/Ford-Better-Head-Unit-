@@ -10,9 +10,34 @@ from pathlib import Path
 import signal
 import socket
 import sqlite3
+import tempfile
 import time
 
 STOP = False
+
+
+class StatusTracker:
+    def __init__(self,path):
+        self.path=Path(path);self.data={'gpsMode':None,'lastMessageAt':None,'lastFixAt':None,'satellitesUsed':None,'satellitesVisible':None};self.last_write=0
+    def observe(self,message,received):
+        if not isinstance(message,dict):return
+        self.data['lastMessageAt']=received
+        if message.get('class')=='TPV':
+            mode=message.get('mode');self.data['gpsMode']=mode if type(mode) is int and 0<=mode<=3 else None
+            if parse_fix(message,received):self.data['lastFixAt']=received
+        if message.get('class')=='SKY':
+            for source,target in [('uSat','satellitesUsed'),('nSat','satellitesVisible')]:
+                value=message.get(source)
+                if type(value) is int and 0<=value<=256:self.data[target]=value
+    def publish(self,connected,force=False,now=None):
+        now=time.time() if now is None else now
+        if not force and now-self.last_write<5:return
+        fresh=self.data['lastFixAt'] is not None and 0<=now-self.data['lastFixAt']<=15 and self.data['gpsMode'] in (2,3)
+        value=dict(self.data,phase='disconnected' if not connected else 'recording' if fresh else 'waiting-fix',updated=now)
+        self.path.parent.mkdir(parents=True,exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode='w',dir=self.path.parent,delete=False) as output:
+            json.dump(value,output);output.flush();os.fsync(output.fileno());pending=Path(output.name)
+        pending.chmod(0o600);os.replace(pending,self.path);self.last_write=now
 
 def distance(a, b):
     lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
@@ -137,7 +162,7 @@ def end_session(db, session, reason, received=None):
                            (time.time() if received is None else received,reason,session))
 
 
-def ingest_chunk(db, session, buffer, chunk, received=None):
+def ingest_chunk(db, session, buffer, chunk, received=None,observer=None):
     """Durably retain exact gpsd bytes, including malformed/partial JSON."""
     received=time.time() if received is None else received
     with db:
@@ -148,7 +173,8 @@ def ingest_chunk(db, session, buffer, chunk, received=None):
             line,buffer=buffer.split(b'\n',1)
             try:
                 if len(line)>65536:raise ValueError('Oversized gpsd line')
-                record_message(db,json.loads(line),received,commit=False)
+                message=json.loads(line);record_message(db,message,received,commit=False)
+                if observer:observer(message,received)
             except (ValueError,TypeError,UnicodeError):
                 db.execute('INSERT INTO gps_events(ts,name,detail) VALUES(?,?,?)',
                            (received,'invalid_message','Malformed or oversized gpsd line; bytes retained'))
@@ -176,6 +202,7 @@ def main():
         STOP=True
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     db=open_db(args.db)
+    tracker=StatusTracker(Path(args.db).expanduser().with_suffix('.status.json'))
     # A second process must not duplicate the history.
     import fcntl
     lock=Path(str(Path(args.db).expanduser())+'.lock').open('a')
@@ -189,20 +216,23 @@ def main():
                     sock.sendall(b'?WATCH={"enable":true,"json":true};\n')
                     event(db,'connected','Local gpsd watch established')
                     session=start_session(db)
+                    tracker.data['gpsMode']=None;tracker.publish(True,force=True)
                     buffer=b''
                     while not STOP:
                         try:chunk=sock.recv(8192)
-                        except socket.timeout:continue
+                        except socket.timeout:tracker.publish(True);continue
                         if not chunk:raise OSError('gpsd closed connection')
-                        buffer=ingest_chunk(db,session,buffer,chunk)
+                        buffer=ingest_chunk(db,session,buffer,chunk,observer=tracker.observe);tracker.publish(True)
             except (OSError,ValueError) as exc:
                 end_session(db,session,'disconnected');session=None
                 event(db,'disconnected',str(exc))
+                tracker.publish(False,force=True)
                 for _ in range(10):
                     if STOP:break
                     time.sleep(.5)
     finally:
         end_session(db,session,'stopped')
+        tracker.publish(False,force=True)
         db.close();lock.close()
 
 
