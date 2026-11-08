@@ -8,7 +8,11 @@ from unittest.mock import patch, MagicMock
 ROOT=Path(__file__).resolve().parents[1]
 # Load just the proxy definitions so these tests need no installed HA runtime.
 import ast, asyncio
-from aiohttp import ClientError, ClientTimeout, web
+try:
+    from aiohttp import ClientError, ClientTimeout, web
+except ModuleNotFoundError as exc:
+    if exc.name!='aiohttp':raise
+    raise unittest.SkipTest('Optional HA HTTP tests require aiohttp; exercised in CI and the HA container') from exc
 tile=types.ModuleType('car_tile_test')
 tile.__dict__.update(asyncio=asyncio,ClientError=ClientError,ClientTimeout=ClientTimeout,web=web,HomeAssistantView=type('HomeAssistantView',(),{}))
 source=ast.parse((ROOT/'home_assistant/custom_components/car_console/__init__.py').read_text())

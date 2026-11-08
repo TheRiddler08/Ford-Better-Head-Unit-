@@ -33,7 +33,11 @@ def main():
         config=Path('/etc/car-dashboard/update-link.json')
         options=json.loads(config.read_text()) if config.exists() else {}
         stamp=config.stat().st_mtime_ns if config.exists() else 0
-        command=options.get('radio_adapter')
+        try:
+            from control.rak3172 import adapter_command
+            command=adapter_command(options)
+        except ValueError:
+            atomic(status,b'{"phase":"invalid-adapter-config"}');time.sleep(5);continue
         keypath=Path(fleet['home'])/'.config/car-dashboard/update-link.key'
         if not command or not keypath.exists():
             atomic(status,json.dumps({'phase':'unconfigured','detail':'Radio model/adapter and link credentials required'}).encode());time.sleep(5);continue
@@ -45,7 +49,7 @@ def main():
             from control.radio_crypto import RadioBox
             cipher=RadioBox(Path(fleet['home'])/'.config/car-dashboard/radio-private.key',
                             Path(fleet['home'])/'.config/car-dashboard/radio-home.pub',
-                            state/'sealed-radio.sqlite3',b'U',int(options.get('max_app_bytes',46)))
+                            state/'sealed-radio.sqlite3',b'U',int(options.get('max_app_bytes',11 if options.get('radio_model')=='RAK3172' else 46)))
             if not cipher.peer.exists():raise ValueError('Pinned home encryption key required')
             with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as receiver,socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sender:
                 receiver.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);receiver.bind(('',PORT))

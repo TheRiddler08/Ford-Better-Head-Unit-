@@ -1,5 +1,10 @@
 # Current update path
 
+See [LoRaWAN feature and hardware test tracker](LORAWAN_TESTING.md) for the
+confirmed RAK7266S/RAK3172 commissioning results, current serial adapter, and
+deferred automatic GPS reporting. The legacy notes below predate that hardware
+commissioning; they are not the current test status.
+
 Use [resumable signed updates](RESUMABLE_UPDATES.md) and `bash install.sh home` for current automatic service installation. The older protocol notes below describe the legacy settings/patch interfaces; native modem/network provisioning is still hardware-dependent.
 
 # Ford Better Head Unit — home server control and LoRaWAN

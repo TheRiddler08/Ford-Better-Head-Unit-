@@ -3,7 +3,11 @@ import ast,asyncio,copy,json,math,re,time,types,unittest,sqlite3,tempfile
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch,MagicMock
-from aiohttp import ClientError,ClientTimeout,web
+try:
+    from aiohttp import ClientError,ClientTimeout,web
+except ModuleNotFoundError as exc:
+    if exc.name!='aiohttp':raise
+    raise unittest.SkipTest('Optional HA HTTP tests require aiohttp; exercised in CI and the HA container') from exc
 from app.server import mbtiles_tile
 
 ROOT=Path(__file__).resolve().parents[1]
