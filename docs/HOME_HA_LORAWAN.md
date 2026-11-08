@@ -111,6 +111,12 @@ is reachable right now.
 
 ## Updates, syncing and limits
 
+The home panel now has [per-transfer sender controls](TRANSFER_CONTROLS.md):
+pause/resume, IP-only policy, priority, receipt-preserving retry, a paginated
+inspector and shared radio-budget visibility. Home HA also exposes paused
+transfer counts. Successful IP exchanges hold duplicate source/file radio
+downlinks for that role for 45 seconds, then permit automatic fallback again.
+
 Existing small approved UI/recorder/Duet source changes continue to use the
 same signed manifest, transfer ID, content hashes, durable chunks and receipts
 across IP and LoRaWAN. The home bridge now shares downlink scheduling between

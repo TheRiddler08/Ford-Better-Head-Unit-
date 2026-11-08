@@ -40,6 +40,7 @@
       const result=await call("/api/software/publish",{device:$("device").value,role:role.value,path:baseline.path,base:baseline.base,source:source.value});
       if(result.phase==="already-current"){notice.textContent="No changes to send; this copy is already current.";return;}
       notice.textContent=`Signed ${result.bytes}-byte delta queued. Reception can continue across Wi-Fi/radio interruptions; installation is tracked separately.`;
+      document.dispatchEvent(new Event('software-published'));
       baseline=null;await status();
     }catch(error){notice.textContent=error.message;}
   });

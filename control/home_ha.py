@@ -40,7 +40,7 @@ def discovery(car,role):
         result['homeassistant/sensor/'+key+'/config']['state_class']='measurement'
         classes={'speed':'speed','coolant':'temperature','intake':'temperature','voltage':'voltage','uptime':'duration','free_space':'data_size'}
         if metric in classes:result['homeassistant/sensor/'+key+'/config']['device_class']=classes[metric]
-    for metric,label in (('pending','Pending updates'),('failed','Failed updates'),('phase','Update delivery state'),('transport','Last update transport'),('progress','Update fragments received')):
+    for metric,label in (('pending','Pending updates'),('paused','Paused updates'),('failed','Failed updates'),('phase','Update delivery state'),('transport','Last update transport'),('progress','Update fragments received')):
         key=ident+'_updates_'+metric
         result['homeassistant/sensor/'+key+'/config']={'name':label,'unique_id':key,'device':device,
           'state_topic':base+'/updates','value_template':"{{ value_json."+metric+" }}",
@@ -98,10 +98,11 @@ def journal_states(journal):
         for role in ROLES:
             rows=db.execute("SELECT phase,COUNT(*) FROM jobs WHERE direction='out' AND json_extract(doc,'$.role')=? GROUP BY phase",(role,)).fetchall()
             totals=dict(rows)
-            row=db.execute("SELECT id,phase FROM jobs WHERE direction='out' AND json_extract(doc,'$.role')=? ORDER BY CASE WHEN phase IN ('applied','failed') THEN 1 ELSE 0 END,updated DESC LIMIT 1",(role,)).fetchone()
+            row=db.execute("SELECT j.id,j.phase,d.paused FROM jobs j LEFT JOIN delivery d ON j.id=d.id WHERE direction='out' AND json_extract(doc,'$.role')=? ORDER BY CASE WHEN phase IN ('applied','failed') THEN 1 ELSE 0 END,COALESCE(d.paused,0),COALESCE(d.priority,0) DESC,j.updated DESC LIMIT 1",(role,)).fetchone()
             values=[]
             if row:
-                ident,phase=row
+                ident,phase,paused=row
+                if paused and phase not in ('applied','failed'):phase='paused'
                 received=db.execute('SELECT COUNT(*) FROM receipts WHERE id=?',(ident,)).fetchone()[0]
                 total=db.execute('SELECT COUNT(*) FROM parts WHERE id=?',(ident,)).fetchone()[0]
                 transport=(db.execute('SELECT transport FROM events WHERE id=? ORDER BY ts DESC LIMIT 1',(ident[:16],)).fetchone() or ['none'])[0]
@@ -109,6 +110,7 @@ def journal_states(journal):
             state=update_states(values)[role]
             state['pending']=sum(count for phase,count in totals.items() if phase not in ('applied','failed'))
             state['failed']=totals.get('failed',0);states[role]=state
+            state['paused']=db.execute("SELECT COUNT(*) FROM jobs j JOIN delivery d ON j.id=d.id WHERE j.direction='out' AND j.phase NOT IN ('applied','failed') AND d.paused=1 AND json_extract(j.doc,'$.role')=?",(role,)).fetchone()[0]
     return states
 
 

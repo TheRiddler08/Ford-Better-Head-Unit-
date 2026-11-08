@@ -251,13 +251,14 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 cfg_file,_=paths(DEVICE_NAME)
                 return self.response({"device":DEVICE_NAME,"config":read_config(cfg_file)})
-        if req.path in ("/","/panel.js","/panel.css","/builder.js","/builder.css","/layout-runtime.js","/software.js","/sync.js","/radio-messages.js","/radio-messages.css"):
+        if req.path in ("/","/panel.js","/panel.css","/builder.js","/builder.css","/layout-runtime.js","/software.js","/sync.js","/transfers.js","/radio-messages.js","/radio-messages.css"):
             name,mime={"/radio-messages.js":("radio-messages.js","text/javascript; charset=utf-8"),"/radio-messages.css":("radio-messages.css","text/css; charset=utf-8"),"/":("index.html","text/html; charset=utf-8"),
                        "/panel.js":("panel.js","text/javascript; charset=utf-8"),
                        "/panel.css":("panel.css","text/css; charset=utf-8"),
                        "/builder.js":("builder.js","text/javascript; charset=utf-8"),
                        "/software.js":("software.js","text/javascript; charset=utf-8"),
                        "/sync.js":("sync.js","text/javascript; charset=utf-8"),
+                       "/transfers.js":("transfers.js","text/javascript; charset=utf-8"),
                        "/layout-runtime.js":("layout-runtime.js","text/javascript; charset=utf-8"),
                        "/builder.css":("builder.css","text/css; charset=utf-8")}[req.path]
             return self.response((UI/name).read_bytes(),mime=mime)
@@ -284,6 +285,11 @@ class Handler(BaseHTTPRequestHandler):
             if req.path=="/api/software/source":
                 query=parse_qs(req.query)
                 return self.response(software().source(name,query.get("role",["tiny"])[0],query.get("path",[""])[0]))
+            if req.path in ('/api/software/transfers','/api/software/transfer'):
+                from control.transfer_status import transfers
+                query=parse_qs(req.query);role=query.get('role',['all'])[0];before=query.get('before',[None])[0]
+                return self.response(transfers(software().journal,name,None if role=='all' else role,query.get('state',['active'])[0],
+                    int(before) if before is not None else None,query.get('id',[None])[0] if req.path.endswith('/transfer') else None))
             if req.path in ('/api/sync','/api/sync/file'):
                 from control.file_sync import home_files,home_selection
                 query=parse_qs(req.query);role=query.get('role',['tiny'])[0]
@@ -356,6 +362,7 @@ class Handler(BaseHTTPRequestHandler):
                     result=files.receive_available(item['doc'],item['id'],via_ip=True)
                     if result:results.append(result)
                 files.scan()
+                service.journal.note_ip(DEVICE_NAME,role)
                 return self.response({"frames":service.outgoing(DEVICE_NAME,role),'fileResults':results,'fileObjects':files.pending(),'fileReceiptsAccepted':accepted})
             except (KeyError,TypeError,ValueError,OSError) as exc:return self.fail(exc)
         if self.path=="/api/device/layout-ack":
@@ -399,6 +406,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.response(enqueue(events,'home',data.get('destination','tiny'),data.get('text'),data.get('action','text'),data.get('clientId')))
             if self.path=="/api/software/publish":
                 return self.response(software().publish(safe_device(data.get("device","car-1")),data["role"],data["path"],data["base"],data["source"]))
+            if self.path=="/api/software/transfer":
+                return self.response(software().delivery(safe_device(data.get('device','car-1')),data['id'],data['action'],data['revision'],data.get('value')))
             if self.path in ('/api/sync','/api/sync/file'):
                 from control.file_sync import home_files,save_home_selection
                 role=data.get('role','tiny')

@@ -61,12 +61,13 @@ class Bridge:
         diagnostic=self.diagnostic().outgoing()
         event=self.events().outgoing(ack=True) if (ROOT/'radio/catalog.sqlite3').exists() else None
         text_frame=self.events().outgoing(kinds=['message']) if (ROOT/'radio/catalog.sqlite3').exists() else None
-        file_frame=self.events().outgoing(kinds=['file','file-receipt']) if (ROOT/'radio/catalog.sqlite3').exists() else None
+        ip_roles=[role for role in ('tiny','duet','pi','laptop') if self.software.journal.ip_recent(NAME,role)] if (ROOT/'radio/catalog.sqlite3').exists() else []
+        file_frame=self.events().outgoing(kinds=['file','file-receipt'],exclude_destinations=ip_roles) if (ROOT/'radio/catalog.sqlite3').exists() else None
         paused=(ROOT/'radio/update-delivery-paused').exists()
         item=None if paused else export_next(NAME)
         modern=None
         if not paused:
-            frames=self.software.outgoing(NAME,limit=1,mark=False)
+            frames=self.software.outgoing(NAME,limit=1,mark=False,transport='lorawan')
             if frames:modern=bytes.fromhex(frames[0])
         candidates=[(kind,raw) for kind,raw in (
             ('message',text_frame),('file',file_frame),('modern',modern),

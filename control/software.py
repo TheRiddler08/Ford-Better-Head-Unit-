@@ -79,21 +79,50 @@ class Software:
                        'path':path,'base':base,'target':delta['target'],'sha256':digest(payload),'size':len(payload),'chunk':int(os.getenv('CAR_UPDATE_CHUNK_BYTES','20'))},self.private)
         ident=self.journal.outgoing(document,payload,self.public)
         return {'id':ident,'bytes':len(payload),'frames':(len(payload)+document['chunk']-1)//document['chunk'],'phase':'queued'}
-    def outgoing(self,device,role=None,limit=8,mark=True):
+    def outgoing(self,device,role=None,limit=8,mark=True,transport='ip'):
+        if transport not in ('ip','lorawan'):raise ValueError('Invalid update transport')
         result=[]
         with self.journal.db() as db:
-            rows=db.execute("SELECT id,doc FROM jobs WHERE direction='out' AND phase NOT IN ('applied','failed') ORDER BY updated").fetchall()
+            rows=db.execute("SELECT j.id,j.doc FROM jobs j LEFT JOIN delivery d ON j.id=d.id WHERE direction='out' AND phase NOT IN ('applied','failed') ORDER BY COALESCE(d.priority,0) DESC,j.updated").fetchall()
         for ident,doc in rows:
             document=json.loads(doc)
             if document['device']!=device or role and document['role']!=role:continue
+            if transport=='lorawan' and self.journal.ip_recent(device,document['role']):continue
             while len(result)<limit:
-                frame=self.journal.next(ident,self.key())
+                frame=self.journal.next(ident,self.key(),transport=transport)
                 if frame is None:break
                 result.append(frame.hex())
-                if mark:self.journal.mark_sent(frame,self.key(),"ip")
+                if mark:self.journal.mark_sent(frame,self.key(),transport)
                 else:break
             if len(result)>=limit:break
         return result
+
+    def delivery(self,device,ident,action,revision,value=None):
+        """Change only local scheduling; preserve descriptor, identity and ACKs."""
+        if not isinstance(ident,str) or len(ident)!=64 or any(c not in '0123456789abcdef' for c in ident):raise ValueError('Invalid transfer ID')
+        if type(revision) is not int or revision<0:raise ValueError('Load the current transfer revision first')
+        with self.journal.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute("SELECT doc,phase FROM jobs WHERE id=? AND direction='out'",(ident,)).fetchone()
+            if not row or json.loads(row[0]).get('device')!=device:raise ValueError('Unknown outgoing transfer for this car')
+            if row[1] in ('applied','failed'):raise ValueError('Transfer already finished; load the latest device copy for a new change')
+            current=db.execute('SELECT paused,policy,priority,revision FROM delivery WHERE id=?',(ident,)).fetchone() or (0,'auto',0,0)
+            paused,policy,priority,version=current
+            if revision!=version:raise ValueError('Transfer controls changed; refresh before trying again')
+            if action=='pause':paused=1
+            elif action=='resume':paused=0
+            elif action=='policy' and value in ('auto','ip-only'):policy=value
+            elif action=='priority' and value in ('normal','high'):priority=int(value=='high')
+            elif action=='retry':
+                # Re-solicit an applied receipt once all data is acknowledged.
+                # Do not erase receipts, reset signatures or bypass radio quotas.
+                db.execute('''UPDATE parts SET sent=0 WHERE id=? AND (
+                    NOT EXISTS(SELECT 1 FROM receipts r WHERE r.id=parts.id AND r.kind=parts.kind AND r.idx=parts.idx)
+                    OR (kind=1 AND idx=(SELECT MAX(idx) FROM parts WHERE id=? AND kind=1)))''',(ident,ident))
+            else:raise ValueError('Unknown delivery action or value')
+            db.execute('INSERT INTO delivery VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET paused=excluded.paused,policy=excluded.policy,priority=excluded.priority,revision=excluded.revision,updated=excluded.updated',
+                       (ident,paused,policy,priority,version+1,time.time()))
+        return {'id':ident,'paused':bool(paused),'policy':policy,'priority':'high' if priority else 'normal','revision':version+1}
     def receipts(self,device,role,frames,transport="ip"):
         if not isinstance(frames,list) or len(frames)>256:raise ValueError('Too many receipts')
         for frame in frames:

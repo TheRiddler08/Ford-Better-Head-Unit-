@@ -34,7 +34,7 @@ class Events:
             if doc.get('type')=='message' and not old and db.execute("SELECT COUNT(*) FROM jobs WHERE done=0 AND json_extract(doc,'$.type')='message'").fetchone()[0]>=100:
                 raise ValueError('Message queue full; wait for delivery')
             db.execute('INSERT OR IGNORE INTO jobs(id,doc) VALUES(?,?)',(ident,json.dumps(doc)))
-    def outgoing(self,ack=False,kinds=None):
+    def outgoing(self,ack=False,kinds=None,exclude_destinations=None):
         with closing(self.db()) as db:
             if ack:
                 row=db.execute('SELECT id,frames,cursor FROM replies ORDER BY id LIMIT 1').fetchone()
@@ -43,6 +43,8 @@ class Events:
             clause='';args=[]
             if kinds:
                 clause=' AND json_extract(doc,\'$.type\') IN ('+','.join('?' for _ in kinds)+')';args=list(kinds)
+            if exclude_destinations:
+                clause+=' AND json_extract(doc,\'$.destination\') NOT IN ('+','.join('?' for _ in exclude_destinations)+')';args+=list(exclude_destinations)
             row=db.execute("SELECT id,doc,cursor FROM jobs WHERE done=0"+clause+" ORDER BY CASE WHEN json_extract(doc,'$.type')='message' THEN 0 ELSE 1 END,cursor,id LIMIT 1",args).fetchone()
         if not row:return None
         frames=split_message('status',1,{'catalog':json.loads(row[1]),'id':row[0]},self.key)

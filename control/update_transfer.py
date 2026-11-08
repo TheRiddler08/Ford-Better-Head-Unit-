@@ -90,6 +90,8 @@ class Journal:
             CREATE TABLE IF NOT EXISTS budgets(name TEXT,day INTEGER,count INTEGER,last REAL,PRIMARY KEY(name,day));
             CREATE TABLE IF NOT EXISTS events(id TEXT,type TEXT,transport TEXT,idx INTEGER,ts REAL);
             CREATE INDEX IF NOT EXISTS update_event_identity ON events(id,ts);
+            CREATE TABLE IF NOT EXISTS delivery(id TEXT PRIMARY KEY,paused INTEGER NOT NULL DEFAULT 0,policy TEXT NOT NULL DEFAULT 'auto',priority INTEGER NOT NULL DEFAULT 0,revision INTEGER NOT NULL DEFAULT 0,updated REAL);
+            CREATE TABLE IF NOT EXISTS links(device TEXT,role TEXT,ip_seen REAL,PRIMARY KEY(device,role));
             ''')
         self.path.chmod(0o600)
     @contextmanager
@@ -110,10 +112,13 @@ class Journal:
                 count=math.ceil(len(data)/size)
                 for index in range(count):db.execute('INSERT OR IGNORE INTO parts(id,kind,idx,count,data) VALUES(?,?,?,?,?)',(ident,kind,index,count,data[index*size:(index+1)*size]))
         return ident
-    def next(self,ident,key,retry_after=60):
+    def next(self,ident,key,retry_after=60,transport='ip'):
+        if transport not in ('ip','lorawan'):raise ValueError('Invalid update transport')
         with self.db() as db:
             phase=db.execute('SELECT phase FROM jobs WHERE id=? AND direction=?',(ident,'out')).fetchone()
             if not phase or phase[0] in ('applied','failed'):return None
+            delivery=db.execute('SELECT paused,policy FROM delivery WHERE id=?',(ident,)).fetchone()
+            if delivery and (delivery[0] or transport=='lorawan' and delivery[1]=='ip-only'):return None
             row=db.execute('''SELECT p.kind,p.idx,p.count,p.data FROM parts p LEFT JOIN receipts r ON p.id=r.id AND p.kind=r.kind AND p.idx=r.idx
                 WHERE p.id=? AND r.id IS NULL AND p.sent<=? ORDER BY p.kind,p.sent,p.idx LIMIT 1''',(ident,time.time()-retry_after)).fetchone()
             if not row:
@@ -232,3 +237,12 @@ class Journal:
             if row and (row[0]>=limit or time.time()-row[1]<spacing):return False
             db.execute('INSERT OR REPLACE INTO budgets VALUES(?,?,?,?)',(name,day,(row[0]+1) if row else 1,time.time()))
             return True
+
+    def note_ip(self,device,role,now=None):
+        now=time.time() if now is None else now
+        with self.db() as db:db.execute('INSERT INTO links VALUES(?,?,?) ON CONFLICT(device,role) DO UPDATE SET ip_seen=excluded.ip_seen',(device,role,now))
+
+    def ip_recent(self,device,role,now=None):
+        now=time.time() if now is None else now
+        with self.db() as db:row=db.execute('SELECT ip_seen FROM links WHERE device=? AND role=?',(device,role)).fetchone()
+        return bool(row and 0<=now-row[0]<=45)
