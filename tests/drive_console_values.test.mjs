@@ -62,12 +62,7 @@ test('map and GPS status share the tracker position, regardless of missing or di
   assert.equal(gpsPosition({connected:true,states:{}}),null);
 });
 
-test('map projection round trips USA coordinates without a 180-degree offset',async()=>{
-  const {project,unproject,defaultNavigation}=await import('../home_assistant/drive_console.js');
-  for(const [lat,lon] of [[39.5,-98.35],[39.54,-78.81],[21.3,-157.8],[64,-149],[52.9,173.2]]){
-    const p=project(lat,lon,13),back=unproject(p.x,p.y,13);
-    assert.ok(Math.abs(lat-back.lat)<1e-8);
-    assert.ok(Math.abs(lon-back.lon)<1e-8);
-  }
+test('navigation defaults do not share mutable state',async()=>{
+  const {defaultNavigation}=await import('../home_assistant/drive_console.js');
   const one=defaultNavigation(),two=defaultNavigation();one.markers.push({lat:1,lon:2});assert.equal(two.markers.length,0);
 });

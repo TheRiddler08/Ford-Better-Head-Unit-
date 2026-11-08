@@ -51,6 +51,17 @@ class Diagnostic:
             self.save(doc)
         return self.outgoing()
 
+    def restart(self):
+        previous=self.read()
+        if previous.get('phase')=='running':
+            outgoing=self.outgoing()
+            if outgoing is not None:return outgoing
+            previous=self.read()
+        if 0<=time.time()-previous.get('started',0)<300:raise ValueError('Wait five minutes between radio tests')
+        self.save({'phase':'running','nonce':secrets.token_hex(16),'started':time.time(),'expires':time.time()+3*3600,
+                   'message':'Encrypted radio check running; GPS reporting remains deferred.'})
+        return self.outgoing()
+
     def outgoing(self):
         doc = self.read()
         if doc.get('phase') != 'running':

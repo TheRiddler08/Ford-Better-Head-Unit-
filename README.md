@@ -1,5 +1,19 @@
 # Drive Console · Car Head Unit
 
+## Current Car Assistant interface
+
+The native **Drive Console** Home Assistant dashboard now includes the car's
+navigation, media, vehicle readings, diagnostics, updates, device network/power,
+MooseFS storage, G980H recording library, radio/messages, selected-file sync,
+complete recorded-history exports, preferences/schedules and authenticated home
+control tools. Existing editable pages, cards and owner accounts are preserved.
+See the [complete HA feature map and hardware limits](docs/HA_FEATURES.md).
+
+Use `bash install.sh tiny`, `duet`, `pi`, `laptop` or `home` for normal role setup.
+Paired car updates are carried by the Duet, with idle checks at least every five
+minutes when online. The older standalone dashboard remains available for
+recovery; the sections below also document its original development interface.
+
 An offline-capable, read-only web interface for the existing Ubuntu/Python OBD2 recorder. Designed for a Lenovo ThinkCentre M910q with a 2016 Ford and a CH340 USB ELM327 adapter, but it only reads SQLite and can also run without an adapter attached.
 
 ![Cockpit](https://img.shields.io/badge/touchscreen_UI-v2.0-55e6c1) ![Dependencies](https://img.shields.io/badge/python-stdlib_only-blue) ![Privacy](https://img.shields.io/badge/data-local_only-lightgrey)
@@ -41,7 +55,7 @@ For touchscreens use the fullscreen kiosk provided by `deploy/install.sh`; exist
 - Inferred driving sessions grouped by > 5 minute telemetry gaps, peak speed, RPM, sampled-speed-based distance estimates
 - Deep diagnostic snapshots, recorder events and possible anomalous fuel-zero readings
 - Read-only SQLite `mode=ro` with `PRAGMA query_only=ON`; **no** ELM327 serial access, writes, code clearing, Ford module control, VIN uploads or vehicle configuration changes
-- Native Linux systemd service and opt-in 15-minute GitHub fast-forward auto-updates with tests, health checks and rollback
+- Native Linux systemd service and opt-in four-minute GitHub fast-forward auto-updates with tests, health checks and rollback (standalone installations; paired car updates use the Duet)
 
 ### Does not yet do
 
@@ -147,7 +161,7 @@ bash deploy/enable-updates.sh
 
 On explicit `yes` confirmation, this installs:
 
-- `car-dashboard-update.timer`: every 15 minutes, up to one-minute randomized delay, catch-up after power off
+- `car-dashboard-update.timer`: every four minutes, up to 15 seconds randomized delay, catch-up after power off
 - `car-dashboard-update.service`: network-dependent one-shot update
 - `/usr/local/sbin/car-dashboard-update`: a root-owned stable helper that updates the checked-out branch **as your ordinary Linux user** and restarts only `car-dashboard.service`
 

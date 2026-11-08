@@ -38,7 +38,7 @@ class ClassicDashboardTests(unittest.TestCase):
         config=state['lovelace.drive_console']['config']
         self.assertEqual(config['views'][0]['type'],'custom:drive-console-layout')
         self.assertEqual(len(config['views'][0]['cards']),7)
-        self.assertEqual([view['path'] for view in config['views']],['drive','navigation','media','vehicle','health','updates','settings'])
+        self.assertEqual([view['path'] for view in config['views']],['drive','navigation','media','vehicle','health','updates','settings','devices','storage','recordings','radio','reports','home-control'])
         self.assertTrue(all(card['type']=='custom:drive-console-widget' for card in config['views'][0]['cards']))
 
     def test_module_updates_preserve_dashboard_edits_and_deliberate_deletion(self):
@@ -78,6 +78,24 @@ class ClassicDashboardTests(unittest.TestCase):
         navigation=config['views'][1]['cards']
         next(card for card in navigation if card['widget']=='map')['title']='Navigation only'
         self.assertNotIn('title',next(card for card in home if card['widget']=='map'))
+
+    def test_feature_upgrade_preserves_edited_tabs_and_never_recreates_later_deletions(self):
+        health={'path':'health','title':'My diagnostics','cards':[{'type':'markdown','content':'Owner edit'}]}
+        old={'config':{'views':[health,{'path':'drive','cards':[]}]}}
+        state={'lovelace_dashboards':{'items':[{'id':'drive_console','url_path':'drive-console'}]},
+               'lovelace.drive_console':copy.deepcopy(old),
+               'car_console_classic_migration':{'completed':True,'dashboardSchema':2,'resource':'/local/drive-console.js?v=old'}}
+        self.migrate(state);views=state['lovelace.drive_console']['config']['views']
+        self.assertEqual(views[0]['cards'][0],health['cards'][0]);self.assertEqual(views[0]['title'],'My diagnostics')
+        self.assertEqual(state['car_console_features_backup'],old)
+        self.assertTrue(any(view['path']=='recordings' for view in views))
+        self.assertFalse(any(view.get('path')=='updates' for view in views)) # An old deleted tab stays deleted.
+        views[:]=[view for view in views if view.get('path')!='recordings'];before=copy.deepcopy(views)
+        self.migrate(state,url='/local/drive-console.js?v=later');self.assertEqual(state['lovelace.drive_console']['config']['views'],before)
+
+    def test_every_implemented_service_has_an_editable_native_card(self):
+        features={card['feature'] for view in ha.classic_dashboard()['views'] for card in view['cards'] if card.get('type')=='custom:drive-console-service'}
+        self.assertEqual(features,{'overview','network','power','storage','cameras','updates','radio','messages','sync','reports','preferences','home'})
 
     def test_generated_module_reuses_original_art_and_is_versioned_by_content(self):
         module,metadata=ha.classic_resource(ROOT)

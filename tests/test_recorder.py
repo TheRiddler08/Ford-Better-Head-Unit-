@@ -10,6 +10,14 @@ spec.loader.exec_module(rec)
 class Cmd:
  def __init__(self,name,command): self.name,self.command=name,command
 class RecorderTests(unittest.TestCase):
+ def test_radio_and_gps_serial_ports_are_never_opened_as_obd(self):
+  import json
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);radio=root/'ttyUSB0';radio.touch();gps=root/'ttyACM0';gps.touch();obd=root/'ttyUSB1';obd.touch()
+   ids=root/'by-id';ids.mkdir();(ids/'usb-u-blox-fixture').symlink_to(gps)
+   settings=root/'link.json';settings.write_text(json.dumps({'radio_device':str(radio)}))
+   self.assertIn('LoRaWAN',rec.peripheral_conflict(str(radio),settings,ids))
+   self.assertIn('GPS',rec.peripheral_conflict(str(gps),settings,ids));self.assertIsNone(rec.peripheral_conflict(str(obd),settings,ids))
  def test_read_only_allowlist(self):
   self.assertTrue(rec.approved(Cmd("RPM",b"010C")))
   self.assertFalse(rec.approved(Cmd("CLEAR_DTC",b"04")))

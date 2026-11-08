@@ -37,7 +37,7 @@ with sync_playwright() as p:
     page.reload()
     expect(page.locator('#mapModeText')).to_contain_text('map provider refused access')
     expect(page.locator('#mapEmpty')).to_be_hidden()
-    assert page.locator('#mapTiles img:visible').count()==0
+    assert page.locator('.leaflet-tile-loaded img:visible').count()==0
     count=len(calls)
     page.evaluate("h.states['device_tracker.car_location'].attributes.latitude=38.37;mapCard.hass=h")
     page.wait_for_timeout(300)

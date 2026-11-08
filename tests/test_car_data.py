@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch,MagicMock
 from control.car_data import Store,copy_verified,clip_path,clips
 from control.event_transfer import Events
@@ -36,7 +37,10 @@ class CarDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);source=root/'clip.mp4';source.write_bytes(b'recording')
             store=Store(root/'spool','duet',root/'pool');ident=store.add(source,'dashcam')
-            with patch('control.car_data.mounted',return_value=True),patch('control.car_data.shutil.which',return_value='/usr/bin/mfssetgoal'),patch('control.car_data.subprocess.run'):
+            @contextmanager
+            def pool(*_):
+                target=root/'pool/duet/objects';target.mkdir(parents=True,exist_ok=True);yield target
+            with patch('control.car_data.mounted',return_value=True),patch('control.car_data.shared_objects',pool),patch('control.car_data.shared_goal'):
                 self.assertEqual(store.archive(),'shared-archive-connected')
             self.assertEqual((root/'pool/duet/objects'/ident).read_bytes(),b'recording')
             self.assertTrue(source.exists());copy_verified(source,store.objects/ident)

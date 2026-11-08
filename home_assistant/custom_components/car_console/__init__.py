@@ -225,6 +225,11 @@ async def async_setup_entry(hass,entry):
     hass.http.register_view(CarNavigationView(hass))
     hass.http.register_view(CarRouteView(session))
     hass.http.register_view(CarGPSHistoryView(session,f'{parsed.scheme}://{parsed.netloc}'))
+    from .services import CarServiceView,CarDownloadView,CarHomeView
+    origin=f'{parsed.scheme}://{parsed.netloc}'
+    hass.http.register_view(CarServiceView(session,origin))
+    hass.http.register_view(CarDownloadView(session,origin))
+    hass.http.register_view(CarHomeView(session))
     platforms_ready=False
     async def health(ready):
         if not platforms_ready:return

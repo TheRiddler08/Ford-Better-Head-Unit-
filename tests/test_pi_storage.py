@@ -15,6 +15,25 @@ from deploy import fleet
 
 
 class PiStorageTests(unittest.TestCase):
+    def test_all_bulk_roles_keep_writes_on_pinned_pool_after_detach(self):
+        from control.car_data import copy_verified
+        for role in ('tiny','duet','laptop'):
+            with self.subTest(role=role),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);mount=root/'pool';mount.mkdir();moved=root/'detached';source=root/'notes.txt';source.write_text('preserve original')
+                store=Store(root/'state',role,mount)
+                with patch('control.car_data.RESERVE',0):ident=store.add(source,'route')
+                fd=os.open(mount,os.O_RDONLY|os.O_DIRECTORY)
+                mount_id=next(line.split()[1] for line in Path('/proc/self/fdinfo/'+str(fd)).read_text().splitlines() if line.startswith('mnt_id:'));os.close(fd)
+                original=Path.read_text
+                def read(path,*args,**kwargs):
+                    if str(path)=='/proc/self/mountinfo':return mount_id+' 0 0:1 / /fixture rw - fuse.mfs mfs rw\n'
+                    return original(path,*args,**kwargs)
+                def detach(_):mount.rename(moved);mount.mkdir()
+                with patch.object(Path,'read_text',read),patch('control.car_data.mounted',return_value=True),patch('control.car_data.shared_goal',side_effect=detach):
+                    self.assertEqual(store.archive(),'shared-archive-connected')
+                self.assertEqual((moved/role/'objects'/ident).read_text(),'preserve original')
+                self.assertEqual(list(mount.iterdir()),[]);self.assertEqual(source.read_text(),'preserve original')
+
     def test_pi_offline_never_spools_into_sd_or_unmounted_pool(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);pool=root/'pool';pool.mkdir()

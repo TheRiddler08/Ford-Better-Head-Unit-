@@ -76,7 +76,28 @@ def eligible_peer(message,address,now):
     if not isinstance(mac,str) or not re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}',mac):return None
     raw=bytes.fromhex(mac.replace(':',''))
     if raw==b'\0'*6 or raw[0]&1:return None
-    return {'role':role,'mac':mac.lower(),'internet':message.get('internet') is True,'seen':now}
+    health=message.get('health',{})
+    health={key:value for key,value in health.items() if key in ('power','storage','software','radio') and isinstance(value,str) and re.fullmatch('[a-zA-Z0-9_-]{1,70}',value)} if isinstance(health,dict) else {}
+    return {'role':role,'mac':mac.lower(),'internet':message.get('internet') is True,'seen':now,'health':health}
+
+
+def local_health(config):
+    """Small status-only beacons. Never include credentials or use health to sleep."""
+    home=Path(config['home'])
+    paths={'power':Path('/etc/car-dashboard/laptop-power-status.json'),
+           'storage':home/'.local/share/car-data/status.json',
+           'software':home/'.local/state/drive-console/software/status.json',
+           'radio':home/'.local/state/drive-console/software/radio-status.json'}
+    result={}
+    for name,path in paths.items():
+        try:
+            if path.is_symlink() or path.stat().st_size>262144:continue
+            value=json.loads(path.read_text());phase=value.get('phase',value.get('storage'))
+            stamp=value.get('updated',value.get('time',0));ttl={'storage':180,'power':90}.get(name,60)
+            if type(stamp) not in (int,float) or not 0<=time.time()-stamp<=ttl:phase='stale'
+            if isinstance(phase,str) and re.fullmatch('[a-zA-Z0-9_-]{1,70}',phase):result[name]=phase
+        except (OSError,ValueError,TypeError,AttributeError):pass
+    return result
 
 
 def elect(role,online,peers,now):
@@ -297,7 +318,7 @@ def daemon(config):
                     sender.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1)
                     sender.setsockopt(socket.SOL_SOCKET,socket.SO_BINDTODEVICE,nic.encode()+b'\0')
                     sender.bind((ADDRESSES[config['role']],0))
-                    sender.sendto(json.dumps({'schema':1,'role':config['role'],'mac':mac,'internet':bool(wan) and healthy}).encode(),(BROADCAST,PORT))
+                    sender.sendto(json.dumps({'schema':1,'role':config['role'],'mac':mac,'internet':bool(wan) and healthy,'health':local_health(config)}).encode(),(BROADCAST,PORT))
                     until=time.monotonic()+3
                     while not STOP and time.monotonic()<until:
                         ready,_,_=select.select([receiver],[],[],.3)
@@ -318,7 +339,11 @@ def daemon(config):
                 previous=load(STATUS,{})
                 save(STATUS,{'phase':'ready','role':config['role'],'interface':nic,'address':ADDRESSES[config['role']],
                              'mac':mac,'gateway':winner,'wifiInternet':bool(wan),'standby':mode or previous.get('standby'),
-                             'peers':{key:value['mac'] for key,value in peers.items()},'updated':int(time.time())})
+                             'peers':{key:value['mac'] for key,value in peers.items()},
+                             'peerStatus':{key:{'present':0<=time.monotonic()-value.get('seen',0)<=15,
+                                                'internet':value.get('internet',False),'health':value.get('health',{}),
+                                                'lastSeenAt':time.time()-(time.monotonic()-value['seen']) if value.get('seen',0)>0 else None}
+                                           for key,value in peers.items()},'updated':int(time.time())})
             except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as exc:
                 healthy=False
                 save(STATUS,{'phase':'retrying','role':config['role'],'error':str(exc)[-500:]});time.sleep(3)

@@ -192,11 +192,15 @@ def query_gpsd():
     """One bounded localhost-only gpsd WATCH request, best effort."""
     result = {"fix": False, "source": "gpsd", "message": "No GNSS fix received"}
     try:
+        deadline=time.monotonic()+1.5
         with socket.create_connection(("127.0.0.1", 2947), timeout=0.6) as sock:
             sock.settimeout(0.75)
             sock.sendall(b'?WATCH={"enable":true,"json":true};\n')
             with sock.makefile("rb") as stream:
                 for _ in range(12):
+                    remaining=deadline-time.monotonic()
+                    if remaining<=0:break
+                    sock.settimeout(min(.75,remaining))
                     try:
                         raw = stream.readline(8192)
                     except (TimeoutError, OSError):
@@ -210,6 +214,8 @@ def query_gpsd():
                     position = parse_gps_message(message)
                     if position is not None:
                         return position
+                    if isinstance(message,dict) and message.get('class')=='TPV':
+                        return dict(result,connected=True,message='GPS connected; waiting for a GNSS fix')
         return result
     except OSError:
         return {"fix": False, "source": "gpsd", "message": "GPS daemon not connected"}
@@ -275,6 +281,19 @@ class Handler(BaseHTTPRequestHandler):
             path=WEB_DIR/'radio-messages.html' if not suffix else WEB_DIR.parent.parent/'control/web'/('radio-messages'+suffix)
             return self.send_bytes(path.read_bytes(),mime={'.js':'text/javascript','.css':'text/css','':'text/html; charset=utf-8'}[suffix])
         url = urlsplit(self.path)
+        if url.path=='/api/system/status':
+            from app.system_status import snapshot
+            from app.system_status import read
+            config=read(FLEET_FILE)
+            return self.send_json(snapshot(config.get('home',Path.home()),config.get('role','unconfigured'),gps_db=GPS_DB_PATH))
+        if url.path in ('/api/local-sync','/api/local-sync/file'):
+            try:
+                from control.file_sync import car_files
+                config=json.loads(FLEET_FILE.read_text());options=json.loads(Path('/etc/car-dashboard/update-link.json').read_text());config.update(options)
+                files=car_files(config)
+                if url.path.endswith('/file'):return self.send_json(files.inspect(parse_qs(url.query).get('name',[''])[0]))
+                files.scan();return self.send_json({'selected':sorted(files.selected),'items':files.status()})
+            except (OSError,ValueError,KeyError) as error:return self.send_json({'error':'Local file sync is pending configuration'},503)
         if url.path=="/home-assistant":
             try:ha_status=json.loads(Path('/etc/car-dashboard/home-assistant.json').read_text())
             except (OSError,ValueError):ha_status={}
@@ -500,7 +519,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         endpoint=urlsplit(self.path).path
-        if endpoint not in ("/api/headunit-prefs","/api/messages"):
+        if endpoint not in ("/api/headunit-prefs","/api/messages","/api/local-sync/file","/api/radio-test"):
             return self.send_json({"error": "Not found"}, 404)
         # Local kiosk settings only; never send commands to the vehicle.
         if self.client_address[0] not in ("127.0.0.1", "::1"):
@@ -512,9 +531,27 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "Untrusted origin"}, 403)
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if size < 1 or size > 12000:
+            if size < 1 or size > (131072 if endpoint=='/api/local-sync/file' else 12000):
                 return self.send_json({"error": "Invalid request size"}, 413)
             incoming = json.loads(self.rfile.read(size))
+            if endpoint=='/api/local-sync/file':
+                from control.file_sync import car_files
+                config=json.loads(FLEET_FILE.read_text());config.update(json.loads(Path('/etc/car-dashboard/update-link.json').read_text()))
+                files=car_files(config)
+                if incoming.get('action')=='save':return self.send_json(files.edit(incoming['name'],incoming['sha256'],incoming['source']))
+                if incoming.get('action')=='resolve':return self.send_json(files.resolve(incoming['name'],incoming['id'],incoming['sha256'],incoming['choice'],incoming.get('source')))
+                return self.send_json({'error':'Unknown selected-file action'},400)
+            if endpoint=='/api/radio-test':
+                from control.radio_diagnostic import Diagnostic
+                config=json.loads(FLEET_FILE.read_text());home=Path(config['home']);key=home/'.config/car-dashboard/update-link.key'
+                if set(incoming)!={'action'} or incoming['action'] not in ('start','restart'):raise ValueError('Choose start or restart for the encrypted diagnostic')
+                options=json.loads(Path('/etc/car-dashboard/update-link.json').read_text())
+                if config.get('role')!='tiny' or not options.get('radio_model') or not options.get('radio_device'):raise ValueError('Configure the Tiny radio adapter before starting a radio test')
+                if not (home/'.config/car-dashboard/radio-home.pub').is_file():raise ValueError('Pinned home radio key required')
+                diagnostic=Diagnostic(home/'.local/state/drive-console/software/radio-test-result.json',bytes.fromhex(key.read_text().strip()))
+                if incoming.get('action')=='restart':diagnostic.restart()
+                else:diagnostic.start()
+                return self.send_json(diagnostic.read())
             if endpoint=='/api/messages':
                 from control.messages import enqueue,local_events,cancel
                 config=json.loads(FLEET_FILE.read_text())
@@ -523,7 +560,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(enqueue(events,config['role'],incoming.get('destination','home'),incoming.get('text'),incoming.get('action','text'),incoming.get('clientId')))
             saved = update_prefs(PREFS_FILE, incoming)
             return self.send_json(saved)
-        except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError) as exc:
             return self.send_json({"error": str(exc)}, 400)
 
     def log_message(self, fmt, *args):

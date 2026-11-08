@@ -24,7 +24,7 @@ with sync_playwright() as p:
     page.route('https://basemap.nationalmap.gov/**',lambda r:r.fulfill(body=png,content_type='image/png',headers={'Access-Control-Allow-Origin':'*'}))
     page.goto('http://127.0.0.1:19997/')
     expect(page.locator('#mapModeText')).to_contain_text('GPS disconnected')
-    expect(page.locator('#mapTiles img').first).to_be_visible()
+    expect(page.locator('.leaflet-tile-loaded img').first).to_be_visible()
     expect(page.locator('#mapEmpty')).to_be_hidden()
     page.get_by_text('Places, routes & trips',exact=True).click()
     # Numeric coordinates and markers without any GPS fix.
@@ -47,7 +47,7 @@ with sync_playwright() as p:
     page.get_by_text('Places, routes & trips',exact=True).click();expect(page.locator('#navMarkers')).to_contain_text('Custom marker');expect(page.locator('#navTrips')).to_contain_text('Manually logged trip')
     page.locator('#navHistory').click();expect(page.locator('#navHistoryStatus')).to_contain_text('1/4')
     # Replay overlays preserve both recorded segments rather than connecting gaps.
-    assert page.locator('.nav-route-layer polyline').count()==2
+    assert page.evaluate('card._trackLayers.length')==2
     page.locator('#navReplaySeek').fill('3');expect(page.locator('#navHistoryStatus')).to_contain_text('4/4')
     # Mouse pan and wheel work when GPS is absent.
     page.locator('.nav-panel summary').click()

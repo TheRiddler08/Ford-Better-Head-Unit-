@@ -187,18 +187,16 @@ class Store:
                         copy_verified(self.objects/(ident+'.json'),target/(ident+'.json'))
                         with closing(self.db()) as db,db:db.execute('UPDATE objects SET archived=1 WHERE id=?',(ident,))
             return 'shared-client-connected-no-sd-contribution'
-        target=self.mount/self.role/'objects'
-        target.mkdir(parents=True,exist_ok=True)
-        # Standard MooseFS replication goal; no hand-written chunk placement.
-        if shutil.which('mfssetgoal'):
-            subprocess.run(['mfssetgoal','2',str(self.mount/self.role)],capture_output=True,check=True,timeout=15)
-            subprocess.run(['mfssetgoal','2',str(target)],capture_output=True,check=True,timeout=15)
-        else:raise ValueError('MooseFS replication tool missing')
-        with closing(self.db()) as db:rows=db.execute('SELECT id FROM objects WHERE archived=0 ORDER BY created LIMIT 20').fetchall()
-        for row in rows:
-            ident=row['id'];copy_verified(self.objects/ident,target/ident)
-            copy_verified(self.objects/(ident+'.json'),target/(ident+'.json'))
-            with closing(self.db()) as db,db:db.execute('UPDATE objects SET archived=1 WHERE id=?',(ident,))
+        # Pin the actual FUSE mount for every car role, including Tiny/Duet.
+        # A disconnect between the initial check and a copy must never redirect
+        # bulk writes into the empty local mountpoint directory.
+        with shared_objects(self.mount,self.role) as target:
+            shared_goal(target)
+            with closing(self.db()) as db:rows=db.execute('SELECT id FROM objects WHERE archived=0 ORDER BY created LIMIT 20').fetchall()
+            for row in rows:
+                ident=row['id'];copy_verified(self.objects/ident,target/ident)
+                copy_verified(self.objects/(ident+'.json'),target/(ident+'.json'))
+                with closing(self.db()) as db,db:db.execute('UPDATE objects SET archived=1 WHERE id=?',(ident,))
         return 'shared-archive-connected'
 
 
@@ -292,7 +290,7 @@ def main():
     receiver=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);receiver.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     receiver.bind(('',PORT));receiver.setblocking(False)
     while True:
-        status={'camera':CAMERA,'inbox':str(inbox)}
+        status={'camera':CAMERA,'inbox':str(inbox),'updated':time.time()}
         try:
             status['storage']=store.archive()
             if not store.storage_client:store.ingest_camera(inbox)
