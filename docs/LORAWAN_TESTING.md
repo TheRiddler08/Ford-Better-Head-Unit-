@@ -99,6 +99,14 @@ Class C switching and automatic rejoins are intentionally not implemented here.
 
 ## Automatic encrypted round-trip check
 
+If an older `systemctl --user` deployment still runs `car-home-panel.service`,
+it may own port 8790 with different tokens while the new system service retries
+`Address already in use`. The normal home installer now retires that exact
+legacy user unit, keeps its state and credential files, and verifies the new
+listener accepts the configured device token before reporting success. A first
+install reuses legacy token files and an existing software link key; an existing
+`control.env` is preserved. Do not reset encryption keys to repair a port conflict.
+
 ### One-time pairing for the commissioned Tiny
 
 After installing the home services, configuring their ChirpStack application and

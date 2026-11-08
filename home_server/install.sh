@@ -11,8 +11,21 @@ ENVFILE="$HOME/.config/car-home/control.env"
 if [[ ! -f "$ENVFILE" ]]; then
  python3 - "$ENVFILE" <<'PY'
 from pathlib import Path
-import secrets,sys,os
-path=Path(sys.argv[1]);path.write_text('CAR_PANEL_TOKEN='+(os.getenv('CAR_PANEL_TOKEN') or secrets.token_hex(32))+'\nCAR_DEVICE_TOKEN='+(os.getenv('CAR_DEVICE_TOKEN') or secrets.token_hex(32))+'\nCAR_LINK_KEY='+(os.getenv('CAR_LINK_KEY') or secrets.token_hex(32))+'\nCAR_PANEL_BIND=127.0.0.1\nCAR_PANEL_PORT=8790\n')
+import secrets,sys,os,shlex
+path=Path(sys.argv[1])
+def credential(name,legacy,minimum):
+    previous=Path(legacy)
+    value=os.getenv(name) or (previous.read_text().strip() if previous.exists() else secrets.token_hex(32))
+    if len(value)<minimum or '\n' in value or '\0' in value:raise SystemExit('Invalid existing '+name+'; configuration unchanged')
+    return value
+values={
+ 'CAR_PANEL_TOKEN':credential('CAR_PANEL_TOKEN',path.parent/'panel-token',24),
+ 'CAR_DEVICE_TOKEN':credential('CAR_DEVICE_TOKEN',path.parent/'device-token',32),
+ 'CAR_LINK_KEY':credential('CAR_LINK_KEY',Path.home()/'.local/share/car-home-control/software/update-link.key',64),
+ 'CAR_PANEL_BIND':'127.0.0.1','CAR_PANEL_PORT':'8790',
+}
+if values['CAR_PANEL_TOKEN']==values['CAR_DEVICE_TOKEN']:raise SystemExit('Panel and device tokens must differ; configuration unchanged')
+path.write_text(''.join(name+'='+shlex.quote(value)+'\n' for name,value in values.items()))
 path.chmod(0o600)
 PY
 fi
@@ -50,9 +63,37 @@ UMask=0077
 WantedBy=multi-user.target
 UNIT
 done
+# The previous documented deployment used this exact user unit on port 8790.
+# Retire only that managed predecessor; keep its files, state and credentials.
+(cd "$ROOT" && python3 -m home_server.migrate_control)
 sudo systemctl daemon-reload
 sudo systemctl enable --now car-home-control.service car-home-radio.service
 sudo systemctl restart car-home-control.service car-home-radio.service
+(cd "$ROOT" && python3 - "$ENVFILE" <<'PYHEALTH'
+from pathlib import Path
+import sys,time
+from urllib.request import Request,build_opener,ProxyHandler
+from urllib.error import HTTPError,URLError
+from control.service_watch import environment
+env=environment(Path(sys.argv[1]))
+host=env.get('CAR_PANEL_BIND','127.0.0.1')
+if host=='0.0.0.0':host='127.0.0.1'
+url='http://'+host+':'+env.get('CAR_PANEL_PORT','8790')+'/api/device/software/credentials'
+request=Request(url,headers={'Authorization':'Bearer '+env.get('CAR_DEVICE_TOKEN','')})
+client=build_opener(ProxyHandler({}))
+for attempt in range(15):
+    try:
+        with client.open(request,timeout=2) as response:
+            if response.status==200:
+                print('Home control credential check succeeded.')
+                break
+    except HTTPError as error:
+        if error.code==401:raise SystemExit('Home listener rejected its saved device token. Check for another service owning the panel port; credentials were not changed.')
+    except (URLError,TimeoutError,OSError):pass
+    time.sleep(.5)
+else:raise SystemExit('Home control is not ready. Inspect car-home-control.service logs; installation is not yet verified.')
+PYHEALTH
+)
 echo 'Home panel, signing keys and radio bridge services are installed.'
 echo 'Radio waits for its real ChirpStack application/DevEUI configuration; no guessed modem or credentials are used.'
 echo 'Existing authentication credentials in ~/.config/car-home/control.env were preserved.'
