@@ -136,6 +136,14 @@ Pairing closes with an authenticated application enrollment and starts the norma
 radio service. Missing MQTT, altered credentials, no route to home, a closed
 serial device or exhausted airtime budget still leaves a pending/failed test.
 
+Pairing prints its current stage before waiting. SSH connection establishment
+is bounded to ten seconds, prompts for the password at most once, and has a
+two-minute overall enrollment deadline (including user authentication). Serial
+checks and service control operations are also bounded. Verified role setup can
+take several minutes and is labelled accordingly. Ctrl+C reports cancellation;
+it does not mean a LoRaWAN transmission or encrypted test completed. Rerunning
+pairing retains the same forwarding key and checks existing credentials/pins.
+
 Once a Tiny has explicit RAK3172 configuration, the normal radio service has its
 existing link key and pinned home public key, and the home bridge has the Tiny's
 public key, the service starts **one persisted self-test** automatically. No

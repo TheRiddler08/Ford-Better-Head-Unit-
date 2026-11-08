@@ -56,6 +56,32 @@ def target(value):
     return value
 
 
+def step(label, command, timeout=30, capture=False, check=True):
+    print(label+'…',flush=True)
+    try:
+        return subprocess.run(command,timeout=timeout,capture_output=capture,
+                              text=capture,check=check)
+    except subprocess.TimeoutExpired as exc:
+        # Never print captured output: an SSH response may contain a device token.
+        raise ValueError(f'{label} timed out after {timeout} seconds. Pairing is incomplete; no radio test result is implied.') from exc
+
+
+def home_credentials(host, public):
+    command=['ssh','-o','StrictHostKeyChecking=ask','-o','ConnectTimeout=10',
+             '-o','ConnectionAttempts=1','-o','ServerAliveInterval=10',
+             '-o','ServerAliveCountMax=2','-o','NumberOfPasswordPrompts=1',
+             '-o','ControlMaster=no','-o','ControlPath=none',target(host),
+             shlex.join(['python3','-c',REMOTE,public])]
+    result=step('Connecting to home and enrolling the restricted tunnel key',command,
+                timeout=120,capture=True,check=False)
+    if result.returncode:
+        raise ValueError('Home pairing failed: '+result.stderr[-500:].strip())
+    token=json.loads(result.stdout)['deviceToken']
+    if not isinstance(token,str) or len(token)<32 or '\n' in token:
+        raise ValueError('Invalid credential returned by home')
+    return token
+
+
 def merge_options(existing, host, device):
     from control.rak3172 import adapter_command
     if existing.get('radio_adapter'):
@@ -75,10 +101,10 @@ def key_pair(path):
     if path.is_symlink():raise ValueError('Refusing symlinked tunnel key')
     path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
     if not path.exists():
-        subprocess.run(['ssh-keygen','-q','-t','ed25519','-N','','-C','car-home-forward-only','-f',str(path)],check=True)
+        step('Creating the dedicated forwarding key',['ssh-keygen','-q','-t','ed25519','-N','','-C','car-home-forward-only','-f',str(path)])
     path.chmod(0o600)
     # Derive from the actual private key; do not trust a mismatched .pub file.
-    result=subprocess.run(['ssh-keygen','-y','-P','','-f',str(path)],capture_output=True,text=True,check=True)
+    result=step('Checking the forwarding key',['ssh-keygen','-y','-P','','-f',str(path)],capture=True)
     words=result.stdout.split()
     if len(words)<2 or words[0]!='ssh-ed25519':raise ValueError('Unsupported tunnel key')
     return ' '.join(words[:2])
@@ -99,15 +125,15 @@ def main():
     options=merge_options(existing,args.home,args.device)
     # Service supplemental dialout access need not be in the current SSH login's
     # groups. Probe as the ordinary user with dialout, never as root.
-    active=subprocess.run(['systemctl','is-active','--quiet','car-radio-adapter.service']).returncode==0
-    subprocess.run(['sudo','systemctl','stop','car-radio-adapter.service'],check=True)
+    active=step('Checking the Tiny radio service',['systemctl','is-active','--quiet','car-radio-adapter.service'],check=False).returncode==0
+    step('Releasing the serial radio for read-only checks',['sudo','systemctl','stop','car-radio-adapter.service'],timeout=60)
     try:
-        probe=subprocess.run(['sudo','-u',config['user'],'-g','dialout','/usr/bin/python3',
-             '-m','control.rak3172','--device',args.device,'--probe'],capture_output=True,text=True)
+        probe=step('Reading RAK3172 firmware and join status',['sudo','-u',config['user'],'-g','dialout','/usr/bin/python3',
+             '-m','control.rak3172','--device',args.device,'--probe'],timeout=60,capture=True,check=False)
         if probe.returncode:raise ValueError('Radio probe failed: '+probe.stderr[-500:].strip())
         status=json.loads(probe.stdout)['status']
     finally:
-        if active:subprocess.run(['sudo','systemctl','start','car-radio-adapter.service'],check=True)
+        if active:step('Restoring the Tiny radio service',['sudo','systemctl','start','car-radio-adapter.service'],timeout=60)
     if status['nwm']!='1' or status['band']!='5' or status['njm']!='1' or status['class']!='A' or status['njs']!='1':
         raise ValueError('Radio must already be provisioned and joined in US915 OTAA Class A; no radio settings were changed')
     if not isinstance(status.get('deveui'),str) or status['deveui'].lower()!='ac1f09fffe29d8b2':
@@ -118,13 +144,7 @@ def main():
     # Secret stdout stays captured in memory, never displayed or put in argv.
     public=key_pair(Path.home()/'.ssh/car-home-tunnel')
     print('Pairing with home over SSH; verify its host fingerprint if prompted. No token will be printed.',flush=True)
-    remote=subprocess.run(['ssh','-o','StrictHostKeyChecking=ask',args.home,
-                           shlex.join(['python3','-c',REMOTE,public])],capture_output=True,text=True)
-    if remote.returncode:
-        raise ValueError('Home pairing failed: '+remote.stderr[-500:].strip())
-    token=json.loads(remote.stdout)['deviceToken']
-    if not isinstance(token,str) or len(token)<32 or '\n' in token:
-        raise ValueError('Invalid credential returned by home')
+    token=home_credentials(args.home,public)
     if credential.exists() and credential.read_text().strip()!=token:
         raise ValueError('Existing Tiny device token differs; refusing silent credential replacement')
     atomic(credential,token.encode())
@@ -134,22 +154,25 @@ def main():
         pending=Path(temporary.name)
         json.dump(options,temporary);temporary.flush();os.fsync(temporary.fileno())
     try:
-        subprocess.run(['sudo','install','-o','root','-g','root','-m','0644',str(pending),str(path)],check=True)
+        step('Saving Tiny link settings',['sudo','install','-o','root','-g','root','-m','0644',str(pending),str(path)])
     finally:pending.unlink(missing_ok=True)
-    subprocess.run(['sudo','systemctl','start','car-fleet-refresh.service'],check=True)
+    step('Applying the verified role settings (may take several minutes)',
+         ['sudo','systemctl','start','car-fleet-refresh.service'],timeout=960)
     # The verified reconciler must have adopted the new tunnel support.
-    active=subprocess.run(['systemctl','is-active','--quiet','car-home-tunnel.service'])
+    active=step('Checking the persistent home tunnel',['systemctl','is-active','--quiet','car-home-tunnel.service'],check=False)
     if active.returncode:raise ValueError('Home tunnel pending; complete the normal signed Tiny update before pairing again')
     config.update(options)
     agent=Agent(config)
     last=None
+    print('Enrolling application encryption keys through the home tunnel…',flush=True)
     for _ in range(6):
         try:
             agent.exchange();last=None;break
         except Exception as exc:
             last=type(exc).__name__;time.sleep(2)
     if last:raise ValueError('Tunnel installed but authenticated home enrollment is pending: '+last)
-    subprocess.run(['sudo','systemctl','restart','car-update-link.service','car-radio-adapter.service'],check=True)
+    step('Starting the automatic encrypted radio test',
+         ['sudo','systemctl','restart','car-update-link.service','car-radio-adapter.service'],timeout=60)
     if not options.get('radio_self_test',True) or not options.get('home_tunnel_enabled',True):
         print('Pairing saved; an existing test/tunnel opt-out was preserved. No automatic test was enabled.',flush=True)
         return
@@ -160,5 +183,7 @@ def main():
 
 if __name__=='__main__':
     try:main()
+    except KeyboardInterrupt:
+        raise SystemExit('Radio pairing cancelled. Pairing may be incomplete; pending does not mean a radio test ran.')
     except (OSError,ValueError,subprocess.CalledProcessError) as exc:
         raise SystemExit('Radio pairing: '+str(exc))

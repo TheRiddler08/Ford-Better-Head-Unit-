@@ -4,13 +4,39 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import io
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from control.pair_radio import REMOTE, key_pair, merge_options, target
+from control.pair_radio import REMOTE, key_pair, merge_options, target, step, home_credentials
 from deploy import fleet
 
 
 class PairingTests(unittest.TestCase):
+    def test_timeout_names_stage_without_printing_captured_secret(self):
+        output=io.StringIO()
+        error=subprocess.TimeoutExpired(['ssh'],120,output=b'secret-device-token',stderr=b'secret-device-token')
+        with patch('control.pair_radio.subprocess.run',side_effect=error),redirect_stdout(output):
+            with self.assertRaisesRegex(ValueError,'Home SSH timed out after 120 seconds') as caught:
+                step('Home SSH',['ssh'],timeout=120,capture=True)
+        self.assertIn('Home SSH',output.getvalue())
+        self.assertNotIn('secret-device-token',output.getvalue()+str(caught.exception))
+
+    def test_home_ssh_has_bounded_connection_and_keeps_credentials_private(self):
+        token='private-device-token-'*3
+        response=subprocess.CompletedProcess([],0,stdout=json.dumps({'deviceToken':token}),stderr='')
+        output=io.StringIO()
+        with patch('control.pair_radio.subprocess.run',return_value=response) as run,redirect_stdout(output):
+            self.assertEqual(home_credentials('cayden@100.121.219.15','ssh-ed25519 AAAA'),token)
+        command=run.call_args.args[0]
+        self.assertIn('StrictHostKeyChecking=ask',command)
+        self.assertIn('ConnectTimeout=10',command)
+        self.assertIn('NumberOfPasswordPrompts=1',command)
+        self.assertIn('ControlPath=none',command)
+        self.assertEqual(run.call_args.kwargs['timeout'],120)
+        self.assertTrue(run.call_args.kwargs['capture_output'])
+        self.assertNotIn(token,output.getvalue()+' '.join(command))
+
     def test_preserves_existing_settings_and_explicit_optouts(self):
         previous={'device':'car-1','home_url':'https://old.example',
                   'radio_self_test':False,'max_app_bytes':46,'other':'preserve'}
