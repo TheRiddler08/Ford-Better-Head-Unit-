@@ -1,6 +1,8 @@
 """Authenticated, fixed-destination access to the existing car/home services."""
 import asyncio
+import hashlib
 import json
+from pathlib import Path
 import re
 from urllib.parse import urlencode
 from aiohttp import ClientError,ClientTimeout,web
@@ -17,6 +19,31 @@ HOME={'status':'/api/software/status','transfers':'/api/software/transfers','tra
 HOME_POST={'transfer','publish','sync','sync-file','change','layout','messages'}
 REPORTS={'values','commands','snapshots','snapshot-values','events','gps','gps-messages','stops','gps-stream','gps-sessions','gps-events'}
 PARAMS={'device','role','state','before','id','path','name','after','limit','from','to','snapshot','status','kind'}
+
+
+def ui_state(directory):
+    directory=Path(directory)
+    def read(relative,limit=262144):
+        path=directory/relative
+        if path.is_symlink() or not path.resolve().is_relative_to(directory.resolve()) or not path.is_file() or path.stat().st_size>limit:return {}
+        value=json.loads(path.read_text());return value if isinstance(value,dict) else {}
+    metadata=read('drive-console-resource.json',8192);url=metadata.get('url','');digest=metadata.get('sha256','')
+    if not re.fullmatch(r'/local/drive-console\.[0-9a-f]{20}\.js',url) or not re.fullmatch('[0-9a-f]{64}',digest) or url!='/local/drive-console.'+digest[:20]+'.js':raise ValueError('Dashboard resource not installed')
+    path=directory/'www'/url.removeprefix('/local/')
+    match=(not path.is_symlink() and path.resolve().is_relative_to(directory.resolve()) and path.is_file() and path.stat().st_size<=2097152 and hashlib.sha256(path.read_bytes()).hexdigest()==digest)
+    resources=read('.storage/lovelace_resources').get('data',{}).get('items',[])
+    registered=any(row.get('id')=='drive_console_local' and row.get('type')=='module' and row.get('url')==url for row in resources)
+    return {'build':metadata.get('build'),'resource':url,'assetMatch':match,'resourceRegistered':registered,'dashboardPath':'/drive-console'}
+
+
+class CarUIView(HomeAssistantView):
+    url='/api/car_console/ui'
+    name='api:car_console:ui'
+    requires_auth=True
+    def __init__(self,hass):self.hass=hass
+    async def get(self,request):
+        try:return web.json_response(await self.hass.async_add_executor_job(ui_state,self.hass.config.path()),headers={'Cache-Control':'no-store'})
+        except (OSError,ValueError,TypeError,AttributeError):return web.json_response({'error':'Dashboard version unavailable'},status=503,headers={'Cache-Control':'no-store'})
 
 
 def query_string(query):

@@ -130,8 +130,10 @@ def classic_resource(repo):
     source=read('home_assistant/drive_console.js')
     if source.count('const ORIGINAL = null;')!=1:raise ValueError('Unexpected Drive Console module template')
     module=source.replace('const ORIGINAL = null;','const ORIGINAL = '+json.dumps(original)+';').encode()
+    build=hashlib.sha256(module).hexdigest()[:12]
+    module=module.replace(b'__DRIVE_CONSOLE_BUILD__',build.encode())
     digest=hashlib.sha256(module).hexdigest()
-    return module,{'schema':1,'dashboardSchema':3,'url':'/local/drive-console.js?v='+digest[:20],'sha256':digest}
+    return module,{'schema':1,'dashboardSchema':3,'build':build,'url':'/local/drive-console.'+digest[:20]+'.js','sha256':digest}
 
 
 def managed_files(repo,timezone):
@@ -144,6 +146,7 @@ def managed_files(repo,timezone):
     result['car-dashboard.yaml']=(json.dumps(dashboard(),indent=2)+'\n').encode()
     module,resource=classic_resource(repo)
     result['www/drive-console.js']=module
+    result['www/'+resource['url'].removeprefix('/local/')]=module
     result['drive-console-resource.json']=(json.dumps(resource)+'\n').encode()
     result['drive-console-dashboard.yaml']=(json.dumps(classic_dashboard(),indent=2)+'\n').encode()
     return result
@@ -162,7 +165,18 @@ def sync_assets(repo,config_dir,timezone,registry):
             current=hashlib.sha256(previous).hexdigest()
             if current==digest:hashes[relative]=digest;continue
             if old.get(relative)!=current:
-                preserved.append(relative);continue
+                if re.fullmatch(r'www/drive-console\.[0-9a-f]{20}\.js',relative):
+                    raise ValueError('Dashboard asset checksum mismatch: '+relative)
+                if relative=='drive-console-resource.json':
+                    # This pointer is generated bookkeeping, not an owner's
+                    # saved dashboard. Preserve unknown old bytes privately,
+                    # then point the managed resource at the verified new file.
+                    backup=config_dir/'.drive-console-backups'/('resource-'+current+'.json')
+                    if backup.is_symlink() or not backup.resolve().is_relative_to(config_dir.resolve()):raise ValueError('Unsafe dashboard metadata backup')
+                    if backup.exists() and backup.read_bytes()!=previous:raise ValueError('Dashboard metadata backup mismatch')
+                    if not backup.exists():plan.append((str(backup.relative_to(config_dir)),backup,previous,None))
+                else:
+                    preserved.append(relative);continue
         plan.append((relative,target,content,previous));hashes[relative]=digest
     applied=[]
     try:
@@ -305,9 +319,11 @@ def service_active():
 
 
 def record_status(settings,ready,preserved=None):
+    metadata=read_json(BASE/'config/drive-console-resource.json',{})
     save(STATUS,json.dumps({'installed':True,'enabled':settings.get('enabled',True),'ready':ready,
         'image':settings['image'],'runtime':'Car Assistant' if settings.get('forkArchive') else 'Home Assistant',
         'forkArchive':settings.get('forkArchive'),'ownerSetup':'Create your owner account in the Home Assistant first-run screen',
+        'uiBuild':metadata.get('build'),'uiResource':metadata.get('url'),
         'preservedFiles':preserved or []}).encode())
 
 
@@ -320,7 +336,7 @@ def validate_config(settings):
 # Runs inside the pinned HA image while the real HA instance is stopped. Use HA's
 # own Store API/schema; never read owner accounts, tokens, or other auth storage.
 STARTER_MIGRATION = r'''
-import asyncio,json
+import asyncio,json,re
 from pathlib import Path
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
@@ -360,7 +376,7 @@ async def migrate():
 asyncio.run(migrate())
 '''
 CLASSIC_MIGRATION = r'''
-import asyncio,json
+import asyncio,json,re
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util.yaml import load_yaml_dict
@@ -370,19 +386,39 @@ async def migrate_classic():
     hass=HomeAssistant('/config')
     metadata=load_yaml_dict('/config/drive-console-resource.json')
     url=metadata['url']
-    if not url.startswith('/local/drive-console.js?v='):raise ValueError('Unexpected local Drive Console resource')
+    def managed_resource(value):return isinstance(value,str) and (value.startswith('/local/drive-console.js?v=') or re.fullmatch(r'/local/drive-console\.[0-9a-f]{20}\.js',value))
+    if not managed_resource(url):raise ValueError('Unexpected local Drive Console resource')
     marker=Store(hass,1,'car_console_classic_migration')
     previous=await marker.async_load() or {}
     resources=Store(hass,1,'lovelace_resources')
     data=await resources.async_load() or {'items':[]}
     item=next((row for row in data['items'] if row.get('id')=='drive_console_local'),None)
-    if item is not None and not item.get('url','').startswith('/local/drive-console.js?v='):
+    if item is not None and not managed_resource(item.get('url','')):
         raise ValueError('Drive Console resource ID belongs to another resource')
     updated=False
     if item is None:
         data['items'].append({'id':'drive_console_local','type':'module','url':url});updated=True
     elif item.get('url')!=url:item['url']=url;updated=True
     if updated:await resources.async_save(data)
+    # Older installs may still open Car starter. Add one link to our managed
+    # starter once, without replacing its cards or recreating removed pages.
+    link_marker=Store(hass,1,'car_console_dashboard_link')
+    if not (await link_marker.async_load() or {}).get('completed'):
+        starter_marker=await Store(hass,1,'car_console_starter_migration').async_load() or {}
+        dashboards=await Store(hass,1,'lovelace_dashboards').async_load() or {'items':[]}
+        owned=any(row.get('id')=='car_starter' and row.get('url_path')=='car-starter' for row in dashboards['items'])
+        starter=Store(hass,1,'lovelace.car_starter')
+        saved=await starter.async_load() if owned and starter_marker.get('completed') and not starter_marker.get('preservedExisting') else None
+        views=saved.get('config',{}).get('views',[]) if saved else []
+        if views and isinstance(views[0].get('cards'),list):
+            cards=views[0]['cards']
+            if not any(isinstance(card,dict) and isinstance(card.get('tap_action'),dict) and card['tap_action'].get('navigation_path')=='/drive-console' for card in cards):
+                import copy
+                await Store(hass,1,'car_console_starter_link_backup').async_save(copy.deepcopy(saved))
+                cards.insert(0,{'type':'button','name':'Open car dashboard','icon':'mdi:car','show_state':False,
+                    'tap_action':{'action':'navigate','navigation_path':'/drive-console'}})
+                await starter.async_save(saved)
+        await link_marker.async_save({'completed':True})
     if previous.get('completed'):
         # Add native tabs once to our original single-page dashboard. Never
         # replace an existing page/card, or recreate a deleted dashboard/tab.
@@ -447,11 +483,15 @@ asyncio.run(migrate_classic())
 '''
 DASHBOARD_MIGRATION=STARTER_MIGRATION+'\n'+CLASSIC_MIGRATION
 STARTER_STORES=('lovelace_dashboards','lovelace.car_starter','car_console_starter_migration',
-    'lovelace.drive_console','car_console_classic_migration','lovelace_resources','car_console_tabs_backup','car_console_features_backup')
+    'lovelace.drive_console','car_console_classic_migration','lovelace_resources','car_console_tabs_backup','car_console_features_backup',
+    'car_console_dashboard_link','car_console_starter_link_backup')
 
 
 def starter_pending():
     directory=BASE/'config/.storage'
+    link=directory/'car_console_dashboard_link'
+    if link.is_symlink():raise ValueError('Refusing symlinked dashboard storage')
+    if not link.exists():return True
     marker=directory/'car_console_starter_migration'
     if directory.is_symlink() or marker.is_symlink():raise ValueError('Refusing symlinked dashboard storage')
     if not marker.exists():return True

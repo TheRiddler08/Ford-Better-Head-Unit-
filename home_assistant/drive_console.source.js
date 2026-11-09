@@ -74,7 +74,7 @@ function applyWidgetStyle(el){
     const value=c[key]||p[key];if(value && CSS.supports('color',value))el.style.setProperty(name,value);else el.style.removeProperty(name);
   }
   const radius=c.border_radius??p.border_radius;
-  el.style.setProperty('--drive-radius',bounded(radius,17,0,60)+'px');
+  el.style.setProperty('--drive-radius',bounded(radius,10,0,60)+'px');
   el.style.setProperty('--drive-font-size',bounded(c.font_size??p.font_size,14,10,36)+'px');
   const section=root.querySelector('section');if(section){section.style.minHeight=c.min_height?bounded(c.min_height,120,60,1500)+'px':'';section.style.height='100%';}
   let custom=root.getElementById('custom-style');if(!custom){custom=document.createElement('style');custom.id='custom-style';root.append(custom);}
@@ -83,7 +83,7 @@ function applyWidgetStyle(el){
 const media=new EventTarget();
 let audio,tracks=[],track=-1,objectURL;
 function player(){
-  if(!audio){audio=new Audio();audio.volume=.65;for(const name of ['play','pause','timeupdate','durationchange','volumechange','error'])audio.addEventListener(name,()=>media.dispatchEvent(new Event('change')));audio.addEventListener('ended',()=>playTrack(track+1));}
+  if(!audio){audio=new Audio();window.__driveConsoleAudio=audio;audio.volume=.65;for(const name of ['play','pause','timeupdate','durationchange','volumechange','error'])audio.addEventListener(name,()=>media.dispatchEvent(new Event('change')));audio.addEventListener('ended',()=>playTrack(track+1));}
   return audio;
 }
 function playTrack(index){
@@ -113,13 +113,15 @@ class DriveConsoleWidget extends HTMLElement {
   static getStubConfig(){return {type:'custom:drive-console-widget',widget:'gauges',speed_unit:'mph'};}
   set hass(hass){this._hass=hass;this.update();}
   get hass(){return this._hass;}
-  connectedCallback(){navigationBus.addEventListener('saved',this._onNavigation);window.addEventListener('message',this._htmlMessage);this._timer=setInterval(()=>{this.clock();this.replayTick();this.update();},1000);media.addEventListener('change',this._onMedia);this.clock();this.update();}
-  disconnectedCallback(){this.removeLeaflet();navigationBus.removeEventListener('saved',this._onNavigation);window.removeEventListener('message',this._htmlMessage);clearInterval(this._timer);media.removeEventListener('change',this._onMedia);this._ticket=(this._ticket||0)+1;}
+  connectedCallback(){uiParticipants.add(this);navigationBus.addEventListener('saved',this._onNavigation);window.addEventListener('message',this._htmlMessage);this._timer=setInterval(()=>{this.clock();this.replayTick();this.update();},1000);media.addEventListener('change',this._onMedia);this.clock();this.update();}
+  disconnectedCallback(){uiParticipants.delete(this);this.removeLeaflet();navigationBus.removeEventListener('saved',this._onNavigation);window.removeEventListener('message',this._htmlMessage);clearInterval(this._timer);media.removeEventListener('change',this._onMedia);this._ticket=(this._ticket||0)+1;}
   render(){
     if(!this.config || !ORIGINAL)return;
     const kind=this.config.widget;
     this.removeLeaflet();this._ticket=(this._ticket||0)+1;
-    this.shadowRoot.innerHTML=`<style>${ORIGINAL.css}\n${EXTRA_CSS}</style>`+markup(kind);
+    this.shadowRoot.innerHTML=`<style>${ORIGINAL.css}\n${EXTRA_CSS}\n${DASHBOARD_CSS}</style>`+markup(kind);
+    const labels={'GOOD DRIVE':'Today','NOW PLAYING':'Music','LOCAL AUDIO':'Local audio','MY VEHICLE':'Vehicle','DRIVING DATA':'Driving','WAITING':'No data','YOUR LOCAL HEAD UNIT':'','VEHICLE TELEMETRY • READ ONLY':'Vehicle data','SPEED':'Speed','ENGINE':'Engine'};
+    this.shadowRoot.querySelectorAll('.eyebrow,.media-tag,.clock-bottom,.vehicle-art-subtitle,.gauge-caption,.card-caption span').forEach(el=>{if(Object.hasOwn(labels,el.textContent.trim()))el.textContent=labels[el.textContent.trim()];});
     applyWidgetStyle(this);
     if(kind==='map'){this.installNavigation();const ownerStyle=this.shadowRoot.getElementById('custom-style');if(ownerStyle)this.shadowRoot.append(ownerStyle);}
     if(kind==='html')this.shadowRoot.getElementById('htmlFrame').srcdoc=htmlDocument(this.config);
@@ -270,7 +272,8 @@ class DriveConsoleWidget extends HTMLElement {
   replayTick(){if(!this._replaying||!this._history?.length)return;this._replayClock=(this._replayClock||this._history[0].ts)+Number(this.shadowRoot.getElementById('navReplaySpeed').value);while((this._replayIndex||0)<this._history.length-1&&this._history[(this._replayIndex||0)+1].ts<=this._replayClock)this._replayIndex=(this._replayIndex||0)+1;if(this._replayIndex===this._history.length-1)this._replaying=false;this.viewReplay();}
   removeLeaflet(){
     this._mapResize?.disconnect();this._mapResize=null;
-    if(this._leaflet){this._leaflet.remove();this._leaflet=null;}
+    this._mapInteracting=false;
+    if(this._leaflet){const map=this._leaflet;this._leaflet=null;map.remove();}
     this._leafletLayer=null;this._leafletFeatures=null;this._featureKey=null;this._gpsMarker=null;this._onlineTiles=false;
   }
   leafletPoint(point){const lon=this._navigation?.settings?.usaOnly&&point.lon>=170?point.lon-360:point.lon;return LEAFLET.latLng(point.lat,lon);}
@@ -282,12 +285,13 @@ class DriveConsoleWidget extends HTMLElement {
       r.insertBefore(style,r.getElementById('custom-style'));
       const host=document.createElement('div');host.id='leafletMap';host.setAttribute('aria-label','Interactive map');surface.prepend(host);
       this._leaflet=LEAFLET.map(host,{zoomControl:false,attributionControl:true,minZoom:2,maxZoom:18,worldCopyJump:true,zoomAnimation:true,fadeAnimation:true,markerZoomAnimation:true});
+      const map=this._leaflet;
       this._leaflet.attributionControl.getContainer().id='mapAttribution';this._leaflet.attributionControl.getContainer().hidden=true;
       this._leafletFeatures=LEAFLET.layerGroup().addTo(this._leaflet);
-      this._leaflet.on('dragstart zoomstart',()=>{if(this._settingMapView)return;this._mapInteracting=true;this._followGPS=false;this._replaying=false;});
-      this._leaflet.on('moveend zoomend',()=>{if(this._settingMapView)return;this._mapInteracting=false;const center=this._leaflet.getCenter().wrap();this._viewCenter={lat:center.lat,lon:center.lng};this._zoom=this._leaflet.getZoom();this._followGPS=false;this._mapKey=null;this.updateMap();});
-      this._leaflet.on('click',e=>{const point=e.latlng.wrap();this._selectedPoint={lat:point.lat,lon:point.lng};const mode=r.getElementById('navPick').value;if(mode!=='inspect')this.addNavPoint(mode);this.drawNavigation();});
-      this._mapResize=new ResizeObserver(()=>{if(!this._leaflet)return;this._settingMapView=true;try{this._leaflet.invalidateSize({pan:true,animate:false});}finally{this._settingMapView=false;}});this._mapResize.observe(surface);
+      this._leaflet.on('dragstart zoomstart',()=>{if(this._leaflet!==map||!this.isConnected||this._settingMapView)return;this._mapInteracting=true;this._followGPS=false;this._replaying=false;});
+      this._leaflet.on('moveend zoomend',()=>{if(this._leaflet!==map||!this.isConnected||this._settingMapView)return;this._mapInteracting=false;const center=map.getCenter().wrap();this._viewCenter={lat:center.lat,lon:center.lng};this._zoom=map.getZoom();this._followGPS=false;this._mapKey=null;this.updateMap();});
+      this._leaflet.on('click',e=>{if(this._leaflet!==map||!this.isConnected)return;const point=e.latlng.wrap();this._selectedPoint={lat:point.lat,lon:point.lng};const mode=r.getElementById('navPick').value;if(mode!=='inspect')this.addNavPoint(mode);this.drawNavigation();});
+      this._mapResize=new ResizeObserver(()=>{if(this._leaflet!==map||!this.isConnected)return;this._settingMapView=true;try{map.invalidateSize({pan:true,animate:false});}finally{this._settingMapView=false;}});this._mapResize.observe(surface);
     }
     if(!this._leafletLayer&&this._hass){
       const owner=this;
@@ -332,6 +336,7 @@ class DriveConsoleWidget extends HTMLElement {
     const label=gpsLabel(this._hass,this.config.gps_entity||DEFAULTS.gps);
     text(r,'mapModeText',shown?`${this._onlineTiles?'Online USA map':'Local map'} · GPS ${label}${loading?' · loading detail':''}`:`GPS ${label} · ${loading?'loading map':onlineProviderBlocked?'map provider refused access':'map tiles unavailable; planning available'}`);
     text(r,'mapBadge',valid?(shown?'GPS FIX':'GPS · NO MAP'):label==='waiting for fix'?'WAITING FOR FIX':'GPS DISCONNECTED');
+    r.getElementById('mapBadge').dataset.state=valid?'ready':'waiting';
     r.querySelector('.map-heading strong').textContent=this.config.title||(this._onlineTiles?'Navigation · USA map':'Navigation');
     const attribution=r.getElementById('mapAttribution');if(attribution)attribution.hidden=!shown;
   }
@@ -375,7 +380,8 @@ class DriveConsoleWidget extends HTMLElement {
   updateMedia(){
     if(this.config?.widget!=='media')return;const r=this.shadowRoot;
     text(r,'trackTitle',track>=0?tracks[track]?.name||this.config.empty_title||'Nothing playing':this.config.empty_title||'Nothing playing');text(r,'trackArtist',audio?.error?'Unable to play this audio file':tracks.length?'Local audio · this browser':this.config.artist_placeholder||'Choose audio files from your device');
-    text(r,'elapsed',elapsed(audio?.currentTime||0));text(r,'duration',elapsed(audio?.duration));text(r,'playPause',audio && !audio.paused?'❚❚':'▶');
+    text(r,'elapsed',elapsed(audio?.currentTime||0));text(r,'duration',elapsed(audio?.duration));text(r,'playPause',audio && !audio.paused?'❚❚':'▶︎');
+    const play=r.getElementById('playPause');if(play){play.dataset.playing=String(!!audio&&!audio.paused);play.setAttribute('aria-label',audio&&!audio.paused?'Pause':'Play');}
     const seek=r.getElementById('mediaSeek');if(seek)seek.value=audio && Number.isFinite(audio.duration)?audio.currentTime/audio.duration*100:0;
   }
 }
@@ -383,7 +389,7 @@ const field=(name,selector)=>({name,selector});
 const txt=name=>field(name,{text:{}}),flag=name=>field(name,{boolean:{}}),num=(name,min,max,step=1)=>field(name,{number:{min,max,step,mode:'box'}});
 const choice=(name,options)=>field(name,{select:{options}}),entity=name=>field(name,{entity:{}});
 const group=(name,title,schema,expanded=false)=>({name,title,type:'expandable',flatten:true,expanded,schema});
-const PAGE_DEFAULTS={page_layout:'grid',columns:2,widget_gap:11,content_padding:16,show_header:true,show_rail:true,show_dock:true,show_tabs:true,show_clock:true,show_date:true,show_connections:true,show_theme_button:true,show_assistant_menu:true,show_volume:true,show_climate:true,show_home_button:true,show_back_button:true,compact_dock:true};
+const PAGE_DEFAULTS={page_layout:'grid',columns:2,widget_gap:16,content_padding:20,show_header:true,show_rail:true,show_dock:false,show_tabs:false,show_clock:true,show_date:true,show_connections:true,show_theme_button:true,show_assistant_menu:true,show_volume:false,show_climate:false,show_home_button:true,show_back_button:true,compact_dock:true};
 const WIDGET_DEFAULTS={clock:{show_date:true,show_footer:true,date_format:'full',hour24:false},media:{show_art:true,show_picker:true,show_seek:true,show_controls:true},map:{online_fallback:true,show_map_controls:true,show_position:true,show_empty:true,zoom:5},vehicleArt:{show_illustration:true},gauges:{show_age:true,show_freshness:true,speed_unit:'mph',speed_decimals:0,rpm_decimals:1,rpm_divisor:'1000',rpm_max:6500},metrics:{temperature_unit:'F',visible_metrics:['coolant','voltage','fuel','load']},link:{new_tab:true},page:PAGE_DEFAULTS};
 function editorSchema(kind){
   const fields=[choice('widget',Object.entries(KINDS).map(([value,label])=>({value,label})))];
@@ -449,15 +455,15 @@ const PAGE_CSS=`
 class DriveConsoleLayout extends HTMLElement {
   constructor(){super();this.attachShadow({mode:'open'});this._cards=[];this.initialRenderComplete=new Promise(resolve=>{this._ready=resolve;});}
   setConfig(config){this.config=config;this._theme=undefined;this.render();}
-  set hass(value){this._hass=value;if(this._editor)this._editor.hass=value;this.updateHeader();}
+  set hass(value){this._hass=value;if(this._editor)this._editor.hass=value;this.updateHeader();this.checkUI();}
   set lovelace(value){const prev=this._lovelace;this._lovelace=value;if(prev?.editMode!==value?.editMode || prev?.config!==value?.config)this.render();}
   set cards(value){this._cards=value||[];this.render();}
   set badges(value){this._badges=value||[];this.render();}
   get cards(){return this._cards;}
   set index(value){this._index=value;if(this._editor)this._editor.index=value;}
   set narrow(value){this._narrow=value;if(this._editor)this._editor.narrow=value;}
-  connectedCallback(){this.render();this._timer=setInterval(()=>this.updateHeader(),1000);}
-  disconnectedCallback(){clearInterval(this._timer);clearTimeout(this._notice);if(this.openPopover)this.hidePopover();}
+  connectedCallback(){uiParticipants.add(this);this.render();this._timer=setInterval(()=>{this.updateHeader();this.checkUI();},1000);}
+  disconnectedCallback(){uiParticipants.delete(this);clearInterval(this._timer);clearTimeout(this._notice);if(this.openPopover)this.hidePopover();}
   get openPopover(){return typeof this.showPopover==='function' && this.matches(':popover-open');}
   get settings(){return {...PAGE_DEFAULTS,page_layout:this.config?.path==='drive'?'cockpit':'grid',...currentPage(this.config)};}
   render(){
@@ -473,7 +479,7 @@ class DriveConsoleLayout extends HTMLElement {
     this._editor=null;this.style.cssText='';const p=this.settings;this._page=p;
     let saved;try{saved=localStorage.getItem('driveconsole-theme:'+this.config.path)||localStorage.getItem('driveconsole-theme');}catch(_){}
     const theme=this._theme||p.theme||saved||'night';this.dataset.theme=theme==='auto'?(matchMedia('(prefers-color-scheme:dark)').matches?'night':'day'):theme;
-    this.shadowRoot.innerHTML=`<style>${ORIGINAL.css}\n${VIEW_CSS}\n${PAGE_CSS}</style><div id="shell"><nav class="rail" aria-label="Dashboard pages"><div class="rail-brand"><span class="brand-glyph">◆</span><span class="brand-caption"></span></div><div id="navItems"></div></nav><div class="workspace">${ORIGINAL.header}<div id="pageTabs" role="tablist" aria-label="Dashboard tabs"></div><div id="badges"></div><div id="view-home" class="view active"><div class="home-layout"><div class="left-stack" id="left"></div><div class="map-holder" id="map"></div><div class="right-stack" id="right"></div></div></div><div id="extra"></div>${ORIGINAL.footer}</div></div><div class="toast" id="toast" role="status" hidden></div>`;
+    this.shadowRoot.innerHTML=`<style>${ORIGINAL.css}\n${VIEW_CSS}\n${PAGE_CSS}\n${DASHBOARD_CSS}</style><div id="shell"><nav class="rail" aria-label="Dashboard pages"><div class="rail-brand"><span class="brand-glyph">◆</span><span class="brand-caption"></span></div><div id="navItems"></div></nav><div class="workspace">${ORIGINAL.header}<div id="pageTabs" role="tablist" aria-label="Dashboard tabs"></div><div id="badges"></div><div id="view-home" class="view active"><div class="home-layout"><div class="left-stack" id="left"></div><div class="map-holder" id="map"></div><div class="right-stack" id="right"></div></div></div><div id="extra"></div>${ORIGINAL.footer}<div class="dashboard-version"><span id="uiVersion"></span><button id="uiReload" hidden>Reload dashboard</button></div></div></div><div class="toast" id="toast" role="status" hidden></div>`;
     const r=this.shadowRoot,shell=r.getElementById('shell'),body=r.querySelector('.home-layout');
     for(const [name,key] of [['--bg','background_color'],['--text','text_color'],['--cyan','accent'],['--border','border_color']])if(p[key] && CSS.supports('color',p[key]))this.style.setProperty(name,p[key]);
     shell.classList.toggle('without-rail',p.show_rail===false);r.querySelector('.rail').hidden=p.show_rail===false;r.querySelector('.topbar').hidden=p.show_header===false;r.querySelector('.dock').hidden=p.show_dock===false;r.getElementById('pageTabs').hidden=p.show_tabs===false;
@@ -491,16 +497,12 @@ class DriveConsoleLayout extends HTMLElement {
       card.style.cssText='display:block;min-width:0'+(cockpit && placement==='map'?';height:100%':'');
       if(!cockpit)card.style.gridColumn='span '+bounded(config.column_span||config.view_layout?.column_span,1,1,columns);
       card.dataset.driveWidget=kind||'custom';target.append(card);
-      const update=()=>{const widget=card.querySelector('drive-console-widget')||card.shadowRoot?.querySelector('drive-console-widget');if(widget){widget.dataset.theme=this.dataset.theme;widget.setPageStyle(p);}};
+      const update=()=>{const widget=card.querySelector('drive-console-widget,drive-console-service')||card.shadowRoot?.querySelector('drive-console-widget,drive-console-service');if(widget){widget.dataset.theme=this.dataset.theme;widget.setPageStyle?.(p);}};
       update();requestAnimationFrame(update);
     }
     for(const badge of this._badges||[])r.getElementById('badges').append(badge);
     this.chrome();
-    const testing=document.createElement('details');testing.style.cssText='padding:8px 16px;background:#142238;color:white';
-    const summary=document.createElement('summary');summary.id='previewStatus';testing.append(summary);
-    const instructions=document.createElement('p');instructions.textContent='GPS and vehicle measurements come from the configured devices. Map planning and saved trips remain available when GPS is disconnected.';testing.append(instructions);
-    const original=document.createElement('button');original.textContent='Original console';original.onclick=()=>legacy('home');testing.append(original);
-    r.getElementById('pageTabs').after(testing);
+    this.versionLabel();r.getElementById('uiReload').onclick=()=>reloadDashboard(r.getElementById('uiVersion'));
 
     const tools=document.createElement('span');tools.className='layout-tools';
     if(this._hass?.user?.is_admin){const edit=document.createElement('button');edit.className='top-icon';edit.textContent='✎';edit.title='Edit this tab';edit.setAttribute('aria-label','Edit dashboard');edit.onclick=()=>this._lovelace?.setEditMode(true);tools.append(edit);if(p.show_header===false){const floating=edit.cloneNode(true);floating.classList.add('floating-edit');floating.onclick=edit.onclick;r.append(floating);}}
@@ -519,7 +521,7 @@ class DriveConsoleLayout extends HTMLElement {
   }
   chrome(){
     const r=this.shadowRoot,p=this.settings,views=(this._lovelace?.config.views||[]).filter(v=>!v.subview),current=this.config.path;
-    const symbols={drive:'⌂',navigation:'➤',media:'♫',vehicle:'▰',health:'⚙',updates:'↻',settings:'☷'};
+    const symbols={drive:'mdi:home-outline',navigation:'mdi:map-outline',media:'mdi:music-note-outline',vehicle:'mdi:car-outline',health:'mdi:heart-pulse',updates:'mdi:update',settings:'mdi:cog-outline',devices:'mdi:devices',storage:'mdi:harddisk',recordings:'mdi:video-outline',radio:'mdi:radio-tower',reports:'mdi:clipboard-text-outline','home-control':'mdi:server-network'};
     const defaults=views.map((view,index)=>({label:view.title||'Page '+(index+1),icon:view.icon||symbols[view.path]||'◇',page:view.path??String(index)}));
     const items=Array.isArray(p.navigation_items)?p.navigation_items:defaults;
     const add=(holder,item,cls)=>{
@@ -531,11 +533,11 @@ class DriveConsoleLayout extends HTMLElement {
       button.onclick=()=>item.url?go(item.url,item.new_tab!==false):item.message?this.notice(item.message):this.screen(item.page);
       holder.append(button);return button;
     };
-    text(r,'topClock','');r.querySelector('.brand-caption').textContent=p.nav_brand||'DRIVE';
+    text(r,'topClock','');r.querySelector('.brand-caption').textContent=p.nav_brand||'Car';
     for(const item of items)add(r.getElementById('navItems'),item,'rail-item');
     for(const item of defaults){const tab=add(r.getElementById('pageTabs'),item,'page-tab');tab.setAttribute('role','tab');tab.setAttribute('aria-selected',String(item.page===current));}
     const dock=r.querySelector('.apps');dock.replaceChildren();for(const item of Array.isArray(p.dock_items)?p.dock_items:defaults)add(dock,item,'app-tile');
-    r.querySelector('.small-brand').textContent=p.brand_text||'DRIVE CONSOLE';r.querySelector('.top-subtitle').textContent=p.subtitle||this.config.title||'HEAD UNIT';r.querySelector('.ford-pill').textContent=p.badge_text||'FORD • LOCAL';
+    r.querySelector('.small-brand').textContent=p.brand_text||'Car';r.querySelector('.top-subtitle').textContent=p.subtitle||this.config.title||'Dashboard';r.querySelector('.ford-pill').textContent=p.badge_text||'Local';
     const hide=(selector,value)=>r.querySelectorAll(selector).forEach(el=>{el.hidden=value===false;});
     hide('#topClock',p.show_clock);hide('#topDate',p.show_date);hide('.dot-sep',p.show_clock!==false && p.show_date!==false);hide('.system-status',p.show_connections);hide('#quickTheme',p.show_theme_button);hide('.sound-controls',p.show_volume);hide('.climate-placeholder',p.show_climate);hide('.center-controls button[aria-label="Home"]',p.show_home_button);hide('#backButton',p.show_back_button);
     const home=r.querySelector('.center-controls button[data-view="home"]');if(home)home.onclick=()=>this.screen('home');
@@ -551,14 +553,20 @@ class DriveConsoleLayout extends HTMLElement {
   updateHeader(){
     const r=this.shadowRoot;if(!r.getElementById('topClock'))return;
     const now=new Date();text(r,'topClock',now.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}));text(r,'topDate',now.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}));
-    text(r,'previewStatus','System tools · original console');
     const h=this._hass,p=this.settings,obd=h?.connected && h.states?.[p.obd_entity||'binary_sensor.car_obd_connection']?.state==='on',gps=!!gpsPosition(h,p.gps_entity||DEFAULTS.gps);
     text(r,'telemetryState',obd?'OBD2 connected':'OBD2 unavailable');text(r,'gpsState','GPS '+gpsLabel(h,p.gps_entity||DEFAULTS.gps));r.getElementById('telemetryDot').className='led '+(obd?'good':'warning');r.getElementById('gpsDot').className='led '+(gps?'good':'');
   }
+  versionLabel(){
+    const label=this.shadowRoot.getElementById('uiVersion'),button=this.shadowRoot.getElementById('uiReload');if(!label||!button)return;
+    const state=this._uiVersion;label.textContent='Dashboard '+UI_BUILD;label.title='Loaded dashboard build: '+UI_BUILD;
+    if(state){label.title+='\nInstalled build: '+state.build+'\nAsset verified: '+state.assetMatch+'\nResource registered: '+state.resourceRegistered;const update=state.build!==UI_BUILD&&state.assetMatch&&state.resourceRegistered;button.hidden=!update;if(update)label.textContent+=' · update ready';else if(!state.assetMatch||!state.resourceRegistered)label.textContent+=' · installation incomplete';label.className=update?'ui-update':'';}
+  }
+  async checkUI(){if(!this.isConnected||!this._hass?.connected||this._uiChecking||Date.now()-(this._uiCheckedAt||0)<60000)return;this._uiChecking=true;this._uiCheckedAt=Date.now();try{const value=await dashboardVersion(this._hass);if(value){this._uiVersion=value;this.versionLabel();}}finally{this._uiChecking=false;}}
+
 }
-customElements.define('drive-console-widget',DriveConsoleWidget);
-customElements.define('drive-console-widget-editor',DriveConsoleEditor);
-customElements.define('drive-console-layout',DriveConsoleLayout);
+if(!customElements.get?.('drive-console-widget'))customElements.define('drive-console-widget',DriveConsoleWidget);
+if(!customElements.get?.('drive-console-widget-editor'))customElements.define('drive-console-widget-editor',DriveConsoleEditor);
+if(!customElements.get?.('drive-console-layout'))customElements.define('drive-console-layout',DriveConsoleLayout);
 window.customCards=window.customCards||[];
 window.customCards.push({type:'drive-console-widget',name:'Drive Console widget',description:'Original car clock, local music, offline map, truck art and vehicle gauges',preview:true});
 export {number,display,temperature,bounded,currentPage,targetView,editorSchema,WIDGET_DEFAULTS,htmlDocument,gpsPosition,gpsLabel,defaultNavigation};

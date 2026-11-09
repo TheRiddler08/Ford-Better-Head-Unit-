@@ -32,6 +32,18 @@ class AssistantPreviewTests(unittest.TestCase):
         with patch.object(preview,'docker',return_value=json.dumps(record).encode()):
             with self.assertRaisesRegex(ValueError,'another application'):preview.existing()
 
+    def test_preview_refreshes_generated_pointer_but_keeps_edited_legacy_module(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);(root/'www').mkdir();(root/'www/drive-console.js').write_text('owner legacy module')
+            old='{"url":"/local/drive-console.js?v=old"}';(root/'drive-console-resource.json').write_text(old)
+            payload=json.dumps({'files':{'www/drive-console.js':'new module','www/drive-console.'+'a'*20+'.js':'new module',
+                'drive-console-resource.json':'{"url":"/local/drive-console.'+'a'*20+'.js"}'},'migration':'pass'})
+            with patch.dict(os.environ,{'CAR_PREVIEW_CONFIG':temp}),patch('sys.stdin',io.StringIO(payload)):exec(preview.INITIALIZE,{})
+            self.assertEqual((root/'www/drive-console.js').read_text(),'owner legacy module')
+            self.assertEqual((root/'www'/('drive-console.'+'a'*20+'.js')).read_text(),'new module')
+            self.assertIn('a'*20,(root/'drive-console-resource.json').read_text())
+            backup=next((root/'.drive-console-backups').iterdir());self.assertEqual(backup.read_text(),old);self.assertEqual(backup.stat().st_mode&0o777,0o600)
+
     def test_current_running_preview_does_not_download_or_rebuild_for_start(self):
         _,revision=preview.profile()
         info={'Config':{'Labels':{preview.REVISION_LABEL:revision}},'State':{'Running':True},'HostConfig':{'RestartPolicy':{'Name':'unless-stopped'}}}

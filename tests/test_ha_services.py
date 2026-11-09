@@ -1,5 +1,5 @@
 """Exercise the native HA feature proxies without installing the HA runtime."""
-import ast,asyncio,json,types,unittest
+import ast,asyncio,json,types,unittest,tempfile,hashlib
 from pathlib import Path
 from unittest.mock import MagicMock
 try:
@@ -16,6 +16,16 @@ exec(compile(source,'car_services','exec'),module.__dict__)
 
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_ui_identity_checks_actual_asset_and_registered_resource_without_owner_data(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);(root/'www').mkdir();(root/'.storage').mkdir();raw=b'const testBuild="abcdef123456";';digest=hashlib.sha256(raw).hexdigest();url='/local/drive-console.'+digest[:20]+'.js'
+            (root/'www'/url.removeprefix('/local/')).write_bytes(raw)
+            (root/'drive-console-resource.json').write_text(json.dumps({'build':'abcdef123456','url':url,'sha256':digest}))
+            (root/'.storage/lovelace_resources').write_text(json.dumps({'data':{'items':[{'id':'drive_console_local','type':'module','url':url}]}}))
+            (root/'.storage/auth').write_text('private owner authentication')
+            state=module.ui_state(root);self.assertTrue(state['assetMatch']);self.assertTrue(state['resourceRegistered']);self.assertNotIn('private',json.dumps(state))
+            (root/'www'/url.removeprefix('/local/')).write_bytes(b'old source');self.assertFalse(module.ui_state(root)['assetMatch'])
+            self.assertTrue(module.CarUIView.requires_auth)
     async def asyncSetUp(self):
         self.requests=[];self.followed=False
         async def endpoint(request):

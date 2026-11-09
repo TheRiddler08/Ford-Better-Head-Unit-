@@ -46,7 +46,8 @@ test('page appearance and navigation controls live in the page card',()=>{
   assert.deepEqual(currentPage({cards:[]}),{});
   const names=schema=>schema.flatMap(field=>[field.name,...(field.schema?names(field.schema):[])]);
   for(const key of ['show_tabs','show_header','show_rail','show_dock','navigation_items','dock_items','page_layout','custom_css'])assert.ok(names(editorSchema('page')).includes(key));
-  assert.equal(WIDGET_DEFAULTS.page.show_tabs,true);
+  assert.equal(WIDGET_DEFAULTS.page.show_tabs,false);
+  assert.equal(WIDGET_DEFAULTS.page.show_dock,false);
   for(const kind of ['clock','media','map','vehicleArt','gauges','metrics','value','text','link'])assert.ok(names(editorSchema(kind)).includes('custom_css'));
 });
 

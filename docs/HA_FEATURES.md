@@ -7,6 +7,36 @@ existing driving widgets. Each service card has a feature selector, title,
 refresh interval, height and optional scoped CSS in its native editor. The
 HTML/CSS/JavaScript widget remains available for custom sandboxed displays.
 
+## Appearance and confirming an update
+
+The dashboard uses plain dark/light surfaces, smaller headings and one sidebar.
+The duplicated top tab row and bottom app launcher are off by default; existing
+explicit Page settings still win. Gauges, media, artwork and all native views
+remain editable. More detailed service information is under Details.
+
+The footer shows the **loaded dashboard build**. Hover it to compare the loaded
+build with the installed build, asset checksum and registered resource. A newer
+verified build offers Reload dashboard. It does not reload automatically or
+discard an open native editor, unsaved service-card draft or active playback.
+
+HA now loads a content-addressed file such as
+`/local/drive-console.<hash>.js`. An old or edited `www/drive-console.js` cannot
+silently pin the managed dashboard to an older UI. Unknown old generated metadata
+is backed up privately before its pointer is updated. Native saved cards, accounts
+and edited legacy module bytes are retained. A damaged versioned asset fails
+verification instead of being reported as current.
+
+The authenticated `/api/car_console/ui` endpoint reports the installed build,
+whether its actual file matches its checksum, and whether HA registered that URL.
+The install status at `/etc/car-dashboard/home-assistant.json` also includes
+`uiBuild` and `uiResource`. Git HEAD and the Docker image alone do not identify the
+JavaScript currently running in a browser. The compatibility alias may be an
+owner-edited older file, so checking only `/local/drive-console.js` is insufficient.
+
+An existing managed **Car starter** receives an Open car dashboard button once.
+It does not replace that dashboard or recreate a removed page/button. The updated
+car interface is `/drive-console`; unrelated dashboards keep their own layouts.
+
 | Native tab | Features |
 | --- | --- |
 | Home | Clock, local media, map, vehicle illustration, speed/RPM and quick metrics |

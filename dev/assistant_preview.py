@@ -24,7 +24,7 @@ URL='http://127.0.0.1:18123'
 # Run only in the isolated preview container, without host mounts or networking.
 # Update unchanged managed files; never replace saved accounts/dashboard stores.
 INITIALIZE=r'''
-import hashlib,json,os,sys,tempfile
+import hashlib,json,os,re,sys,tempfile
 from pathlib import Path
 root=Path(os.getenv('CAR_PREVIEW_CONFIG','/config'))
 payload=json.load(sys.stdin)
@@ -36,8 +36,18 @@ for name,content in payload['files'].items():
     if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
         raise ValueError('Unsafe preview config path')
     raw=content.encode()
-    if path.exists() and hashlib.sha256(path.read_bytes()).hexdigest()!=previous.get(name):
-        continue
+    if path.exists():
+        old=path.read_bytes();current=hashlib.sha256(old).hexdigest()
+        if current!=previous.get(name) and current!=hashlib.sha256(raw).hexdigest():
+            if name=='drive-console-resource.json':
+                backup=root/'.drive-console-backups'/('preview-resource-'+current+'.json')
+                if backup.is_symlink() or not backup.resolve().is_relative_to(root.resolve()):raise ValueError('Unsafe dashboard metadata backup')
+                backup.parent.mkdir(parents=True,exist_ok=True)
+                if backup.exists() and backup.read_bytes()!=old:raise ValueError('Dashboard metadata backup mismatch')
+                if not backup.exists():
+                    with os.fdopen(os.open(backup,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600),'wb') as saved:saved.write(old)
+            elif re.fullmatch(r'www/drive-console\.[0-9a-f]{20}\.js',name):raise ValueError('Dashboard asset checksum mismatch')
+            else:continue
     path.parent.mkdir(parents=True,exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent,delete=False) as pending:
         pending.write(raw);temp=Path(pending.name)

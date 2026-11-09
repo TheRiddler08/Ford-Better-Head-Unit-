@@ -108,11 +108,16 @@ class ClassicDashboardTests(unittest.TestCase):
         self.assertEqual(metadata['sha256'],hashlib.sha256(module).hexdigest())
         self.assertIn(metadata['sha256'][:20],metadata['url'])
 
+    def test_shipped_bundle_matches_editable_sources_and_theme(self):
+        from dev.build_drive_console import bundle
+        self.assertEqual((ROOT/'home_assistant/drive_console.js').read_text(),bundle())
+
     def test_reconcile_tracks_resource_versions_without_reseeding_deleted_dashboards(self):
         import tempfile
         with tempfile.TemporaryDirectory() as temp:
             base=Path(temp);storage=base/'config/.storage';storage.mkdir(parents=True)
             (storage/'car_console_starter_migration').write_text('{}')
+            (storage/'car_console_dashboard_link').write_text('{"data":{"completed":true}}')
             metadata=base/'config/drive-console-resource.json'
             metadata.write_text(json.dumps({'url':'/local/drive-console.js?v=one'}))
             marker=storage/'car_console_classic_migration'
@@ -132,3 +137,14 @@ class ClassicDashboardTests(unittest.TestCase):
         before=copy.deepcopy(conflict)
         with self.assertRaises(ValueError):self.migrate(conflict)
         self.assertEqual(conflict,before)
+
+    def test_managed_starter_gets_one_link_without_resetting_edits_or_restoring_deletions(self):
+        starter={'config':{'views':[{'title':'My page','cards':[{'type':'markdown','content':'Keep my notes','tap_action':None}]}]}}
+        state={'car_console_starter_migration':{'completed':True},'lovelace.car_starter':copy.deepcopy(starter),
+               'lovelace_dashboards':{'items':[{'id':'car_starter','url_path':'car-starter'}]}}
+        url='/local/drive-console.'+'a'*20+'.js';self.migrate(state,url)
+        cards=state['lovelace.car_starter']['config']['views'][0]['cards']
+        self.assertEqual(cards[0]['tap_action']['navigation_path'],'/drive-console');self.assertEqual(cards[1:],starter['config']['views'][0]['cards'])
+        self.assertEqual(state['car_console_starter_link_backup'],starter)
+        cards.pop(0);before=copy.deepcopy(state['lovelace.car_starter']);self.migrate(state,url)
+        self.assertEqual(state['lovelace.car_starter'],before)

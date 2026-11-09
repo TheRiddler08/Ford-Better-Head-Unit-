@@ -42,13 +42,13 @@ class HomeAssistantTests(unittest.TestCase):
         self.assertEqual(data['lovelace']['mode'],'storage')
         self.assertEqual(data['recorder']['commit_interval'],1)
         self.assertIn('car_console',data)
-        self.assertEqual(len(managed_files(ROOT,'UTC')),14)
+        self.assertEqual(len(managed_files(ROOT,'UTC')),15)
 
     def test_repeatable_managed_assets_preserve_edits_and_auth(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);config=root/'config';registry=root/'managed.json'
             first,preserved=sync_assets(ROOT,config,'UTC',registry)
-            self.assertEqual(len(first),14)
+            self.assertEqual(len(first),15)
             self.assertEqual(sync_assets(ROOT,config,'UTC',registry),([],[]))
             auth=config/'.storage/auth';auth.parent.mkdir();auth.write_text('private auth placeholder')
             path=config/'configuration.yaml';path.write_text('my custom configuration')
@@ -56,6 +56,30 @@ class HomeAssistantTests(unittest.TestCase):
             self.assertIn('configuration.yaml',preserved)
             self.assertEqual(path.read_text(),'my custom configuration')
             self.assertEqual(auth.read_text(),'private auth placeholder')
+
+    def test_edited_legacy_module_cannot_block_a_new_versioned_dashboard(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);repo=root/'repo';repo.mkdir();config=root/'config';registry=root/'managed.json'
+            shutil.copytree(ROOT/'home_assistant',repo/'home_assistant');shutil.copytree(ROOT/'app/web',repo/'app/web')
+            sync_assets(repo,config,'UTC',registry)
+            alias=config/'www/drive-console.js';alias.write_text('Owner edited legacy module')
+            pointer=config/'drive-console-resource.json';unknown=pointer.read_bytes()+b'\n';pointer.write_bytes(unknown)
+            source=repo/'home_assistant/drive_console.js';source.write_text(source.read_text()+'\n// new dashboard version\n')
+            changed,preserved=sync_assets(repo,config,'UTC',registry)
+            metadata=json.loads((config/'drive-console-resource.json').read_text());asset=config/'www'/metadata['url'].removeprefix('/local/')
+            self.assertIn('www/'+asset.name,changed);self.assertIn('www/drive-console.js',preserved)
+            self.assertEqual(alias.read_text(),'Owner edited legacy module');self.assertIn('// new dashboard version',asset.read_text())
+            self.assertEqual(hashlib.sha256(asset.read_bytes()).hexdigest(),metadata['sha256']);self.assertRegex(metadata['build'],'^[a-f0-9]{12}$')
+            self.assertEqual(next((config/'.drive-console-backups').iterdir()).read_bytes(),unknown)
+
+    def test_corrupt_versioned_asset_is_rejected_before_metadata_is_changed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config=Path(temp)/'config';registry=Path(temp)/'managed.json';sync_assets(ROOT,config,'UTC',registry)
+            metadata=(config/'drive-console-resource.json').read_bytes();url=json.loads(metadata)['url']
+            (config/'www'/url.removeprefix('/local/')).write_text('Corrupt module')
+            with self.assertRaisesRegex(ValueError,'checksum mismatch'):sync_assets(ROOT,config,'UTC',registry)
+            self.assertEqual((config/'drive-console-resource.json').read_bytes(),metadata)
 
     def test_old_default_profile_upgrades_without_touching_native_layout(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -76,10 +76,10 @@ def main():
                 page.locator('drive-console-widget').get_by_text('MY TEST DRIVE',exact=True).wait_for(timeout=10000)
                 layout=page.locator('drive-console-layout')
                 for name,path in [('Navigation','navigation'),('Media','media'),('Vehicle','vehicle'),('Health','health'),('Updates','updates'),('Settings','settings')]:
-                    layout.get_by_role('tab',name=name,exact=True).click()
+                    layout.get_by_role('button',name=name,exact=True).click()
                     page.wait_for_url('**/drive-console/'+path)
-                    page.locator('drive-console-layout').get_by_role('tab',name=name,exact=True).wait_for()
-                layout.get_by_role('tab',name='Navigation',exact=True).click()
+                    page.locator('drive-console-layout').get_by_role('button',name=name,exact=True).wait_for()
+                layout.get_by_role('button',name='Navigation',exact=True).click()
                 page.wait_for_url('**/drive-console/navigation')
                 layout.get_by_role('button',name='Edit dashboard',exact=True).click()
                 page.locator('hui-card-options').filter(has=page.locator('drive-console-widget[data-widget=map]')).get_by_role('button',name='Edit',exact=True).click()
@@ -95,7 +95,7 @@ def main():
                 page.reload(wait_until='domcontentloaded')
                 layout.get_by_text('NAVIGATION ONLY',exact=True).wait_for(timeout=10000)
                 assert layout.evaluate("el=>el.style.getPropertyValue('--bg')")=='#142238'
-                layout.get_by_role('tab',name='Home',exact=True).click()
+                layout.get_by_role('button',name='Home',exact=True).click()
                 page.wait_for_url('**/drive-console/drive')
                 layout.get_by_text('MY TEST DRIVE',exact=True).wait_for()
                 assert layout.get_by_text('NAVIGATION ONLY',exact=True).count()==0

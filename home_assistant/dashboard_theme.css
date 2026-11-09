@@ -1,0 +1,69 @@
+/* Shared car dashboard surfaces. Owner card/page CSS is applied after this. */
+:host {
+  --bg:#11161b; --surface:#1b2229; --panel:#1b2229; --panel-glass:#1b2229;
+  --border:#34404b; --line:#2c3741; --text:#ecf0f3; --muted:#a8b3be;
+  --cyan:#8bbcf0; --blue:#76abe3; --green:#78bf9b; --gold:#d9b777;
+  --shadow:none; --drive-radius:10px;
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  color:var(--text); color-scheme:dark;
+}
+:host([data-theme=day]) {
+  --bg:#f1f3f5; --surface:#fff; --panel:#fff; --panel-glass:#fff;
+  --border:#cdd5dc; --line:#dce1e6; --text:#202b35; --muted:#566573;
+  --cyan:#245e9b; --blue:#245e9b; --green:#23734e; --gold:#7e601f;
+  color-scheme:light;
+}
+button,input,select,textarea {font:inherit}
+button {touch-action:manipulation}
+.glass {background:var(--drive-card-background,var(--panel));box-shadow:none;border-color:var(--drive-border,var(--border));border-radius:var(--drive-radius,10px)}
+.eyebrow,.card-caption,.gauge-caption,.map-bottom-label,.brand-caption,.media-tag,.clock-bottom,.vehicle-art-subtitle {letter-spacing:0;text-transform:none;font-weight:500}
+.clock-card,.music-card,.vehicle-art,.gauge-card,.metric-tile {background:var(--drive-card-background,var(--panel))}
+.clock-scenery,.clock-card:after,.album-orbit,.vehicle-art:before,.map-pattern {display:none}
+.hero-time,.hero-date,.album-art span {text-shadow:none}
+.hero-time {font-size:clamp(32px,3.2vw,52px);white-space:nowrap;font-weight:500;letter-spacing:-1.5px;font-variant-numeric:tabular-nums}
+.clock-bottom {color:var(--muted);font-size:12px}
+.album-art {background:var(--surface);border-color:var(--border);box-shadow:none;border-radius:8px}
+.album-art span {color:var(--muted)}
+.play-button,.subtle-button {background:var(--surface);border-color:var(--border);box-shadow:none;color:var(--text);font-weight:500}
+.play-button:hover,.subtle-button:hover {border-color:var(--cyan)}
+#playPause{font-size:0}#playPause:before{content:"";display:block;width:0;height:0;border-top:8px solid transparent;border-bottom:8px solid transparent;border-left:13px solid currentColor;margin-left:4px}#playPause[data-playing=true]:before{width:12px;height:16px;border:0;border-left:4px solid currentColor;border-right:4px solid currentColor;margin-left:0}
+.truck-art {filter:none}
+.vehicle-art-title>span:last-child {font-style:normal;letter-spacing:0;font-size:16px;font-weight:600}
+.vehicle-art-subtitle {color:var(--muted);font-size:11px}
+.gauge-ring {box-shadow:none;background:none;width:100%;height:auto;min-height:120px;border-radius:0}
+.gauge-ring:before {display:none}
+.gauge-content {position:relative;inset:auto}
+.gauge-content strong {font-size:48px;letter-spacing:-1px;font-weight:500}
+.gauge-content small,.gauge-caption {font-size:12px;letter-spacing:0;color:var(--muted)}
+.metric-ico {display:none}
+.metric-tile strong {font-size:21px;font-weight:600}
+.map-shade {background:none}
+.map-heading,.map-bottom,.map-side-tools,.nav-panel {background:var(--surface);border-color:var(--border);box-shadow:none;color:var(--text)}
+.map-heading span:last-child,.map-bottom small,.map-bottom-label {color:var(--muted)}
+.map-heading{max-width:calc(100% - 84px)}.map-heading-icon{display:none}.map-heading span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.map-bottom-badge {letter-spacing:0;border-radius:5px;color:var(--green);font-weight:600}
+.map-bottom-badge[data-state=waiting]{color:var(--muted);border-color:var(--border);background:transparent}
+.drive-gps-marker {box-shadow:0 1px 6px #0004!important}
+.topbar {background:var(--bg);border-color:var(--line);height:64px}
+.small-brand {color:var(--text);letter-spacing:0;font-size:17px;font-weight:600}
+.top-subtitle {color:var(--muted);letter-spacing:0;font-size:13px}.top-center{display:flex}
+.ford-pill {background:transparent;border:0;color:var(--muted);font-size:12px;letter-spacing:0;font-weight:400;padding:0}
+.top-icon {background:transparent;border-color:var(--border);border-radius:6px}
+.rail {width:auto;background:var(--bg);border:0;border-right:1px solid var(--line);border-radius:0;padding:12px 8px}
+.rail-brand {height:52px;border:0}.brand-glyph {display:none}.brand-caption {font-size:14px;color:var(--text)}
+.rail-item {min-height:46px;border-radius:6px;flex-direction:row;justify-content:flex-start;gap:10px;padding:10px 12px;font-size:13px;color:var(--muted)}
+.rail-item .ico {font-size:19px;font-weight:400;min-width:22px}.rail-item.active {background:var(--surface);box-shadow:none;border-color:var(--border);color:var(--text)}
+.rail-item .ico ha-icon{--mdc-icon-size:20px}
+.rail-item:hover {background:var(--surface);color:var(--text)}
+#shell {grid-template-columns:170px minmax(0,1fr)}
+#pageTabs {background:var(--bg);padding:8px 16px;gap:4px}
+.page-tab {border-radius:5px;padding:8px 12px}.page-tab.active {background:var(--surface);color:var(--text);border-color:var(--border)}
+.dock {background:var(--bg)}.apps {background:var(--bg);border:0;border-top:1px solid var(--line);border-radius:0;min-height:64px}
+.app-tile {height:58px;font-size:12px;gap:4px}.app-icon {background:none!important;box-shadow:none;color:var(--muted);width:28px;height:28px;border-radius:0;font-size:22px}
+.controlbar {background:var(--bg);border-color:var(--line)}
+.dashboard-version {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 18px;color:var(--muted);font-size:12px;border-top:1px solid var(--line)}
+.dashboard-version button {color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:7px 10px}
+.dashboard-version .version-details {white-space:pre-wrap}.ui-update {color:var(--gold)}
+.page-grid{align-items:start}.page-grid>hui-card{height:auto!important}.status-card{display:flex;flex-direction:column;justify-content:flex-start;gap:12px;min-height:160px}.status-card>strong{font-size:18px}.status-card>p{font-size:14px}
+@media(max-width:900px) {#shell{grid-template-columns:72px minmax(0,1fr)}.rail-item{flex-direction:column;font-size:10px;gap:2px;padding:8px 2px;min-height:54px}.brand-caption{font-size:12px}}
+@media(max-width:690px) {#shell{grid-template-columns:minmax(0,1fr)}.rail{position:static;inset:auto;display:flex;flex-direction:row;justify-content:flex-start;border-right:0;border-bottom:1px solid var(--line);height:auto;padding:6px;width:auto;min-width:0}#navItems{min-width:0;max-width:100%;overflow-x:auto}.rail-item{flex:0 0 auto;max-width:none;flex-direction:row;font-size:12px;min-height:40px;white-space:nowrap;padding:8px 10px}.workspace{padding-bottom:0}.topbar{gap:8px;padding-inline:12px}.top-center{display:none}.system-status{font-size:11px}.system-left{font-size:13px}.ford-pill{display:none}.dashboard-version{padding-inline:12px}.app-tile{height:48px}.apps{min-height:56px}}
