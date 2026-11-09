@@ -20,7 +20,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
 
-ROOT_PACKAGES=('osmium-tool','gpsd','gpsd-clients','docker.io','ca-certificates','gpgv','ubuntu-keyring','ethtool','network-manager','iproute2','iptables','dnsmasq-base','curl','python3-cryptography','python3-paho-mqtt','python3-serial','python3-nacl','moosefs-master','moosefs-chunkserver','moosefs-client','moosefs-metalogger','ffmpeg')
+ROOT_PACKAGES=('osmium-tool','gpsd','gpsd-clients','docker.io','ca-certificates','gpgv','ubuntu-keyring','ethtool','network-manager','iproute2','iptables','nftables','openssh-client','dnsmasq-base','curl','python3-cryptography','python3-paho-mqtt','python3-serial','python3-nacl','moosefs-master','moosefs-chunkserver','moosefs-client','moosefs-metalogger','ffmpeg')
 KEEP={'Package','Version','Architecture','Filename','SHA256','Size','Depends','Pre-Depends','Provides'}
 DIGEST=re.compile(r'^sha256:[0-9a-f]{64}$')
 MAX_DOWNLOAD=6*1024**3

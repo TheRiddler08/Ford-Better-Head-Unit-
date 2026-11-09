@@ -95,8 +95,10 @@ handles saved credentials and reconnects. The role service then:
    expires after 15 seconds; probe/advertisement intervals add a few seconds to
    practical failover. Existing Internet sessions can reconnect during a gateway
    change; this is not session-preserving routing.
-3. Starts IPv4 forwarding, subnet-scoped NAT/forwarding rules in its own iptables
-   chains and an isolated DNS-only dnsmasq process on the elected gateway.
+3. Starts IPv4 forwarding, subnet-scoped NAT/forwarding rules and an isolated
+   DNS-only dnsmasq process on the elected gateway. Native nftables DROP chains
+   get narrow car-only rules too; native NAT avoids incompatible iptables NAT
+   tables. Firewall state is rechecked every 15 seconds without restarting healthy DNS.
 4. Sets a tagged car default route/DNS on devices without working local Wi-Fi,
    withdrawing it when it is no longer needed. Existing Wi-Fi profiles and
    Tailscale settings are not rewritten. Tailscale's more-specific DNS domains
@@ -115,6 +117,13 @@ uplink. It does not prove a client has an Internet route or that an additional
 firewall permits forwarding. An empty `peers` map means no valid car Ethernet
 announcements have been received; check the physical switch and peer role services.
 Missing MooseFS tools affect shared storage, not the basic Wi-Fi sharing path.
+
+The Duet can also share saved personal Wi-Fi networks with explicitly paired
+car devices, so changing its home/hotspot network does not require typing the
+password separately on Pi. This uses a dedicated restricted SSH key over the
+switch, never a broadcast or LoRaWAN. See [Wi-Fi profile sharing](WIFI_PROFILE_SHARING.md)
+for the one-time Pi enrollment and offline recovery commands. The normal role
+installer/automatic update includes the sender, receiver and sharing repairs.
 
 There is **no DHCP server** on either role and no NetworkManager `shared` profile,
 so Pi and Duet cannot hand out competing leases. During brief peer-discovery gaps,

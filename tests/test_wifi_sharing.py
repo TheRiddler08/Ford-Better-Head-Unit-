@@ -79,7 +79,7 @@ class WifiSharingTests(unittest.TestCase):
                 if str(value)=='/run/systemd/system':return root/'systemd'
                 if str(value).startswith('/etc/'):return root/'etc'/str(value)[5:]
                 return actual(value)
-            with patch.object(fleet,'Path',side_effect=paths),patch.object(fleet,'STATE',state),patch.object(fleet,'CONFIG',config),patch.object(fleet.os,'geteuid',return_value=0),patch.object(fleet.pwd,'getpwnam',return_value=account),patch.object(fleet,'native_dependencies',return_value=[]),patch.object(fleet,'publish',return_value=root/'unchanged-version'),patch.object(fleet,'advance_duet'),patch.object(fleet.shutil,'which',return_value=None),patch.object(fleet,'systemd_units') as units,patch.object(fleet,'install_storage',return_value=['storage:mfsmount']) as storage:
+            with patch.object(fleet,'Path',side_effect=paths),patch.object(fleet,'STATE',state),patch.object(fleet,'CONFIG',config),patch.object(fleet.os,'geteuid',return_value=0),patch.object(fleet.pwd,'getpwnam',return_value=account),patch.object(fleet,'native_dependencies',return_value=[]),patch.object(fleet,'publish',return_value=root/'unchanged-version'),patch.object(fleet,'advance_duet'),patch.object(fleet,'install_wifi_sync'),patch.object(fleet.shutil,'which',return_value=None),patch.object(fleet,'systemd_units') as units,patch.object(fleet,'install_storage',return_value=['storage:mfsmount']) as storage:
                 fleet.install('duet',repo,'owner',{},commit='a'*40,retry_missing=True)
                 units.assert_called_once();units.reset_mock()
                 fleet.install('duet',repo,'owner',{},commit='a'*40,retry_missing=True)

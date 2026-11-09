@@ -41,9 +41,19 @@ CONFIG=Path('/etc/car-dashboard/fleet.json')
 STATE=Path('/var/lib/car-dashboard-fleet')
 STATUS=Path('/etc/car-dashboard/fleet-status.json')
 ORIGIN='https://github.com/TheRiddler08/Ford-Better-Head-Unit-.git'
-SOURCES={'routing_setup.py':'dev/setup_us_routing.py','virtual_obd.py':'recorder/virtual_obd.py','virtual_gps.py':'recorder/virtual_gps.py','fleet.py':'deploy/fleet.py','wake.py':'power/wake.py','standby.py':'power/standby.py'}
+SOURCES={'wifi_profiles.py':'deploy/wifi_profiles.py','native_firewall.py':'deploy/native_firewall.py','routing_setup.py':'dev/setup_us_routing.py','virtual_obd.py':'recorder/virtual_obd.py','virtual_gps.py':'recorder/virtual_gps.py','fleet.py':'deploy/fleet.py','wake.py':'power/wake.py','standby.py':'power/standby.py'}
 REQUIRED=('nmcli','ip','iptables','dnsmasq','curl','ethtool')
 STOP=False
+SCRIPT_DIR=Path(__file__).resolve().parent
+
+
+def role_module(name,directory=None):
+    # -I deliberately ignores the checkout and PYTHONPATH. Helpers belong to the
+    # same immutable verified installer version as this file.
+    path=(Path(directory) if directory else SCRIPT_DIR)/(name+'.py')
+    spec=importlib.util.spec_from_file_location('car_fleet_'+name,path)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module
 
 
 def run(args,timeout=25,check=True):
@@ -77,7 +87,7 @@ def eligible_peer(message,address,now):
     raw=bytes.fromhex(mac.replace(':',''))
     if raw==b'\0'*6 or raw[0]&1:return None
     health=message.get('health',{})
-    health={key:value for key,value in health.items() if key in ('power','storage','software','radio') and isinstance(value,str) and re.fullmatch('[a-zA-Z0-9_-]{1,70}',value)} if isinstance(health,dict) else {}
+    health={key:value for key,value in health.items() if key in ('power','storage','software','radio','wifi') and isinstance(value,str) and re.fullmatch('[a-zA-Z0-9_-]{1,70}',value)} if isinstance(health,dict) else {}
     return {'role':role,'mac':mac.lower(),'internet':message.get('internet') is True,'seen':now,'health':health}
 
 
@@ -85,6 +95,7 @@ def local_health(config):
     """Small status-only beacons. Never include credentials or use health to sleep."""
     home=Path(config['home'])
     paths={'power':Path('/etc/car-dashboard/laptop-power-status.json'),
+           'wifi':Path('/run/car-dashboard/wifi-sync-status.json'),
            'storage':home/'.local/share/car-data/status.json',
            'software':home/'.local/state/drive-console/software/status.json',
            'radio':home/'.local/state/drive-console/software/radio-status.json'}
@@ -174,11 +185,14 @@ def wifi_uplink():
 
 
 class Sharing:
-    def __init__(self):self.gateway_state=None;self.route_state=None;self.route_checked=0;self.dns=None
+    def __init__(self):self.gateway_state=None;self.route_state=None;self.route_checked=0;self.firewall_checked=0;self.dns=None
     def firewall(self,lan,wan,control=True):
         # Scope all rules to our chains and car subnet. No flush ruleset, global
         # DROP policy changes, DHCP service, or edits to Docker/Tailscale chains.
-        for table,chain in [('filter','CAR_FLEET_FWD'),('nat','CAR_FLEET_NAT'),('filter','CAR_FLEET_IN')]:
+        native=bool(shutil.which('nft'))
+        chains=[('filter','CAR_FLEET_FWD'),('filter','CAR_FLEET_IN')]
+        if not native:chains+=[('nat','CAR_FLEET_NAT')]
+        for table,chain in chains:
             run(['iptables','-w','5','-t',table,'-N',chain],check=False)
             run(['iptables','-w','5','-t',table,'-F',chain])
         if control:
@@ -188,16 +202,18 @@ class Sharing:
                 run([*args,'-I','INPUT','1','-i',lan,'-s',SUBNET,'-j','CAR_FLEET_IN'])
             if wan:
                 for protocol in ('tcp','udp'):run([*args,'-A','CAR_FLEET_IN','-p',protocol,'--dport','53','-j','ACCEPT'])
+        if native:role_module('native_firewall').apply(lan,wan,control)
         if not wan:return
-        Path('/proc/sys/net/ipv4/ip_forward').write_text('1\n')
+        forwarding=Path('/proc/sys/net/ipv4/ip_forward')
+        if forwarding.read_text().strip()!='1':forwarding.write_text('1\n')
         rules=[('filter','CAR_FLEET_FWD',['-s',SUBNET,'-i',lan,'-o',wan,'-j','ACCEPT']),
                ('filter','CAR_FLEET_FWD',['-d',SUBNET,'-i',wan,'-o',lan,'-m','conntrack','--ctstate','ESTABLISHED,RELATED','-j','ACCEPT']),
-               ('filter','CAR_FLEET_FWD',['-d',SUBNET,'-i',wan,'-o',lan,'-j','DROP']),
-               ('nat','CAR_FLEET_NAT',['-s',SUBNET,'-o',wan,'-j','MASQUERADE'])]
+               ('filter','CAR_FLEET_FWD',['-d',SUBNET,'-i',wan,'-o',lan,'-j','DROP'])]
+        if not native:rules+=[('nat','CAR_FLEET_NAT',['-s',SUBNET,'-o',wan,'-j','MASQUERADE'])]
         for table,chain,args in rules:run(['iptables','-w','5','-t',table,'-A',chain,*args])
-        for table,parent,scope,chain in [('filter','FORWARD',['-s',SUBNET],'CAR_FLEET_FWD'),
-                                        ('filter','FORWARD',['-d',SUBNET],'CAR_FLEET_FWD'),
-                                        ('nat','POSTROUTING',['-s',SUBNET],'CAR_FLEET_NAT')]:
+        jumps=[('filter','FORWARD',['-s',SUBNET],'CAR_FLEET_FWD'),('filter','FORWARD',['-d',SUBNET],'CAR_FLEET_FWD')]
+        if not native:jumps+=[('nat','POSTROUTING',['-s',SUBNET],'CAR_FLEET_NAT')]
+        for table,parent,scope,chain in jumps:
             args=['iptables','-w','5','-t',table]
             if run([*args,'-C',parent,*scope,'-j',chain],check=False).returncode:
                 run([*args,'-I',parent,'1',*scope,'-j',chain])
@@ -234,13 +250,14 @@ class Sharing:
         self.route_state=desired;self.route_checked=time.monotonic()
     def apply(self,nic,wan,servers,role,winner,online):
         desired=(nic,wan,tuple(servers)) if winner==role and wan else (nic,None,())
+        if desired!=self.gateway_state or time.monotonic()-self.firewall_checked>=15:
+            self.firewall(nic,desired[1]);self.firewall_checked=time.monotonic()
         if desired!=self.gateway_state:
             if self.dns:
                 self.dns.terminate()
                 try:self.dns.wait(timeout=5)
                 except subprocess.TimeoutExpired:self.dns.kill();self.dns.wait()
                 self.dns=None
-            self.firewall(nic,desired[1])
             if desired[1]:
                 args=['dnsmasq','--keep-in-foreground','--conf-file=/dev/null','--bind-interfaces','--no-resolv','--no-hosts',
                       '--listen-address='+ADDRESSES[role],'--no-dhcp-interface='+nic,'--cache-size=300']
@@ -338,7 +355,8 @@ def daemon(config):
                     mode=write_wake(config,nic,peers);last_wake=time.monotonic()
                 previous=load(STATUS,{})
                 save(STATUS,{'phase':'ready','role':config['role'],'interface':nic,'address':ADDRESSES[config['role']],
-                             'mac':mac,'gateway':winner,'wifiInternet':bool(wan),'standby':mode or previous.get('standby'),
+                             'mac':mac,'gateway':winner,'wifiInternet':bool(wan),'sharing':{'phase':'sharing' if winner==config['role'] and wan else 'using-peer' if winner and not wan else 'local-only',
+                                 'uplink':wan,'firewall':'nftables' if shutil.which('nft') else 'iptables','checkedAt':int(time.time())},'standby':mode or previous.get('standby'),
                              'peers':{key:value['mac'] for key,value in peers.items()},
                              'peerStatus':{key:{'present':0<=time.monotonic()-value.get('seen',0)<=15,
                                                 'internet':value.get('internet',False),'health':value.get('health',{}),
@@ -372,7 +390,7 @@ def publish(sources,base=BASE):
 
 
 def native_dependencies(offline=False,role=None):
-    needed=list(REQUIRED)
+    needed=list(REQUIRED)+['nft','ssh','ssh-keygen']
     if role=='tiny':needed+=['gpsd','osmium']
     pi_client=role=='pi' and load(CONFIG,{}).get('pi_storage_client',True)
     if role in ADDRESSES and shutil.which('apt-get'):
@@ -388,12 +406,12 @@ def native_dependencies(offline=False,role=None):
     if shutil.which('apt-get'):
         run(['apt-get','update'],timeout=300)
         env=dict(os.environ,DEBIAN_FRONTEND='noninteractive')
-        packages=['network-manager','iproute2','iptables','dnsmasq-base','curl','ethtool','python3-cryptography','python3-paho-mqtt','python3-serial','python3-nacl','moosefs-client']
+        packages=['network-manager','iproute2','iptables','nftables','openssh-client','dnsmasq-base','curl','ethtool','python3-cryptography','python3-paho-mqtt','python3-serial','python3-nacl','moosefs-client']
         if role=='tiny':packages+=['gpsd','gpsd-clients','osmium-tool']
         if not pi_client:packages+=['moosefs-master','moosefs-chunkserver','moosefs-metalogger','ffmpeg']
         subprocess.run(['apt-get','install','-y','--no-install-recommends',*packages],env=env,check=True,timeout=600)
     elif shutil.which('apk'):
-        run(['apk','add','networkmanager','iproute2','iptables','dnsmasq','curl','ethtool','elogind','py3-cryptography','py3-paho-mqtt','py3-pyserial','py3-pynacl'],timeout=600)
+        run(['apk','add','networkmanager','iproute2','iptables','nftables','openssh-client-default','openssh-keygen','dnsmasq','curl','ethtool','elogind','py3-cryptography','py3-paho-mqtt','py3-pyserial','py3-pynacl'],timeout=600)
     remaining=[name for name in needed if not shutil.which(name)]
     for library in libraries:
         try:available=importlib.util.find_spec(library) is not None
@@ -674,6 +692,40 @@ WantedBy=multi-user.target
 '''
 
 
+def install_wifi_sync(config):
+    current=BASE/'fleet-current'
+    role_module('wifi_profiles',current).install_wrapper(current/'wifi_profiles.py')
+    enabled=config['role']=='duet' and config.get('enabled',True) and config.get('wifi_sync',True)
+    if Path('/run/systemd/system').exists():
+        unit('car-wifi-sync.service',f'''[Unit]
+Description=Share saved Wi-Fi with paired car devices
+Wants=NetworkManager.service
+After=NetworkManager.service car-fleet.service
+[Service]
+ExecStart=/usr/bin/python3 -I {current}/wifi_profiles.py watch
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+UMask=0077
+[Install]
+WantedBy=multi-user.target
+''')
+        run(['systemctl','daemon-reload'])
+        run(['systemctl','enable' if enabled else 'disable','--now','car-wifi-sync.service'])
+        if enabled:run(['systemctl','try-restart','car-wifi-sync.service'],check=False)
+    elif Path('/run/openrc').exists():
+        save('/etc/init.d/car-wifi-sync',f'''#!/sbin/openrc-run
+name="Share saved Wi-Fi with paired car devices"
+supervisor="supervise-daemon"
+command="/usr/bin/python3"
+command_args="-I {current}/wifi_profiles.py watch"
+respawn_delay=10
+depend() {{ need car-fleet; }}
+'''.encode());os.chmod('/etc/init.d/car-wifi-sync',0o755)
+        run(['rc-update','add' if enabled else 'del','car-wifi-sync','default'],check=False)
+        run(['rc-service','car-wifi-sync','restart' if enabled else 'stop'],check=False)
+
+
 def systemd_units(role):
     current=BASE/'fleet-current'
     unit('car-fleet.service',f'''[Unit]
@@ -875,7 +927,7 @@ def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False
     missing=native_dependencies(offline or not config.get('enabled',True),role)
     destination=publish(sources)
     defaults={'schema':1,'role':role,'repo':str(repo),'user':user,'home':account.pw_dir,
-              'enabled':True,'boot_standby':True,'interface':None,'commit':commit,'auto_update':role in ('pi','laptop'),'app_updates':True,'reboot_updates':True,'laptop_sleep':True,'laptop_sleep_delay':90,'pi_storage_client':True}
+              'enabled':True,'boot_standby':True,'interface':None,'commit':commit,'auto_update':role in ('pi','laptop'),'app_updates':True,'reboot_updates':True,'laptop_sleep':True,'laptop_sleep_delay':90,'pi_storage_client':True,'wifi_sync':True}
     defaults.update(config)
     if commit:defaults['commit']=commit
     installed=load(STATE/'installed.json',{})
@@ -905,6 +957,7 @@ def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False
         if standby.exists():
             previous=load(standby,{});previous['armed']=False;save(standby,previous)
     if not defaults.get('enabled',True):
+        install_wifi_sync(defaults)
         if Path('/run/systemd/system').exists():
             for service in ['car-home-tunnel.service','car-laptop-power.service','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-messages.service','car-telemetry.service','car-file-sync.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
                 run(['systemctl','disable','--now',service],check=False)
@@ -921,6 +974,7 @@ def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False
     elif Path('/run/openrc').exists():
         if reconfigure:openrc_units(role)
     else:raise ValueError('Automatic role setup needs systemd or OpenRC')
+    if reconfigure:install_wifi_sync(defaults)
     install_pi_storage_policy(defaults)
     missing+=install_storage(defaults)
     save(STATE/'installed.json',{'provisioning':VERSION,'version':destination.name,'commit':defaults['commit'],'missing':missing,'configurationHash':configuration_hash})
@@ -1261,7 +1315,11 @@ def main():
     if os.geteuid()!=0:raise SystemExit('Use the device installer as your normal user; sudo is required once')
     if args.action=='install':
         if not all((args.role,args.repo,args.user,args.source)):raise ValueError('Install requires role/repo/user/source')
-        sources={name:(Path(args.source)/name).read_bytes() for name in SOURCES}
+        # Old signed receivers carry only fleet.py/wake.py/standby.py. Read new
+        # helper bytes from that SAME verified commit, never the editable tree.
+        source_config={'user':args.user,'repo':args.repo}
+        sources={name:(Path(args.source)/name).read_bytes() if (Path(args.source)/name).is_file()
+                 else source_bytes(source_config,args.commit,path) for name,path in SOURCES.items()}
         print(json.dumps(install(args.role,args.repo,args.user,sources,args.offline,args.commit,args.retry_missing)));return
     config=load(CONFIG,{})
     if config.get('role') not in ADDRESSES:raise ValueError('Install a device role first')

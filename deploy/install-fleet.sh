@@ -14,6 +14,7 @@ ROOT="$1"; ROLE="$2"; USER_NAME="$3"; COMMIT="$4"; BOOTSTRAP="$5"
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 install -d -m 0755 "$BOOTSTRAP"
 install -o root -g root -m 0644 "$ROOT/deploy/fleet.py" "$BOOTSTRAP/fleet.py"
+install -o root -g root -m 0644 "$ROOT/deploy/wifi_profiles.py" "$ROOT/deploy/native_firewall.py" "$BOOTSTRAP/"
 install -o root -g root -m 0644 "$ROOT/power/wake.py" "$ROOT/power/standby.py" "$BOOTSTRAP/"
 exec /usr/bin/python3 -I "$BOOTSTRAP/fleet.py" install --role "$ROLE" --repo "$ROOT" --user "$USER_NAME" --source "$BOOTSTRAP" --commit "$COMMIT"
 ROOTSETUP

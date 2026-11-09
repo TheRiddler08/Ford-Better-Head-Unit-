@@ -31,15 +31,18 @@ class SystemStatusTests(unittest.TestCase):
             root=Path(directory);home=root/'home';home.mkdir();settings=root/'etc';settings.mkdir();runtime=root/'run';runtime.mkdir()
             state=root/'state';state.mkdir();now=1000
             (runtime/'fleet-status.json').write_text(json.dumps({'phase':'ready','updated':1,'gateway':'duet','wifiPassword':'private'}))
+            (runtime/'wifi-sync-status.json').write_text(json.dumps({'phase':'ready','updated':999,'profiles':3,
+                'psk':'private password','ssid':'private network','peers':{'pi':{'phase':'received','psk':'private password'}}}))
             (settings/'update-link.json').write_text(json.dumps({'radio_model':'RAK3172','radio_device':'/dev/serial/by-id/fixture','token':'private token'}))
             gps=home/'gps.sqlite3';gps.with_suffix('.status.json').write_text(json.dumps({'phase':'recording','updated':999,'gpsMode':3,'lat':39,'lon':-98}))
             with patch('control.car_data.mounted',return_value=False):result=snapshot(home,'pi',settings,runtime,state,gps,now)
             self.assertEqual(result['network']['phase'],'stale');self.assertEqual(result['gps']['phase'],'recording')
             self.assertTrue(result['storage']['clientOnly']);self.assertFalse(result['storage']['poolMounted'])
             self.assertTrue(result['radio']['configured']);self.assertFalse(result['radio']['homeKeyPinned'])
+            self.assertEqual(result['wifiSync']['profiles'],3);self.assertEqual(result['wifiSync']['peers']['pi'],{'phase':'received'})
             self.assertGreater(result['summary']['pending'],0)
             self.assertEqual(next(row for row in result['checks'] if row['id']=='network')['state'],'attention')
-            raw=json.dumps(result);self.assertNotIn('private token',raw);self.assertNotIn('wifiPassword',raw);self.assertNotIn('"lat"',raw);self.assertNotIn('"lon"',raw)
+            raw=json.dumps(result);self.assertNotIn('private token',raw);self.assertNotIn('private password',raw);self.assertNotIn('private network',raw);self.assertNotIn('wifiPassword',raw);self.assertNotIn('"lat"',raw);self.assertNotIn('"lon"',raw)
 
     def test_gps_status_uses_normal_messages_and_never_retains_position(self):
         with tempfile.TemporaryDirectory() as directory:

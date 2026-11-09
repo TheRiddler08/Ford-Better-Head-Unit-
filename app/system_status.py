@@ -31,6 +31,10 @@ def observation(path,now,ttl=90):
     for key in ('detail','message'):
         if isinstance(value.get(key),str):result[key]=value[key][:400] if not re.search(r'password\s*[=:]|token\s*[=:]|secret\s*[=:]',value[key],re.I) else 'Private diagnostic detail omitted'
     result.update(observedAt=stamp,ageSeconds=int(age) if age is not None and age>=0 else None,fresh=bool(age is not None and 0<=age<=ttl))
+    sharing=value.get('sharing')
+    if isinstance(sharing,dict) and sharing.get('phase') in ('sharing','using-peer','local-only'):
+        result['sharing']={'phase':sharing['phase'],'fresh':result['fresh'],'observedAt':stamp,
+            'firewall':sharing.get('firewall') if sharing.get('firewall') in ('nftables','iptables') else 'unknown'}
     if not result.get('phase'):result['phase']=value.get('storage') if isinstance(value.get('storage'),str) else 'configured'
     if stamp is not None and not result['fresh']:result['phase']='stale'
     return result
@@ -68,6 +72,17 @@ def snapshot(home,role,settings='/etc/car-dashboard',runtime='/run/car-dashboard
     software=home/'.local/state/drive-console/software';library=home/'.local/share/car-data'
     network=observation(runtime/'fleet-status.json',now,45)
     if network['phase']=='pending':network=observation(settings/'fleet-status.json',now,45)
+    wifi=observation(runtime/'wifi-sync-status.json',now,90)
+    wifi={key:wifi[key] for key in ('phase','observedAt','ageSeconds','fresh')}
+    # Credential status has a deliberately smaller schema than network status.
+    # No SSIDs, PSKs, profile files or enrollment keys enter the HA response.
+    source=read(runtime/'wifi-sync-status.json')
+    for key in ('imported','preserved','profiles'):
+        if type(source.get(key)) is int and 0<=source[key]<=32:wifi[key]=source[key]
+    if type(source.get('activeNetworkShared')) is bool:wifi['activeNetworkShared']=source['activeNetworkShared']
+    wifi_peers=source.get('peers',{});wifi_peers=wifi_peers if isinstance(wifi_peers,dict) else {}
+    wifi['peers']={role:{'phase':peer.get('phase','pending')} for role,peer in wifi_peers.items()
+        if role in ('pi','tiny','laptop') and isinstance(peer,dict) and peer.get('phase') in ('received','disabled','unreachable')}
     storage=observation(state/'storage.json',now);storage['worker']=observation(library/'status.json',now,150)
     try:
         usage=shutil.disk_usage(home);storage.update(localFreeBytes=usage.free,localTotalBytes=usage.total,
@@ -99,7 +114,7 @@ def snapshot(home,role,settings='/etc/car-dashboard',runtime='/run/car-dashboard
         if device.is_symlink() and device.exists():
             kind='LoRaWAN' if isinstance(link.get('radio_device'),str) and device.resolve()==Path(link['radio_device']).resolve() else 'GPS' if 'u-blox' in device.name else 'unassigned serial device'
             peripherals.append({'name':device.name,'kind':kind})
-    result={'schema':1,'role':role,'observedAt':now,'network':network,'storage':storage,'gps':gps,
+    result={'schema':1,'role':role,'observedAt':now,'network':network,'wifiSync':wifi,'storage':storage,'gps':gps,
       'radio':radio,'software':observation(software/'status.json',now,60),
       'power':observation(settings/'laptop-power-status.json',now,90),
       'reboot':observation(settings/'reboot-status.json',now),
