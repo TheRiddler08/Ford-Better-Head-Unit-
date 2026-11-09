@@ -33,6 +33,9 @@ with sync_playwright() as p:
     page.evaluate("h.states['device_tracker.car_location'].state='unavailable';mapCard.hass=h;statusCard.hass=h")
     expect(page.locator('#connectionDetail')).to_contain_text('GPS: disconnected')
     expect(page.locator('#mapBadge')).to_have_text('GPS DISCONNECTED')
+    page.evaluate("h.states['binary_sensor.car_gps_fix'].attributes={receiver_connected:true,receiver_state:'waiting-fix'};mapCard.hass=h;statusCard.hass=h")
+    expect(page.locator('#connectionDetail')).to_contain_text('GPS: waiting for fix')
+    expect(page.locator('#mapBadge')).to_have_text('WAITING FOR FIX')
     blocked[0]=True
     page.reload()
     expect(page.locator('#mapModeText')).to_contain_text('map provider refused access')

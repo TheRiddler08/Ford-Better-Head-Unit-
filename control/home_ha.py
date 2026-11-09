@@ -252,6 +252,9 @@ class HomeHA:
             # Retry discovery atomically after an interrupted refresh; do not
             # kill paho's network loop or expose broker credentials in status.
             self.rediscover=True;self.previous={};self.phase='mqtt-retrying' if self.connected else 'mqtt-disconnected-retrying'
+            if self.connected:
+                try:self.publish(self.base+'/bridge/availability','offline',True)
+                except OSError:pass
             self.write_status()
 
 

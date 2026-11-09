@@ -50,5 +50,6 @@ def snapshot(sensors, gps, now=None):
                 fresh=fresh and stamp.tzinfo is not None and -20<=now-stamp.timestamp()<=45
             if fresh:position={'lat':lat,'lon':lon,'time':gps.get('time'),'mode':gps.get('mode')}
         except (ValueError,TypeError,KeyError,OverflowError):pass
+    receiver=bool(isinstance(gps,dict) and (gps.get('connected') is True or gps.get('fix') is True))
     return {'schema':1,'metrics':metrics,'obdFresh':any(metrics[k]['fresh'] for k in ('speed','rpm')),
-            'gps':position,'serverTime':now}
+            'gps':position,'gpsStatus':{'connected':receiver,'phase':'fix' if position else 'waiting-fix' if receiver else 'disconnected'},'serverTime':now}

@@ -2,6 +2,10 @@
 import copy
 import tempfile
 import unittest
+import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from unittest.mock import patch
 from pathlib import Path
 from app import headunit_prefs as prefs
 
@@ -30,6 +34,20 @@ class HeadUnitPrefsTests(unittest.TestCase):
             prefs.update(path,data)
             with self.assertRaises(ValueError):
                 prefs.update(path,data)
+
+    def test_simultaneous_ha_and_kiosk_saves_cannot_both_win(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'prefs.json';start=Barrier(2);read=prefs.read
+            def slow_read(target):
+                value=read(target);time.sleep(.03);return value
+            def save(nickname):
+                data=self.sample();data['revision']=1;data['vehicle']['nickname']=nickname;start.wait()
+                try:return prefs.update(path,data)['vehicle']['nickname']
+                except ValueError:return None
+            with patch.object(prefs,'read',side_effect=slow_read),ThreadPoolExecutor(max_workers=2) as executor:
+                first=executor.submit(save,'HA');second=executor.submit(save,'Kiosk');results=[first.result(),second.result()]
+            self.assertEqual(sum(value is not None for value in results),1)
+            self.assertIn(prefs.read(path)['vehicle']['nickname'],[value for value in results if value])
 
     def test_invalid_values(self):
         for field,value in (

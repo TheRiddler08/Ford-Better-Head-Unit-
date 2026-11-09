@@ -52,6 +52,41 @@ history migrations before showing its saved layout. Slow/failing service cards
 report their own pending condition. Reading a report, editing a file or playing
 a video is not interrupted by automatic card refresh.
 
+## Everyday use and recovery
+
+- **Health** includes a prioritized checklist with links to the relevant native
+  tabs. It distinguishes pending setup, stale observations, low local disk reserve,
+  adapter heartbeats and a matching encrypted radio echo. A historical passing
+  radio test is not a guarantee of current reachability.
+  GPS distinguishes a receiver waiting for its first fix from a disconnected
+  receiver; neither state invents a coordinate or blocks map planning.
+- Service cards show when they last read data, retain the last display on a
+  failed refresh, and identify lost HA connectivity. Refresh intervals honor the
+  card editor; hidden browser tabs do not keep polling. Refresh retries a failed
+  read without using its old cache. In-flight reads cannot overwrite a card after
+  changing its feature or removing it.
+- **Settings** has forms for places, departure times and weekdays, with optional
+  advanced JSON. Saving is explicit; removing a place used by a departure is
+  blocked until you change that departure. These are local plans, not automatic
+  driving commands. Concurrent saves from HA and the original kiosk cannot both
+  overwrite the same preferences revision.
+  Display/unit/clock preferences here belong to the original console. Native HA
+  appearance and units remain independent in each card's editor.
+- **Reports** supports local date/time and exact-name filters. The same filters
+  apply to the complete CSV export; changing them starts a fresh cursor. The
+  built-in Reports button stays inside HA, including on a remote laptop.
+- **Recordings** can download an original clip or renew a temporary playback URL.
+  Pausing a chosen video keeps the player; Close playback releases it and resumes
+  catalog refresh. Browser codec support is still required for playback.
+- Home source/config/file editors retain unsaved text on errors and track new
+  saved revisions. A queued source edit locks that copy until you reload a newly
+  reported device version. Forget clears the owner token immediately, even during
+  a request; changing HA users also clears it. Forget cannot recall an already
+  authorized request that reached home.
+- If home MQTT state collection fails, the home bridge publishes unavailable and
+  retries discovery before announcing recovery. Existing last-reported sensor
+  freshness and the encrypted radio boundary remain in effect.
+
 ## Runtime and hardware limits remain explicit
 
 - Local GPS history stays readable. LoRaWAN application traffic continues to use

@@ -5,6 +5,7 @@ Configuration is distinct from an observed healthy runtime.
 """
 from contextlib import closing
 import json
+import math
 from pathlib import Path
 import re
 import shutil
@@ -23,16 +24,43 @@ def read(path,limit=262144):
 
 def observation(path,now,ttl=90):
     value=read(path)
-    if not value:return {'phase':'pending','observedAt':None,'fresh':False}
-    stamp=next((value[k] for k in ('updated','time','checkedAt') if type(value.get(k)) in (int,float)),None)
+    if not value:return {'phase':'pending','observedAt':None,'ageSeconds':None,'fresh':False}
+    stamp=next((value[k] for k in ('updated','time','checkedAt') if type(value.get(k)) in (int,float) and math.isfinite(value[k])),None)
     age=now-stamp if stamp is not None else None
-    result={key:value[key] for key in ('phase','storage','role','interface','address','gateway','wifiInternet','standby','peers','peerStatus','missing','replicaGoal','contributionBytes','mount','ready','enabled','installed','model','sleepMode','mode','ac','lidClosed','piRegistered','lastMessageAt','lastFixAt','satellitesUsed','satellitesVisible','gpsMode') if key in value}
+    result={key:value[key] for key in ('phase','storage','role','interface','address','gateway','wifiInternet','standby','peers','peerStatus','missing','replicaGoal','contributionBytes','mount','ready','enabled','installed','model','sleepMode','mode','ac','lidClosed','piRegistered','lastMessageAt','lastFixAt','satellitesUsed','satellitesVisible','gpsMode','lastEvent','lastActivityAt','dataRate','payloadBytes','joined') if key in value}
     for key in ('detail','message'):
         if isinstance(value.get(key),str):result[key]=value[key][:400] if not re.search(r'password\s*[=:]|token\s*[=:]|secret\s*[=:]',value[key],re.I) else 'Private diagnostic detail omitted'
-    result.update(observedAt=stamp,fresh=bool(age is not None and 0<=age<=ttl))
+    result.update(observedAt=stamp,ageSeconds=int(age) if age is not None and age>=0 else None,fresh=bool(age is not None and 0<=age<=ttl))
     if not result.get('phase'):result['phase']=value.get('storage') if isinstance(value.get('storage'),str) else 'configured'
     if stamp is not None and not result['fresh']:result['phase']='stale'
     return result
+
+
+def checks(data):
+    """Operator hints derived only from observed local state; never repair on read."""
+    rows=[]
+    def add(ident,title,state,detail,view):rows.append(dict(id=ident,title=title,state=state,detail=detail,view=view))
+    network=data['network'];gps=data['gps'];storage=data['storage'];radio=data['radio'];software=data['software']
+    add('network','Car Ethernet', 'ready' if network['fresh'] and network['phase']=='ready' else 'attention' if network['phase']=='stale' else 'pending',
+        'Recent local fleet observation.' if network['fresh'] and network['phase']=='ready' else 'Check the powered switch and device beacons. Missing peers do not mean the car is off.','devices')
+    add('gps','GPS recording','ready' if gps['fresh'] and gps['phase']=='recording' else 'attention' if gps['phase'] in ('stale','disconnected') else 'pending',
+        'Fresh fixes reach the normal recorder.' if gps['fresh'] and gps['phase']=='recording' else 'GPS has no current recorded fix. Maps and saved routes remain available.','navigation')
+    add('pool','Shared archive','ready' if storage['poolMounted'] and storage['worker']['fresh'] and storage['worker']['phase'] in ('shared-archive-connected','shared-client-connected-no-sd-contribution') else 'pending',
+        'A mounted pool and recent archive worker were observed; replica count still needs filesystem verification.' if storage['poolMounted'] else 'MooseFS is not mounted. Local originals are retained; no bulk fallback into the empty mountpoint.','storage')
+    if storage.get('localFreeBytes') is not None:
+        add('reserve','Local disk reserve','attention' if storage['reserveLow'] else 'ready',
+            'Less than 2 GiB is free. Review archives before freeing space; no automatic deletion is performed.' if storage['reserveLow'] else 'Local free space is above the 2 GiB archive reserve.','storage')
+    add('home-link','Home application link','ready' if software['fresh'] and software['phase']=='connected' else 'pending',
+        'Recent authenticated IP exchange.' if software['fresh'] and software['phase']=='connected' else 'Home IP is unavailable or unverified. Local car functions continue; eligible small transfers can use encrypted radio.','home-control')
+    if data['role']=='tiny':
+        pinned=radio['homeKeyPinned'] and radio['privateKeyPresent']
+        add('radio','Encrypted radio adapter','ready' if pinned and radio['configured'] and radio['fresh'] and radio['phase'] in ('adapter-running','receiving','radio-data-rate-observed') else 'pending',
+            'The adapter has a recent heartbeat. This does not prove over-air delivery.' if pinned and radio['configured'] and radio['fresh'] else 'Check the explicit Tiny USB radio and pinned keys, then request a real encrypted round trip.','radio')
+        result=radio['diagnostic'];finished=result.get('finished')
+        verified=result.get('phase')=='passed' and type(finished) in (int,float) and 0<=data['observedAt']-finished<=86400
+        add('radio-echo','Last verified radio round trip','ready' if verified else 'attention' if result.get('phase')=='timed-out' else 'pending',
+            'A matching encrypted echo was recorded within 24 hours; this is historical evidence, not live reachability.' if verified else 'No recent matching encrypted echo. A modem TX receipt alone is not delivery.','radio')
+    return sorted(rows,key=lambda row:({'attention':0,'pending':1,'ready':2}[row['state']],row['id']))
 
 
 def snapshot(home,role,settings='/etc/car-dashboard',runtime='/run/car-dashboard',state='/var/lib/car-dashboard-fleet',gps_db=None,now=None):
@@ -71,7 +99,7 @@ def snapshot(home,role,settings='/etc/car-dashboard',runtime='/run/car-dashboard
         if device.is_symlink() and device.exists():
             kind='LoRaWAN' if isinstance(link.get('radio_device'),str) and device.resolve()==Path(link['radio_device']).resolve() else 'GPS' if 'u-blox' in device.name else 'unassigned serial device'
             peripherals.append({'name':device.name,'kind':kind})
-    return {'schema':1,'role':role,'observedAt':now,'network':network,'storage':storage,'gps':gps,
+    result={'schema':1,'role':role,'observedAt':now,'network':network,'storage':storage,'gps':gps,
       'radio':radio,'software':observation(software/'status.json',now,60),
       'power':observation(settings/'laptop-power-status.json',now,90),
       'reboot':observation(settings/'reboot-status.json',now),
@@ -80,3 +108,6 @@ def snapshot(home,role,settings='/etc/car-dashboard',runtime='/run/car-dashboard
       'peripherals':peripherals,
       'future':{'usbCameraAI':'planned; separate Pi 5 and AI HAT','homeAI':'planned; hotspot/IP only','gatewayMesh':'not configured'},
       'limits':{'radioVideo':False,'gpsEncryptedAtRest':False,'cameraProtocol':'G980H download protocol unverified'}}
+    result['checks']=checks(result)
+    result['summary']={state:sum(row['state']==state for row in result['checks']) for state in ('ready','pending','attention')}
+    return result

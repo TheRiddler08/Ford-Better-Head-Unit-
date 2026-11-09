@@ -18,6 +18,7 @@ fixtures={
  'preferences':DEFAULT,'sync':{'selected':['notes.txt'],'items':[{'name':'notes.txt','phase':'idle'}]},
  'sync-file':{'name':'notes.txt','sha256':'b'*64,'source':'local original','conflicts':[]},'radio-test':{'phase':'running'}}
 home={'status':{'homeAssistant':{'phase':'mqtt-connected'}},'transfers':{'items':[{'path':'app/web/cockpit.js','id':'f'*64,'device':'car-1','revision':2,'phase':'receiving','displayPhase':'receiving','acknowledged':1,'total':3,'priority':'normal','decision':'ip-preferred'}],'nextCursor':None,'budget':{'reserved':2,'limit':60,'remaining':58,'nextEligibleAt':1000}},'layout':{'generation':0,'draft':project_default(),'history':[{'revision':1,'created':1000}]},'source':{'role':'tiny','path':'app/web/cockpit.js','base':'c'*64,'source':'const x=1;'},'sync':{'files':[],'revision':'d'*64},'config':{'revision':0}}
+fixtures['system'].update(checks=[{'id':'pool','title':'Shared archive','state':'pending','detail':'MooseFS is not mounted.','view':'storage'}],summary={'attention':0,'pending':1,'ready':0})
 html='''<script type="module">
 import '/module.js';
 window.calls=[];window.signed=[];const fixtures=FIXTURES,home=HOME;
@@ -36,6 +37,7 @@ with sync_playwright() as p:
     page.goto('http://127.0.0.1:19993/')
     def card(feature):return page.locator('drive-console-service').nth(features.index(feature))
     for feature in features:expect(card(feature).locator('main')).not_to_be_empty()
+    expect(card('overview')).to_contain_text('Needs attention');expect(card('overview').get_by_role('link',name='Open Shared archive',exact=True)).to_have_attribute('href','/drive-console/storage')
     expect(card('network')).to_contain_text('recent beacon');expect(card('radio')).to_contain_text('GPS reporting remains deferred')
     card('preferences').get_by_label('Vehicle nickname',exact=True).fill('Native HA car');card('preferences').get_by_role('button',name='Save local preferences',exact=True).click()
     page.wait_for_function("calls.some(c=>c.path.endsWith('/preferences')&&c.body?.vehicle?.nickname==='Native HA car')")

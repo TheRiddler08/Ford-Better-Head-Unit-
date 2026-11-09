@@ -14,3 +14,8 @@ class CarStatus(CarEntity,BinarySensorEntity):
     @property
     def is_on(self):
         return bool(self.coordinator.data.get('obdFresh' if self.key=='obd' else 'gps'))
+    @property
+    def extra_state_attributes(self):
+        if self.key!='gps':return {}
+        status=self.coordinator.data.get('gpsStatus',{})
+        return {'receiver_connected':status.get('connected') is True,'receiver_state':status.get('phase','unknown')}

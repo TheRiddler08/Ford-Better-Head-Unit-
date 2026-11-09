@@ -19,6 +19,19 @@ from control.update_transfer import Journal,decode,encode,ACK,APPLIED,MANIFEST,D
 from control.lorawan_protocol import authenticate_application_frame
 
 
+class AdapterStatus:
+    """Process heartbeat and radio activity are separate observations."""
+    def __init__(self,path):self.path=Path(path);self.value={};self.last_write=None
+    def event(self,phase,event=None,**fields):
+        self.value.update(fields,phase=phase)
+        if event:self.value.update(lastEvent=event,lastActivityAt=time.time())
+        self.heartbeat(force=True)
+    def heartbeat(self,force=False):
+        now=time.monotonic()
+        if force or self.last_write is None or now-self.last_write>=30:
+            atomic(self.path,json.dumps(dict(self.value,time=time.time()),allow_nan=False).encode());self.last_write=now
+
+
 def suppress_deferred_gps(journal,home,key):
     """Retire old queued GPS frames locally when GPS radio reporting is deferred."""
     from contextlib import closing
@@ -39,7 +52,7 @@ def main():
     fleet=json.loads(Path('/etc/car-dashboard/fleet.json').read_text());role=fleet['role']
     state=Path(fleet['home'])/'.local/state/drive-console/software'
     state.mkdir(parents=True,exist_ok=True)
-    status=state/'radio-status.json';journal=Journal(state/'radio-queue.sqlite3')
+    status=AdapterStatus(state/'radio-status.json');journal=Journal(state/'radio-queue.sqlite3')
     with journal.db() as db:
         db.execute('CREATE TABLE IF NOT EXISTS uplinks(id TEXT PRIMARY KEY,frame TEXT,sent INTEGER DEFAULT 0,attempt REAL DEFAULT 0)')
         db.execute('CREATE TABLE IF NOT EXISTS modem_attempts(id TEXT PRIMARY KEY,inner_id TEXT,created REAL)')
@@ -53,12 +66,12 @@ def main():
             from control.rak3172 import adapter_command
             command=adapter_command(options)
         except ValueError:
-            atomic(status,b'{"phase":"invalid-adapter-config"}');time.sleep(5);continue
+            status.event('invalid-adapter-config');time.sleep(5);continue
         keypath=Path(fleet['home'])/'.config/car-dashboard/update-link.key'
         if not command or not keypath.exists():
-            atomic(status,json.dumps({'phase':'unconfigured','detail':'Radio model/adapter and link credentials required'}).encode());time.sleep(5);continue
+            status.event('unconfigured',detail='Radio model/adapter and link credentials required');time.sleep(5);continue
         if not isinstance(command,list) or not command or not Path(command[0]).is_absolute() or not all(isinstance(v,str) for v in command):
-            atomic(status,b'{"phase":"invalid-adapter-config"}');time.sleep(5);continue
+            status.event('invalid-adapter-config');time.sleep(5);continue
         key=bytes.fromhex(keypath.read_text().strip())
         process=None
         try:
@@ -80,9 +93,10 @@ def main():
                 receiver.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);receiver.bind(('',PORT))
                 sender.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1);sender.bind((LAN[role],0))
                 process=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
-                atomic(status,json.dumps({'phase':'adapter-running-awaiting-network','time':time.time()}).encode())
+                status.value={};status.event('adapter-running-awaiting-network')
                 next_poll=0;next_idle=0;buffer=b''
                 while process.poll() is None:
+                    status.heartbeat()
                     if (config.stat().st_mtime_ns if config.exists() else 0)!=stamp:break
                     ready,_,_=select.select([receiver,process.stdout],[],[],1)
                     if receiver in ready:
@@ -110,6 +124,7 @@ def main():
                                 raw=cipher.accept(bytes.fromhex(message['downlink']))
                                 if raw is None:continue
                                 authenticate_application_frame(raw,key)
+                                status.event('adapter-running','authenticated-downlink')
                                 if raw[:1]==b'\x04':
                                     if diagnostic:diagnostic.receive(raw)
                                     continue
@@ -121,7 +136,6 @@ def main():
                                 if raw[:1]==b'\x01':
                                     with journal.db() as db:db.execute("UPDATE uplinks SET sent=2,attempt=0 WHERE substr(frame,1,4)='0105' AND substr(frame,5,8)=?",(raw[2:6].hex(),))
                                 sender.sendto(b'D'+raw,('172.16.42.255',PORT))
-                                atomic(status,json.dumps({'phase':'receiving','time':time.time()}).encode())
                             elif 'sent' in message:
                                 with journal.db() as db:
                                     row=db.execute('SELECT uplinks.frame,uplinks.id,modem_attempts.budget FROM uplinks JOIN modem_attempts ON uplinks.id=modem_attempts.inner_id WHERE modem_attempts.id=?',(message['sent'],)).fetchone()
@@ -130,13 +144,18 @@ def main():
                                     if row and sent_cipher.sent(bytes.fromhex(row[0])):
                                         db.execute('UPDATE uplinks SET sent=1 WHERE id=?',(row[1],))
                                         sender.sendto(b'R'+bytes.fromhex(row[0]),('172.16.42.255',PORT))
-                            elif 'status' in message and options.get('radio_model')=='RAK3172' and options.get('radio_auto_payload',True):
+                                        status.event('adapter-running','modem-tx-complete')
+                            elif isinstance(message.get('status'),dict) and options.get('radio_model')=='RAK3172':
                                 from control.rak3172 import payload_ceiling
                                 dr=message['status'].get('dr')
+                                observed={}
                                 if dr in ('0','1','2','3','4'):
-                                    budget=min(payload_ceiling(options),11 if dr=='0' else 46)
-                                    if budget!=cipher.max_bytes:cipher=make_cipher(budget)
-                                    atomic(status,json.dumps({'phase':'radio-data-rate-observed','dataRate':int(dr),'payloadBytes':budget,'time':time.time()}).encode())
+                                    if options.get('radio_auto_payload',True):
+                                        budget=min(payload_ceiling(options),11 if dr=='0' else 46)
+                                        if budget!=cipher.max_bytes:cipher=make_cipher(budget)
+                                    observed.update(dataRate=int(dr),payloadBytes=cipher.max_bytes)
+                                if message['status'].get('njs') in ('0','1'):observed['joined']=message['status']['njs']=='1'
+                                status.event('adapter-not-joined' if observed.get('joined') is False else 'adapter-running','modem-status-observed',**observed)
                     spacing=max(60,int(options.get('uplink_spacing',60)));limit=min(200,int(options.get('uplinks_per_day',120)))
                     if diagnostic:
                         test=diagnostic.outgoing()
@@ -177,8 +196,9 @@ def main():
                         if row:
                             with journal.db() as db:db.execute('UPDATE uplinks SET attempt=? WHERE id=?',(time.time(),row[0]))
                         next_poll=time.monotonic()+spacing
+                status.event('adapter-disconnected-retrying')
         except (OSError,ValueError,TypeError,sqlite3.Error):
-            atomic(status,b'{"phase":"adapter-disconnected-retrying"}')
+            status.event('adapter-disconnected-retrying')
         finally:
             if process and process.poll() is None:
                 process.terminate()

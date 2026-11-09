@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from app.system_status import snapshot,observation
+from app.system_status import snapshot,observation,checks
 from recorder.gps_recorder import StatusTracker
 from deploy import fleet
 
@@ -37,6 +37,8 @@ class SystemStatusTests(unittest.TestCase):
             self.assertEqual(result['network']['phase'],'stale');self.assertEqual(result['gps']['phase'],'recording')
             self.assertTrue(result['storage']['clientOnly']);self.assertFalse(result['storage']['poolMounted'])
             self.assertTrue(result['radio']['configured']);self.assertFalse(result['radio']['homeKeyPinned'])
+            self.assertGreater(result['summary']['pending'],0)
+            self.assertEqual(next(row for row in result['checks'] if row['id']=='network')['state'],'attention')
             raw=json.dumps(result);self.assertNotIn('private token',raw);self.assertNotIn('wifiPassword',raw);self.assertNotIn('"lat"',raw);self.assertNotIn('"lon"',raw)
 
     def test_gps_status_uses_normal_messages_and_never_retains_position(self):
@@ -50,6 +52,30 @@ class SystemStatusTests(unittest.TestCase):
             self.assertNotIn('lat',value);self.assertNotIn('lon',value)
             tracker.publish(True,force=True,now=120);self.assertEqual(json.loads(path.read_text())['phase'],'waiting-fix')
             tracker.publish(False,force=True,now=121);self.assertEqual(json.loads(path.read_text())['phase'],'disconnected')
+
+    def test_radio_heartbeat_does_not_manufacture_activity_or_passed_diagnostics(self):
+        from control.radio_gateway import AdapterStatus
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'radio.json';status=AdapterStatus(path)
+            with patch('control.radio_gateway.time.time',return_value=100),patch('control.radio_gateway.time.monotonic',return_value=10):status.event('adapter-running','modem-tx-complete')
+            with patch('control.radio_gateway.time.time',return_value=140),patch('control.radio_gateway.time.monotonic',return_value=50):status.heartbeat()
+            value=json.loads(path.read_text());self.assertEqual(value['time'],140);self.assertEqual(value['lastActivityAt'],100)
+            self.assertNotIn('passed',json.dumps(value));self.assertTrue(observation(path,145)['fresh'])
+
+    def test_invalid_clock_observation_never_breaks_status_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'status.json';path.write_text('{"phase":"ready","time":NaN}')
+            value=observation(path,100);self.assertFalse(value['fresh']);self.assertIsNone(value['observedAt'])
+            json.dumps(value,allow_nan=False)
+
+    def test_checklist_does_not_treat_idle_adapter_or_old_echo_as_live_delivery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home=Path(directory)
+            with patch('control.car_data.mounted',return_value=False):data=snapshot(home,'tiny',home/'etc',home/'run',home/'state',now=100000)
+            data['radio'].update(configured=True,homeKeyPinned=True,privateKeyPresent=True,fresh=True,phase='adapter-running',diagnostic={'phase':'passed','finished':1})
+            rows={row['id']:row for row in checks(data)}
+            self.assertEqual(rows['radio']['state'],'ready');self.assertEqual(rows['radio-echo']['state'],'pending')
+            self.assertIn('does not prove',rows['radio']['detail']);self.assertEqual(rows['pool']['state'],'pending')
 
     def test_beacon_health_is_small_allowlisted_and_not_used_to_choose_gateway(self):
         message={'schema':1,'role':'laptop','mac':'02:11:22:33:44:55','internet':False,

@@ -31,6 +31,11 @@ class HomeAssistantTests(unittest.TestCase):
         self.assertEqual(snapshot({},good,now=1793232000)['gps']['lat'],40)
         self.assertIsNone(snapshot({},dict(good,lat=True),now=1793232000)['gps'])
 
+    def test_receiver_without_fix_is_connected_without_exposing_a_position(self):
+        data=snapshot({},dict(fix=False,connected=True),now=100)
+        self.assertIsNone(data['gps']);self.assertEqual(data['gpsStatus'],{'connected':True,'phase':'waiting-fix'})
+        self.assertEqual(snapshot({},dict(fix=False),now=100)['gpsStatus']['phase'],'disconnected')
+
     def test_configuration_loopback_and_native_editor(self):
         data=configuration('America/New_York')
         self.assertEqual(data['http']['server_host'],'127.0.0.1')

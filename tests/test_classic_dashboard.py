@@ -96,6 +96,8 @@ class ClassicDashboardTests(unittest.TestCase):
     def test_every_implemented_service_has_an_editable_native_card(self):
         features={card['feature'] for view in ha.classic_dashboard()['views'] for card in view['cards'] if card.get('type')=='custom:drive-console-service'}
         self.assertEqual(features,{'overview','network','power','storage','cameras','updates','radio','messages','sync','reports','preferences','home'})
+        links=[card for view in ha.classic_dashboard()['views'] for card in view['cards'] if card.get('widget')=='link']
+        self.assertTrue(all(card['url'].startswith('/') and card.get('new_tab') is False for card in links))
 
     def test_generated_module_reuses_original_art_and_is_versioned_by_content(self):
         module,metadata=ha.classic_resource(ROOT)

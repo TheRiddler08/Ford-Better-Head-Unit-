@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import math
 import os
 import re
@@ -104,6 +105,17 @@ def read(path):
     return validate(json.loads(path.read_text(encoding="utf-8")))
 
 def update(path, proposed):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # The standalone kiosk and HA proxy can save concurrently. Lock across
+    # processes before reading the revision, not just around the final rename.
+    fd = os.open(path.with_name(path.name + '.lock'), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _update_locked(path, proposed)
+
+
+def _update_locked(path, proposed):
     previous = read(path)
     valid = validate(proposed)
     if valid["revision"] != previous["revision"] + 1:

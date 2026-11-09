@@ -156,6 +156,15 @@ class HomeHATests(unittest.TestCase):
             service.on_disconnect();service.step()
             self.assertEqual(json.loads(service.status.read_text())['phase'],'mqtt-disconnected-retrying')
 
+    def test_connected_broker_does_not_keep_ha_available_when_state_collection_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client=MagicMock();client.publish.return_value.rc=0;service=HomeHA(client,Path(directory))
+            service.on_connect(client,None,None,0);service.step();client.publish.reset_mock()
+            with patch('control.home_ha.snapshot',side_effect=sqlite3.OperationalError('locked')):service.step()
+            self.assertEqual(client.publish.call_args_list[-1].args[1],'offline')
+            self.assertEqual(json.loads(service.status.read_text())['phase'],'mqtt-retrying')
+            service.step();self.assertEqual(client.publish.call_args_list[-1].args[1],'online')
+
     def test_health_button_duplicates_are_limited_across_bridge_restarts(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);message=SimpleNamespace(topic='car/car_1/command/tiny/status',payload=b'PRESS',retain=False)

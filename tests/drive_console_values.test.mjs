@@ -4,7 +4,16 @@ import test from 'node:test';
 globalThis.HTMLElement=class {};
 globalThis.customElements={define(){}};
 globalThis.window={};
-const {number,display,temperature,targetView,currentPage,editorSchema,WIDGET_DEFAULTS}=await import('../home_assistant/drive_console.js');
+const {number,display,temperature,targetView,currentPage,editorSchema,WIDGET_DEFAULTS,gpsLabel}=await import('../home_assistant/drive_console.js');
+test('a connected receiver waiting for a fix is distinct from disconnection',()=>{
+  const hass={connected:true,states:{'binary_sensor.car_gps_fix':{state:'off',attributes:{receiver_connected:true}}}};
+  assert.equal(gpsLabel(hass),'waiting for fix');
+  assert.equal(gpsLabel({...hass,connected:false}),'disconnected');
+  hass.states['device_tracker.car_location']={state:'not_home',attributes:{latitude:40,longitude:-100}};
+  assert.equal(gpsLabel(hass),'connected');
+  hass.states['device_tracker.car_location'].state='unavailable';hass.states['binary_sensor.car_gps_fix'].state='unavailable';
+  assert.equal(gpsLabel(hass),'disconnected');
+});
 test('missing, stale and disconnected values never become a fabricated zero',()=>{
   for(const value of ['unavailable','unknown','',undefined,null,'NaN','Infinity']){
     assert.equal(number({connected:true,states:{speed:{state:value}}},'speed'),null);

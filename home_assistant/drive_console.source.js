@@ -47,6 +47,11 @@ function gpsPosition(hass,entity=DEFAULTS.gps){
   const obj=hass?.states?.[entity],a=obj?.attributes||{};
   return hass?.connected && obj && !['unknown','unavailable'].includes(obj.state) && Number.isFinite(a.latitude) && Number.isFinite(a.longitude) && Math.abs(a.latitude)<=90 && Math.abs(a.longitude)<=180?a:null;
 }
+function gpsLabel(hass,entity=DEFAULTS.gps){
+  if(gpsPosition(hass,entity))return 'connected';
+  const status=hass?.connected&&hass.states?.['binary_sensor.car_gps_fix'];
+  return status&&['on','off'].includes(status.state)&&status.attributes?.receiver_connected===true?'waiting for fix':'disconnected';
+}
 function go(url,newTab=false){
   let dest;try{dest=new URL(url,location.href);}catch(_){return;}
   if(!['http:','https:'].includes(dest.protocol))return;
@@ -89,11 +94,6 @@ function playTrack(index){
   player().play().catch(()=>media.dispatchEvent(new Event('change')));
 }
 const elapsed=n=>Number.isFinite(n)?`${Math.floor(n/60)}:${String(Math.floor(n%60)).padStart(2,'0')}`:'0:00';
-function legacy(view){
-  const url=new URL(view==='reports'?'/records':'/cockpit.html', 'http://127.0.0.1:8877');
-  if(view!=='reports')url.hash=view;
-  window.open(url.href,'_blank','noopener');
-}
 const EXTRA_CSS=`
 :host{display:block;height:100%;min-width:0;color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 :host([data-theme=day]){color-scheme:light}
@@ -142,7 +142,7 @@ class DriveConsoleWidget extends HTMLElement {
     on('mapZoomOut',()=>{this._zoom=Math.max(2,this._zoom-1);this._mapKey=null;this.update();});
     on('mapLocate',()=>{this._viewCenter=null;this._followGPS=true;this._mapKey=null;this.update();});
     this.shadowRoot.querySelector('[data-view="navigation"]')?.addEventListener('click',()=>event(this,'drive-console-screen',{screen:'navigation'}));
-    on('reports',()=>legacy('reports'));
+    on('reports',()=>go('/drive-console/reports'));
     this.clock();this.update();this.updateMedia();
   }
   clock(){if(!this.config || this.config.widget!=='clock')return;const now=new Date();text(this.shadowRoot,'heroTime',now.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit',hour12:this.config.hour24?false:undefined}));text(this.shadowRoot,'heroDate',now.toLocaleDateString(undefined,{dateStyle:['full','long','short'].includes(this.config.date_format)?this.config.date_format:'full'}));}
@@ -171,7 +171,7 @@ class DriveConsoleWidget extends HTMLElement {
     else if(c.widget==='status'){
       text(r,'connectionTitle',h?.connected?'Car Assistant connected':'Waiting for Car Assistant');
       const obd=h?.connected && h.states?.[c.obd_entity||'binary_sensor.car_obd_connection']?.state==='on',gps=!!gpsPosition(h,c.gps_entity||DEFAULTS.gps);
-      text(r,'connectionDetail',`OBD: ${obd?'connected':'unavailable'} · GPS: ${gps?'connected':'disconnected'}. Measurements are read only.`);
+      text(r,'connectionDetail',`OBD: ${obd?'connected':'unavailable'} · GPS: ${gpsLabel(h,c.gps_entity||DEFAULTS.gps)}. Measurements are read only.`);
     }
   }
   async loadNavigation(){
@@ -329,8 +329,9 @@ class DriveConsoleWidget extends HTMLElement {
   leafletStatus(){
     const r=this.shadowRoot;if(!r.getElementById('mapModeText'))return;
     const valid=!!gpsPosition(this._hass,this.config.gps_entity||DEFAULTS.gps),shown=!!this._leafletLayer?.getContainer()?.querySelector('.leaflet-tile-loaded'),loading=this._leafletLayer?.isLoading();
-    text(r,'mapModeText',shown?`${this._onlineTiles?'Online USA map':'Local map'} · GPS ${valid?'connected':'disconnected'}${loading?' · loading detail':''}`:`GPS ${valid?'connected':'disconnected'} · ${loading?'loading map':onlineProviderBlocked?'map provider refused access':'map tiles unavailable; planning available'}`);
-    text(r,'mapBadge',valid?(shown?'GPS FIX':'GPS · NO MAP'):'GPS DISCONNECTED');
+    const label=gpsLabel(this._hass,this.config.gps_entity||DEFAULTS.gps);
+    text(r,'mapModeText',shown?`${this._onlineTiles?'Online USA map':'Local map'} · GPS ${label}${loading?' · loading detail':''}`:`GPS ${label} · ${loading?'loading map':onlineProviderBlocked?'map provider refused access':'map tiles unavailable; planning available'}`);
+    text(r,'mapBadge',valid?(shown?'GPS FIX':'GPS · NO MAP'):label==='waiting for fix'?'WAITING FOR FIX':'GPS DISCONNECTED');
     r.querySelector('.map-heading strong').textContent=this.config.title||(this._onlineTiles?'Navigation · USA map':'Navigation');
     const attribution=r.getElementById('mapAttribution');if(attribution)attribution.hidden=!shown;
   }
@@ -359,7 +360,7 @@ class DriveConsoleWidget extends HTMLElement {
     if(settings.usaOnly)center={lat:Math.max(18,Math.min(72,center.lat)),lon:center.lon>=170?center.lon:Math.max(-180,Math.min(-60,center.lon))};
     const lat=center.lat,lon=center.lon;this._mapView={lat,lon};
     text(r,'gpsCoordinates',`${valid?'GPS: '+a.latitude.toFixed(5)+', '+a.longitude.toFixed(5)+' · ':''}View: ${lat.toFixed(5)}, ${lon.toFixed(5)}`);
-    text(r,'gpsDetail',valid?'GPS connected · map available':'GPS disconnected · map and trip planning available');
+    text(r,'gpsDetail',valid?'GPS connected · map available':'GPS '+gpsLabel(this._hass,this.config.gps_entity||DEFAULTS.gps)+' · map and trip planning available');
     r.getElementById('mapEmpty').hidden=true;
     if(!valid)r.getElementById('mapCenter').hidden=true;
     r.getElementById('mapCenter').hidden=true;
@@ -552,7 +553,7 @@ class DriveConsoleLayout extends HTMLElement {
     const now=new Date();text(r,'topClock',now.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}));text(r,'topDate',now.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}));
     text(r,'previewStatus','System tools · original console');
     const h=this._hass,p=this.settings,obd=h?.connected && h.states?.[p.obd_entity||'binary_sensor.car_obd_connection']?.state==='on',gps=!!gpsPosition(h,p.gps_entity||DEFAULTS.gps);
-    text(r,'telemetryState',obd?'OBD2 connected':'OBD2 unavailable');text(r,'gpsState',gps?'GPS connected':'GPS disconnected');r.getElementById('telemetryDot').className='led '+(obd?'good':'warning');r.getElementById('gpsDot').className='led '+(gps?'good':'');
+    text(r,'telemetryState',obd?'OBD2 connected':'OBD2 unavailable');text(r,'gpsState','GPS '+gpsLabel(h,p.gps_entity||DEFAULTS.gps));r.getElementById('telemetryDot').className='led '+(obd?'good':'warning');r.getElementById('gpsDot').className='led '+(gps?'good':'');
   }
 }
 customElements.define('drive-console-widget',DriveConsoleWidget);
@@ -560,4 +561,4 @@ customElements.define('drive-console-widget-editor',DriveConsoleEditor);
 customElements.define('drive-console-layout',DriveConsoleLayout);
 window.customCards=window.customCards||[];
 window.customCards.push({type:'drive-console-widget',name:'Drive Console widget',description:'Original car clock, local music, offline map, truck art and vehicle gauges',preview:true});
-export {number,display,temperature,bounded,currentPage,targetView,editorSchema,WIDGET_DEFAULTS,htmlDocument,gpsPosition,defaultNavigation};
+export {number,display,temperature,bounded,currentPage,targetView,editorSchema,WIDGET_DEFAULTS,htmlDocument,gpsPosition,gpsLabel,defaultNavigation};

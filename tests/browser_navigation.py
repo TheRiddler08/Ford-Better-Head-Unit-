@@ -55,7 +55,11 @@ with sync_playwright() as p:
     surface=page.locator('#mapSurface').bounding_box();x=surface['x']+500;y=surface['y']+400
     page.mouse.move(x,y);page.mouse.down();page.mouse.move(x+80,y+30,steps=5);page.mouse.up();
     expect(page.locator('#gpsCoordinates')).not_to_have_text(before)
+    page.wait_for_function('!card._mapInteracting')
+    wheel_zoom=page.evaluate('card._zoom')
     page.mouse.wheel(0,-120)
+    page.wait_for_function('(zoom)=>card._zoom>zoom',arg=wheel_zoom)
+    page.wait_for_function('!card._mapInteracting')
     # Touch selection and pinch are handled by the same map without GPS.
     page.get_by_text('Places, routes & trips',exact=True).click();page.locator('#navPick').select_option('marker');page.locator('#navName').fill('Touch marker');page.locator('.nav-panel summary').click()
     page.touchscreen.tap(surface['x']+700,surface['y']+350)
@@ -66,7 +70,7 @@ with sync_playwright() as p:
     session.send('Input.dispatchTouchEvent',{'type':'touchStart','touchPoints':[{'x':x-40,'y':y,'id':1},{'x':x+40,'y':y,'id':2}]})
     session.send('Input.dispatchTouchEvent',{'type':'touchMove','touchPoints':[{'x':x-80,'y':y,'id':1},{'x':x+80,'y':y,'id':2}]})
     session.send('Input.dispatchTouchEvent',{'type':'touchEnd','touchPoints':[]})
-    assert page.evaluate('card._zoom')>initial_zoom
+    page.wait_for_function('(zoom)=>card._zoom>zoom',arg=initial_zoom)
     assert not errors,errors
     page.screenshot(path='/tmp/car-navigation-planner.png')
     browser.close()
