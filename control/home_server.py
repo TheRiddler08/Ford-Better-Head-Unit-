@@ -251,6 +251,15 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 cfg_file,_=paths(DEVICE_NAME)
                 return self.response({"device":DEVICE_NAME,"config":read_config(cfg_file)})
+        if req.path=='/api/device/map-coverage':
+            if not self.device_access():return
+            try:
+                from control.coverage import map_report
+                after=int(parse_qs(req.query).get('after',['0'])[0])
+                if after<0:raise ValueError('Invalid coverage cursor')
+                registry=ROOT/'gateways.json'
+                return self.response(map_report(ROOT/'coverage.sqlite3',json.loads(registry.read_text()) if registry.exists() else {},after))
+            except (OSError,ValueError,TypeError):return self.fail('Coverage unavailable',503)
         if req.path in ("/","/panel.js","/panel.css","/builder.js","/builder.css","/layout-runtime.js","/software.js","/sync.js","/transfers.js","/radio-messages.js","/radio-messages.css"):
             name,mime={"/radio-messages.js":("radio-messages.js","text/javascript; charset=utf-8"),"/radio-messages.css":("radio-messages.css","text/css; charset=utf-8"),"/":("index.html","text/html; charset=utf-8"),
                        "/panel.js":("panel.js","text/javascript; charset=utf-8"),
@@ -264,6 +273,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.response((UI/name).read_bytes(),mime=mime)
         if not self.access():return
         try:
+            if req.path=='/api/gateways':
+                from control.coverage import gateway_view
+                registry=ROOT/'gateways.json'
+                return self.response({'gateways':gateway_view(json.loads(registry.read_text()) if registry.exists() else {})})
             name=parse_qs(req.query).get("device",["car-1"])[0]
             cfg_file,queue_file=paths(name)
             if req.path=="/api/gps-relay":
@@ -398,6 +411,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data=self.request_json()
             if not isinstance(data,dict):raise ValueError("Invalid object")
+            if self.path=='/api/gateways':
+                from control.coverage import register_gateway
+                with LOCK:return self.response(register_gateway(ROOT/'gateways.json',data))
             if self.path=="/api/messages":
                 from control.messages import enqueue,cancel
                 from control.event_transfer import Events

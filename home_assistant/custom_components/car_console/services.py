@@ -9,16 +9,18 @@ from aiohttp import ClientError,ClientTimeout,web
 from homeassistant.components.http import HomeAssistantView
 
 GET={'system':'/api/system/status','storage':'/api/car-storage','updates':'/api/update-status',
+     'map-layers':'/api/map-layers',
      'cameras':'/api/dashcam','reports':'/api/report/summary','messages':'/api/messages',
      'preferences':'/api/headunit-prefs','sync':'/api/local-sync','sync-file':'/api/local-sync/file'}
-POST={'messages':'/api/messages','preferences':'/api/headunit-prefs','sync-file':'/api/local-sync/file','radio-test':'/api/radio-test'}
+POST={'map-layers':'/api/map-layers','messages':'/api/messages','preferences':'/api/headunit-prefs','sync-file':'/api/local-sync/file','radio-test':'/api/radio-test'}
 HOME={'status':'/api/software/status','transfers':'/api/software/transfers','transfer':'/api/software/transfer',
+      'gateways':'/api/gateways',
       'source':'/api/software/source','publish':'/api/software/publish','sync':'/api/sync','sync-file':'/api/sync/file',
       'config':'/api/config','change':'/api/change','layout':'/api/layout','layout-status':'/api/layout-status',
       'coverage':'/api/coverage','messages':'/api/messages','cameras':'/api/dashcam','pending':'/api/pending'}
-HOME_POST={'transfer','publish','sync','sync-file','change','layout','messages'}
+HOME_POST={'transfer','publish','sync','sync-file','change','layout','messages','gateways'}
 REPORTS={'values','commands','snapshots','snapshot-values','events','gps','gps-messages','stops','gps-stream','gps-sessions','gps-events'}
-PARAMS={'device','role','state','before','id','path','name','after','limit','from','to','snapshot','status','kind'}
+PARAMS={'device','role','state','before','id','path','name','after','limit','from','to','snapshot','status','kind','west','east','south','north','zoom','layers','gateway','manufacturer','alertLat','alertLon','alertMeters'}
 
 
 def ui_state(directory):
@@ -70,7 +72,7 @@ class CarServiceView(HomeAssistantView):
                 if not path:raise ValueError('Unknown service action')
             query=query_string(request.query);body=None
             if post:
-                if request.content_length is None or request.content_length>131072:return web.json_response({'error':'Request exceeds limit'},status=413)
+                if request.content_length is None or request.content_length>(32*1024**2 if feature=='map-layers' else 131072):return web.json_response({'error':'Request exceeds limit'},status=413)
                 body=await request.json()
                 if not isinstance(body,dict):raise ValueError('Expected an object')
             url=self.origin+path+('?' +query if query else '')

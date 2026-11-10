@@ -726,6 +726,12 @@ depend() {{ need car-fleet; }}
         run(['rc-service','car-wifi-sync','restart' if enabled else 'stop'],check=False)
 
 
+def application_workers(role,config):
+    workers=[('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-messages','control.messages run'),('car-telemetry','control.telemetry'),('car-file-sync','control.file_sync'),('car-data','control.car_data')]
+    if role=='tiny' and config.get('map_layers',True):workers.append(('car-map-layers','control.map_layers'))
+    return workers
+
+
 def systemd_units(role):
     current=BASE/'fleet-current'
     unit('car-fleet.service',f'''[Unit]
@@ -755,7 +761,7 @@ TimeoutStartSec=900
     managed_tunnel=role=='tiny' and bool(link.get('home_ssh_target'))
     if managed_tunnel:unit('car-home-tunnel.service',home_tunnel_unit(config,link))
     user=config.get('user','nobody');repo=config.get('repo','/nonexistent');home=config.get('home','/nonexistent')
-    for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-messages','control.messages run'),('car-telemetry','control.telemetry'),('car-file-sync','control.file_sync'),('car-data','control.car_data')]:
+    for name,module in application_workers(role,config):
         limits='Environment=CAR_STATE_DB_LIMIT_BYTES=16777216\n' if role=='pi' and config.get('pi_storage_client',True) else ''
         unit(name+'.service',f'''[Unit]
 Description=Automatic resumable software link ({module})
@@ -836,6 +842,9 @@ WantedBy=timers.target
     run(['systemctl','disable','--now','car-duet-ethernet-'+role+'.timer'],check=False)
     run(['systemctl','enable','--now','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-messages.service','car-telemetry.service','car-file-sync.service','car-data.service'])
     run(['systemctl','restart','car-update-link.service','car-radio-adapter.service','car-messages.service','car-telemetry.service','car-file-sync.service','car-data.service'])
+    if role=='tiny':
+        if config.get('map_layers',True):run(['systemctl','enable','--now','car-map-layers.service']);run(['systemctl','try-restart','car-map-layers.service'],check=False)
+        else:run(['systemctl','disable','--now','car-map-layers.service'],check=False)
     # Never force suspend the SSH session that installed an update. Arming is
     # automatic, but the once-per-boot timer starts on the next device boot.
     extras=['car-wake-first.timer','car-wake-retry.timer','car-wake-status.service'] if role=='pi' else [] if role=='laptop' else ['car-boot-standby.timer']
@@ -880,7 +889,9 @@ depend() {{ need car-fleet; }}
         run(['rc-service','car-wake-status','restart'])
     cfg=load(CONFIG,{})
     if role=='laptop':install_laptop_power(cfg)
-    for name,module in [('car-update-link','control.update_agent'),('car-radio-adapter','control.radio_gateway'),('car-messages','control.messages run'),('car-telemetry','control.telemetry'),('car-file-sync','control.file_sync'),('car-data','control.car_data')]:
+    if role=='tiny' and not cfg.get('map_layers',True):
+        run(['rc-update','del','car-map-layers','default'],check=False);run(['rc-service','car-map-layers','stop'],check=False)
+    for name,module in application_workers(role,cfg):
         limits='export CAR_STATE_DB_LIMIT_BYTES=16777216\n' if role=='pi' and cfg.get('pi_storage_client',True) else ''
         save(Path('/etc/init.d')/name,f'''#!/sbin/openrc-run
 name="Automatic resumable update transport"
@@ -959,10 +970,10 @@ def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False
     if not defaults.get('enabled',True):
         install_wifi_sync(defaults)
         if Path('/run/systemd/system').exists():
-            for service in ['car-home-tunnel.service','car-laptop-power.service','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-messages.service','car-telemetry.service','car-file-sync.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
+            for service in ['car-map-layers.service','car-home-tunnel.service','car-laptop-power.service','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-messages.service','car-telemetry.service','car-file-sync.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
                 run(['systemctl','disable','--now',service],check=False)
         elif Path('/run/openrc').exists():
-            for service in ['car-laptop-power','car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-messages','car-telemetry','car-file-sync','car-data','car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount','car-fleet-boot','car-wake-status']:
+            for service in ['car-map-layers','car-laptop-power','car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-messages','car-telemetry','car-file-sync','car-data','car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount','car-fleet-boot','car-wake-status']:
                 run(['rc-update','del',service,'default'],check=False);run(['rc-service',service,'stop'],check=False)
         return {'provisioning':VERSION,'disabled':True,'missing':missing}
     if Path('/run/systemd/system').exists():

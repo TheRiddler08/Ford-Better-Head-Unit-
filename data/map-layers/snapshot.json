@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "sha256": "38ad44303f5cd7eb491d2f9e9d30d4a73228ddd9532b952ec81142c1e9ad7af4",
+  "source": "DeFlock / FlockHopper USA export",
+  "sourceDate": "2026-10-08",
+  "revision": "6ec872341e446e1970bd1f4786c52713be03ba9a",
+  "url": "https://raw.githubusercontent.com/FoggedLens/deflockhopper_maps/master/public/cameras-us.json.gz",
+  "count": 61768
+}

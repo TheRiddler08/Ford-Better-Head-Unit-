@@ -9,6 +9,8 @@ import math
 from pathlib import Path
 import sqlite3
 import time
+import hashlib
+import re
 
 
 def database(path):
@@ -74,3 +76,49 @@ def report(path,after=0):
         totals={row['reason']:row['n'] for row in db.execute('SELECT reason,COUNT(*) n FROM coverage GROUP BY reason')}
     return {'items':items,'next':items[-1]['id'] if items else after,'hasMore':more,'totals':totals,
             'meaning':'Observed receptions only. Untested locations and missing uplinks are unknown.'}
+
+
+def gateway_view(registry):
+    sites={}
+    for ident,site in registry.items():
+        if not isinstance(ident,str) or not re.fullmatch('[a-fA-F0-9]{16}',ident) or not isinstance(site,dict):continue
+        position=site if site.get('lat') is not None and site.get('lon') is not None else site.get('location') if isinstance(site.get('location'),dict) else site
+        value={'name':str(site.get('name') or ident)[:160],'role':site.get('role')}
+        try:value.update(lat=numeric(position.get('lat',position.get('latitude')),-90,90),lon=numeric(position.get('lon',position.get('longitude')),-180,180))
+        except (ValueError,TypeError):pass
+        sites[ident.lower()]=value
+    return sites
+
+
+def register_gateway(path,data):
+    """Home-owner registration; never callable with the read-only device token."""
+    if not isinstance(data,dict) or set(data)!={'id','name','role','lat','lon'}:raise ValueError('Invalid gateway registration')
+    if not isinstance(data['id'],str):raise ValueError('Invalid gateway ID')
+    ident=data['id'].lower()
+    if not re.fullmatch('[a-f0-9]{16}',ident) or data['role'] not in ('fixed','mobile','unknown'):raise ValueError('Invalid gateway ID or role')
+    if not isinstance(data['name'],str) or len(data['name'])>160:raise ValueError('Invalid gateway name')
+    position={}
+    if data['lat'] is not None or data['lon'] is not None:position={'lat':numeric(data['lat'],-90,90),'lon':numeric(data['lon'],-180,180)}
+    path=Path(path);registry=json.loads(path.read_text()) if path.exists() else {}
+    if not isinstance(registry,dict) or ident not in registry and len(registry)>=100:raise ValueError('Gateway registry exceeds limit')
+    site=dict(registry.get(ident,{}));site.update(name=data['name'],role=data['role'],**position)
+    if not position:
+        for key in ('lat','lon','latitude','longitude'):site.pop(key,None)
+        if isinstance(site.get('location'),dict):site['location']={key:value for key,value in site['location'].items() if key not in ('lat','lon','latitude','longitude')}
+    registry[ident]=site
+    from control.update_agent import atomic
+    atomic(path,json.dumps(registry,allow_nan=False).encode())
+    return {'gateways':gateway_view(registry)}
+
+
+def map_report(path,registry,after=0):
+    """Device-scoped map feed. No raw packets, tokens or unrelated device state."""
+    with closing(database(path)) as db:
+        first=db.execute('SELECT event_id,gateway,received FROM coverage ORDER BY id LIMIT 1').fetchone()
+        instance=hashlib.sha256(json.dumps(list(first) if first else []).encode()).hexdigest()
+        maximum=db.execute('SELECT COALESCE(MAX(id),0) FROM coverage').fetchone()[0]
+        if after>maximum:after=0
+        rows=[dict(row) for row in db.execute('SELECT id,gateway,received,lat,lon,rssi,snr,eligible,reason FROM coverage WHERE id>? ORDER BY id LIMIT 2001',(after,))]
+    sites=gateway_view(registry)
+    more=len(rows)>2000;rows=rows[:2000]
+    return {'instance':instance,'gateways':sites,'items':rows,'next':rows[-1]['id'] if rows else after,'hasMore':more}

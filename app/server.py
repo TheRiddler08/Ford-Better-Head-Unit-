@@ -281,6 +281,13 @@ class Handler(BaseHTTPRequestHandler):
             path=WEB_DIR/'radio-messages.html' if not suffix else WEB_DIR.parent.parent/'control/web'/('radio-messages'+suffix)
             return self.send_bytes(path.read_bytes(),mime={'.js':'text/javascript','.css':'text/css','':'text/html; charset=utf-8'}[suffix])
         url = urlsplit(self.path)
+        if url.path=='/api/map-layers':
+            if self.client_address[0] not in ('127.0.0.1','::1'):return self.send_json({'error':'Localhost required'},403)
+            try:
+                from control.map_layers import location,query
+                return self.send_json(query(location(),parse_qs(url.query)))
+            except (ValueError,TypeError):return self.send_json({'error':'Invalid map layer query'},400)
+            except (OSError,sqlite3.Error):return self.send_json({'error':'Map layer cache unavailable'},503)
         if url.path=='/api/system/status':
             from app.system_status import snapshot
             from app.system_status import read
@@ -519,7 +526,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         endpoint=urlsplit(self.path).path
-        if endpoint not in ("/api/headunit-prefs","/api/messages","/api/local-sync/file","/api/radio-test"):
+        if endpoint not in ("/api/headunit-prefs","/api/messages","/api/local-sync/file","/api/radio-test","/api/map-layers"):
             return self.send_json({"error": "Not found"}, 404)
         # Local kiosk settings only; never send commands to the vehicle.
         if self.client_address[0] not in ("127.0.0.1", "::1"):
@@ -531,9 +538,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "Untrusted origin"}, 403)
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if size < 1 or size > (131072 if endpoint=='/api/local-sync/file' else 12000):
+            if size < 1 or size > (32*1024**2 if endpoint=='/api/map-layers' else 131072 if endpoint=='/api/local-sync/file' else 12000):
                 return self.send_json({"error": "Invalid request size"}, 413)
             incoming = json.loads(self.rfile.read(size))
+            if endpoint=='/api/map-layers':
+                from control.map_layers import location,action
+                return self.send_json(action(location(),incoming))
             if endpoint=='/api/local-sync/file':
                 from control.file_sync import car_files
                 config=json.loads(FLEET_FILE.read_text());config.update(json.loads(Path('/etc/car-dashboard/update-link.json').read_text()))

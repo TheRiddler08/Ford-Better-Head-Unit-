@@ -179,12 +179,23 @@ class CarServiceCard extends HTMLElement{
   home(){
     this._homeBuilt=true;
     this.body.replaceChildren();const token=this.input('Separate home owner panel token (memory only)',this._homeToken,'password');token.autocomplete='off';token.oninput=()=>{this._homeToken=token.value;};
-    const mode=this.select('Home function',[['status','Integration and delivery status'],['transfers','Signed transfer controls'],['source','Source-copy editor'],['sync','Selected-file studio'],['layout','Custom dashboard project / HTML'],['config','Versioned car settings'],['coverage','Gateway coverage evidence'],['messages','Home message inbox'],['cameras','Home clip catalog']]);
+    const mode=this.select('Home function',[['status','Integration and delivery status'],['transfers','Signed transfer controls'],['source','Source-copy editor'],['sync','Selected-file studio'],['layout','Custom dashboard project / HTML'],['config','Versioned car settings'],['gateways','Register fixed/mobile gateways'],['coverage','Gateway coverage evidence'],['messages','Home message inbox'],['cameras','Home clip catalog']]);
     const role=this.select('Car role',['tiny','duet','pi','laptop'].map(value=>[value,value]));const output=node('section');this.body.append(output);
     const homeCall=async(feature,data,query='')=>{if(!this._homeToken)throw Error('Enter the separate home panel token. It is never saved in HA configuration.');const generation=this._generation;try{const value=await request(this._hass,'/api/car_console/home/'+feature+query,data,{'X-Car-Home-Token':this._homeToken});if(generation!==this._generation||!this.isConnected)throw Object.assign(Error('Card changed'),{cancelled:true});if(data===undefined){this._lastRead=Date.now();this._readFailed=false;this.updateFreshness();}return value;}catch(error){if(data===undefined&&!error.cancelled)error.readFailed=true;throw error;}};
     this.button('Open home function',async()=>{
       if(this._draft)throw Error('Finish or discard the current edit before opening another home function.');
       output.replaceChildren();const feature=mode.value,selectedRole=role.value;const query='?role='+selectedRole;
+      if(feature==='gateways'){
+        let sites=(await homeCall('gateways')).gateways||{};
+        output.append(node('p','Register the real gateway role here. Only future eligible GPS-tagged receptions from fixed sites become measured coverage. This does not enable GPS transmission.'));
+        const saved=this.select('Registered gateway',[['','New gateway'],...Object.entries(sites).map(([id,site])=>[id,site.name||id])],output);
+        const id=this.input('Gateway EUI','','text',output),name=this.input('Gateway name','','text',output),kind=this.select('Gateway role',[['fixed','Fixed site'],['mobile','Mobile gateway'],['unknown','Unknown / exclude']],output),lat=this.input('Gateway latitude','','number',output),lon=this.input('Gateway longitude','','number',output);
+        id.maxLength=16;name.maxLength=160;lat.step=lon.step='any';
+        const fill=()=>{const site=sites[saved.value];id.value=saved.value;name.value=site?.name||'';kind.value=site?.role||'fixed';lat.value=site?.lat??'';lon.value=site?.lon??'';};
+        saved.onchange=()=>{if(this._draft){this.say('Save or discard gateway edits first.');return;}fill();};
+        for(const input of [id,name,kind,lat,lon])input.oninput=()=>{this._draft=true;this.updateFreshness();};
+        this.button('Save gateway registration',async()=>{const result=await homeCall('gateways',{id:id.value,name:name.value,role:kind.value,lat:lat.value===''?null:Number(lat.value),lon:lon.value===''?null:Number(lon.value)});sites=result.gateways;this._draft=false;saved.replaceChildren();saved.add(new Option('New gateway',''));for(const [key,site] of Object.entries(sites))saved.add(new Option(site.name||key,key));saved.value=id.value.toLowerCase();fill();this.say('Home gateway registration saved; cached maps refresh through the authenticated device link.');},output);return;
+      }
       if(feature==='transfers'){
         const filter=this.select('Transfer history',[['active','Active'],['finished','Finished'],['all','All']],output),budget=node('p'),list=node('div');output.append(budget,list);let cursor=null;
         const load=async(older=false)=>{

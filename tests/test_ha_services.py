@@ -78,6 +78,15 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status,200);self.assertEqual(await response.read(),b'time,lat,lon\n'*100)
         self.assertEqual((await self.client.get('/download/clip?id=../../secret',headers=headers)).status,400)
 
+    async def test_map_overlay_viewports_stay_on_local_backend_and_mutations_need_admin(self):
+        headers={'Authorization':'Bearer test-ha'}
+        response=await self.client.get('/service/map-layers?west=-101&east=-99&south=39&north=41&zoom=14&layers=cameras,coverage&alertLat=40&alertLon=-100&alertMeters=300',headers=headers)
+        self.assertEqual(response.status,200);self.assertEqual(self.requests[-1][0],'/api/map-layers')
+        self.assertEqual(self.requests[-1][1]['alertLat'],'40');self.assertNotIn('Authorization',self.requests[-1][2])
+        self.assertEqual((await self.client.post('/service/map-layers',json={'action':'refresh'},headers=headers)).status,403)
+        response=await self.client.post('/service/map-layers',json={'action':'refresh'},headers=dict(headers,**{'X-Test-Admin':'yes'}))
+        self.assertEqual(response.status,200);self.assertEqual((await response.json())['data'],{'action':'refresh'})
+
     async def test_home_owner_proxy_requires_admin_and_never_accepts_a_target_url(self):
         class Response:
             status=200

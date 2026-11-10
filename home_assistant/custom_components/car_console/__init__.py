@@ -77,6 +77,14 @@ def validate_navigation(data):
     settings=data['settings'];nav_point(settings)
     if type(settings.get('zoom')) is not int or not 2<=settings['zoom']<=18:raise ValueError('Invalid map zoom')
     if any(type(settings.get(k)) is not bool for k in ('followGPS','usaOnly')):raise ValueError('Invalid map settings')
+    layers=settings.get('layers',{})
+    if not isinstance(layers,dict) or set(layers)-{'cameras','coverage','estimates','alerts','manufacturer','gateway','alertMeters','opacity'}:raise ValueError('Invalid map layer settings')
+    if any(type(layers.get(key,False)) is not bool for key in ('cameras','coverage','estimates','alerts')):raise ValueError('Invalid map layer toggle')
+    if layers.get('manufacturer','flock') not in ('flock','all'):raise ValueError('Invalid camera filter')
+    if layers.get('gateway','all')!='all' and not re.fullmatch('[a-f0-9]{16}',str(layers['gateway'])):raise ValueError('Invalid gateway filter')
+    for key,low,high,default in (('opacity',.15,1,.75),('alertMeters',50,5000,300)):
+        value=layers.get(key,default)
+        if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not low<=value<=high:raise ValueError('Invalid map layer value')
     regions=settings.get('routingRegions',['us'])
     if not isinstance(regions,list) or not 1<=len(regions)<=51 or any(not isinstance(region,str) or not re.fullmatch('[a-z][a-z-]{1,31}',region) for region in regions) or ('us' in regions and regions!=['us']):raise ValueError('Invalid routing regions')
     def label(value,limit):

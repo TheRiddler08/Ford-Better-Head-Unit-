@@ -227,7 +227,7 @@ class DriveConsoleWidget extends HTMLElement {
     on('navReload',()=>{this._navLoaded=false;this.loadNavigation();});
     on('navExport',()=>{const blob=new Blob([JSON.stringify(this._navigation,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='car-navigation.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
     r.getElementById('navImport').onchange=async e=>{try{const file=e.target.files[0];if(!file||file.size>2000000)throw Error('Choose a navigation JSON file under 2 MB');const data=JSON.parse(await file.text());if(!data.settings||!Array.isArray(data.markers)||!Array.isArray(data.trips)||!data.route)throw Error('Invalid navigation export');await this._navSave;data.revision=this._navigation.revision+1;const response=await this._hass.fetchWithAuth('/api/car_console/navigation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!response.ok)throw Error((await response.json()).error||'Import rejected');this._navigation=await response.json();navigationBus.dispatchEvent(new CustomEvent('saved',{detail:structuredClone(this._navigation)}));this._mapKey=null;this.updateMap();}catch(error){this.navNotice(error.message);}};
-    this.drawNavigation();this.loadNavigation();
+    this.installLayerTools(surface);this.drawNavigation();this.loadNavigation();
   }
   addNavPoint(kind){
     if(this._navLoading){this.navNotice('Loading saved navigation; try again in a moment');return;}
@@ -271,6 +271,7 @@ class DriveConsoleWidget extends HTMLElement {
   viewReplay(){const point=this._history?.[this._replayIndex||0];if(!point)return;this._viewCenter={lat:point.lat,lon:point.lon};this._followGPS=false;this._mapKey=null;text(this.shadowRoot,'navHistoryStatus',`Recorded: ${new Date(point.ts*1000).toLocaleString()} · ${this._replayIndex+1}/${this._history.length}`);this.shadowRoot.getElementById('navReplaySeek').value=this._replayIndex||0;this.updateMap();}
   replayTick(){if(!this._replaying||!this._history?.length)return;this._replayClock=(this._replayClock||this._history[0].ts)+Number(this.shadowRoot.getElementById('navReplaySpeed').value);while((this._replayIndex||0)<this._history.length-1&&this._history[(this._replayIndex||0)+1].ts<=this._replayClock)this._replayIndex=(this._replayIndex||0)+1;if(this._replayIndex===this._history.length-1)this._replaying=false;this.viewReplay();}
   removeLeaflet(){
+    this.clearMapLayers?.();
     this._mapResize?.disconnect();this._mapResize=null;
     this._mapInteracting=false;
     if(this._leaflet){const map=this._leaflet;this._leaflet=null;map.remove();}
@@ -338,7 +339,7 @@ class DriveConsoleWidget extends HTMLElement {
     text(r,'mapBadge',valid?(shown?'GPS FIX':'GPS · NO MAP'):label==='waiting for fix'?'WAITING FOR FIX':'GPS DISCONNECTED');
     r.getElementById('mapBadge').dataset.state=valid?'ready':'waiting';
     r.querySelector('.map-heading strong').textContent=this.config.title||(this._onlineTiles?'Navigation · USA map':'Navigation');
-    const attribution=r.getElementById('mapAttribution');if(attribution)attribution.hidden=!shown;
+    const attribution=r.getElementById('mapAttribution');if(attribution)attribution.hidden=!shown&&!this.layerOptions?.().cameras;
   }
   drawLeafletFeatures(){
     if(!this._leafletFeatures||!this._navigation)return;
@@ -375,7 +376,7 @@ class DriveConsoleWidget extends HTMLElement {
       try{this._leaflet.setMaxBounds(settings.usaOnly?LEAFLET.latLngBounds([18,-190],[72,-60]):null);const point=this.leafletPoint({lat,lon});if(!this._leaflet._loaded||this._leaflet.getZoom()!==this._zoom||this._leaflet.getCenter().distanceTo(point)>.1)this._leaflet.setView(point,this._zoom,{animate:false});this._leaflet.invalidateSize({pan:true,animate:false});}
       finally{this._settingMapView=false;}
     }
-    this.leafletStatus();this.drawNavigation();
+    this.leafletStatus();this.drawNavigation();this.refreshMapLayers();
   }
   updateMedia(){
     if(this.config?.widget!=='media')return;const r=this.shadowRoot;
