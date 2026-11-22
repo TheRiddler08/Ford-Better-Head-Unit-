@@ -11,6 +11,12 @@ from deploy import fleet
 from power import standby
 
 
+import shutil as _shutil
+_real_which=_shutil.which
+def without_nft(name,*args,**kwargs):
+    return None if name=='nft' else _real_which(name,*args,**kwargs)
+
+
 class FleetTests(unittest.TestCase):
     def test_peer_identity_uses_role_ip_and_valid_ethernet_mac(self):
         msg={'schema':1,'role':'duet','mac':'02:11:22:33:44:55','internet':True}
@@ -52,7 +58,9 @@ class FleetTests(unittest.TestCase):
             sharing.apply('eth0','wlan0',['1.1.1.1'],'duet','pi',True)
             firewall.assert_called_once_with('eth0',None)
             route.assert_called_once_with('eth0',None)
-        with patch.object(fleet,'run',return_value=subprocess.CompletedProcess([],0)) as run:
+        # This test covers the iptables path; the nft path has its own plan tests.
+        # Never inspect the host's real nftables ruleset.
+        with patch.object(fleet,'run',return_value=subprocess.CompletedProcess([],0)) as run,patch.object(fleet.shutil,'which',side_effect=without_nft):
             sharing.firewall('eth0',None)
             for call in run.call_args_list:
                 args=call.args[0]
@@ -112,7 +120,7 @@ class FleetTests(unittest.TestCase):
             calls.append(args)
             return subprocess.CompletedProcess(args,1 if '-C' in args else 0)
         sharing=fleet.Sharing()
-        with patch.object(fleet,'run',side_effect=run),patch.object(fleet.Path,'write_text'),patch.object(fleet.subprocess,'Popen') as popen,patch.object(sharing,'route'):
+        with patch.object(fleet,'run',side_effect=run),patch.object(fleet.Path,'write_text'),patch.object(fleet.subprocess,'Popen') as popen,patch.object(sharing,'route'),patch.object(fleet.shutil,'which',side_effect=without_nft):
             popen.return_value.poll.return_value=None
             sharing.apply('eth0','wlan0',['1.1.1.1'],'duet','duet',True)
             command=popen.call_args.args[0]
