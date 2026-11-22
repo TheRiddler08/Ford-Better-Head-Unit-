@@ -20,7 +20,8 @@ class HistoryTests(unittest.TestCase):
             pending=b''
             for chunk in chunks:pending=gps.ingest_chunk(db,session,pending,chunk,101)
             self.assertEqual(pending,b'{unfinished')
-            self.assertEqual(b''.join(base64.b64decode(row[0]) for row in db.execute('SELECT raw_b64 FROM gps_stream ORDER BY id')),b''.join(chunks))
+            # Only the unparseable line keeps its exact bytes; parsed fixes are not stored twice.
+            self.assertEqual(b''.join(base64.b64decode(row[0]) for row in db.execute('SELECT raw_b64 FROM gps_stream ORDER BY id')),b'bad\xff\n')
             self.assertEqual(db.execute('SELECT COUNT(*) FROM fixes').fetchone()[0],1)
             gps.record_message(db,{'class':'TPV','mode':1},102)
             gps.record_message(db,fix,103)
@@ -28,6 +29,36 @@ class HistoryTests(unittest.TestCase):
             gps.start_session(db,104);gps.record_message(db,fix,105)
             self.assertEqual(db.execute('SELECT break_reason FROM fixes ORDER BY id DESC LIMIT 1').fetchone()[0],'connection_start')
             self.assertEqual(db.execute('SELECT reason FROM gps_sessions WHERE id=?',(session,)).fetchone()[0],'interrupted')
+            db.close()
+
+    def test_parked_car_is_one_position_not_thirty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db=gps.open_db(Path(temp)/'gps.db');gps.start_session(db,0)
+            def fix(t,lat=40.0,lon=-75.0,speed=0.0,heading=None):
+                return {'class':'TPV','mode':3,'lat':lat,'lon':lon,'speed':speed,'track':heading,'time':'2026-11-01T00:%02d:%02dZ'%(t//60,t%60)}
+            # 30 minutes parked with normal receiver jitter of a few metres.
+            for t in range(0,1800,1):
+                gps.record_message(db,fix(t,40.0+(t%7)*0.00002,-75.0+(t%5)*0.00002),1000+t,commit=False)
+                if t%60==0:gps.record_message(db,{'class':'SKY','uSat':8,'nSat':12},1000+t,commit=False)
+            db.commit()
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM fixes').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM gps_messages').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM stops').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT ended FROM stops').fetchone()[0],db.execute("SELECT MAX(ts) FROM fixes").fetchone()[0]+1799)
+            # Driving away: departure time from the parking spot, then real movement.
+            for step in range(1,11):gps.record_message(db,fix(1800+step,40.0+step*0.0002,-75.0,speed=15,heading=0),2800+step)
+            rows=db.execute('SELECT lat,ts FROM fixes ORDER BY id').fetchall()
+            self.assertEqual(len(rows),12)
+            self.assertAlmostEqual(rows[1][1]-rows[0][1],1799)
+            # A turn with little distance is still captured; a straight stand-still is not.
+            gps.record_message(db,fix(1812,40.0+10*0.0002+0.00002,-75.0,speed=3,heading=90),2812)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM fixes').fetchone()[0],13)
+            # Another drive (new connection) starts at the same place: recorded once.
+            gps.start_session(db,4000)
+            gps.record_message(db,fix(3000,40.0+10*0.0002+0.00002,-75.0),4001)
+            gps.record_message(db,fix(3001,40.0+10*0.0002+0.00002,-75.0),4002)
+            self.assertEqual(db.execute('SELECT break_reason FROM fixes ORDER BY id DESC LIMIT 1').fetchone()[0],'connection_start')
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM fixes').fetchone()[0],14)
             db.close()
 
     def test_only_fresh_client_fixed_gateway_evidence(self):

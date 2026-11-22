@@ -12,10 +12,52 @@ from control.event_transfer import Events
 KEY=bytes(range(32))
 
 
+def restore(store,name):
+    """Rebuild tables from archived increments: the last copy of each rowid wins."""
+    import gzip,sqlite3
+    tables={}
+    with sqlite3.connect(store.state/'library.sqlite3') as db:
+        idents=[r[0] for r in db.execute('SELECT id FROM objects WHERE kind=? ORDER BY created,rowid',(name+'-increment',))]
+    for ident in idents:
+        with gzip.open(store.objects/ident,'rt') as stream:
+            header=json.loads(stream.readline());assert header['source']==name
+            for line in stream:
+                section=json.loads(line)
+                for row in section['rows']:tables.setdefault(section['table'],{})[row[0]]=tuple(row[1:])
+    return {table:[rows[k] for k in sorted(rows)] for table,rows in tables.items()},len(idents)
+
+
 class CarDataTests(unittest.TestCase):
     def setUp(self):
         # Functional fixtures are tiny; do not require gigabytes of free test disk.
         reserve=patch('control.car_data.RESERVE',0);reserve.start();self.addCleanup(reserve.stop)
+
+    def test_backups_store_each_row_once_and_restore_all_history(self):
+        import sqlite3
+        from recorder import gps_recorder as gps
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);store=Store(root/'spool','tiny');live=root/'gps.sqlite3'
+            db=gps.open_db(live);gps.start_session(db,0)
+            def fix(t,lat):return {'class':'TPV','mode':3,'lat':lat,'lon':-75.0,'speed':10,'time':'2026-11-01T01:%02d:%02dZ'%(t//60,t%60)}
+            for t in range(60):gps.record_message(db,fix(t,40+t*0.001),100+t)
+            self.assertEqual(store.increment(live,'gps',now=1000),1)
+            # Unchanged history is not copied again, even after the interval.
+            self.assertEqual(store.increment(live,'gps',now=1100),0)
+            self.assertEqual(store.increment(live,'gps',now=5000),0)
+            for t in range(60,90):gps.record_message(db,fix(t,40+t*0.001),100+t)
+            gps.end_session(db,1,'stopped',500)  # in-place update of an archived row
+            self.assertEqual(store.increment(live,'gps',now=9000),1)
+            restored,count=restore(store,'gps');self.assertEqual(count,2)
+            for table in ('fixes','gps_sessions','stops','gps_state'):
+                self.assertEqual(restored.get(table,[]),[tuple(r) for r in db.execute('SELECT * FROM '+table+' ORDER BY rowid')],table)
+            # The second backup holds the new rows plus one repeated row per table, not a full copy.
+            with sqlite3.connect(store.state/'library.sqlite3') as lib:
+                second=json.loads(lib.execute("SELECT metadata FROM objects WHERE kind='gps-increment' ORDER BY rowid DESC").fetchone()[0])
+            self.assertLessEqual(second['tables']['fixes'][2],31)
+            db.close()
+            # A replaced database starts over instead of silently skipping rows.
+            live.unlink();db=gps.open_db(live);gps.record_message(db,fix(0,41),100);db.close()
+            self.assertEqual(store.increment(live,'gps',now=20000),1)
 
     def test_production_reserve_rejects_new_copies_without_deleting_source(self):
         with tempfile.TemporaryDirectory() as temp:

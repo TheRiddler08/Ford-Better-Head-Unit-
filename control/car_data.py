@@ -4,6 +4,8 @@ No distributed filesystem or camera protocol is implemented here. Packaged
 MooseFS owns chunking/replication. Active SQLite files stay on local disks.
 """
 from contextlib import closing, contextmanager
+import base64
+import gzip
 import hashlib
 import json
 import os
@@ -22,7 +24,8 @@ ROLES=('tiny','duet','pi','laptop')
 VIDEO={'.mp4','.mov','.mkv','.ts'}
 CAMERA={'manufacturer':'Botslab','model':'G980H','channels':4,
         'access':'pending-verified-download-protocol'}
-OBJECT=re.compile(r'^[0-9a-f]{64}\.(?:mp4|mov|mkv|ts|sqlite3|json|gpx|geojson|txt)$')
+OBJECT=re.compile(r'^[0-9a-f]{64}\.(?:mp4|mov|mkv|ts|sqlite3|json|gpx|geojson|txt|gz)$')
+INCREMENT_ROWS=50000
 RESERVE=2*1024**3
 
 
@@ -96,6 +99,17 @@ def copy_verified(source,target):
         finally:
             if pending.exists():pending.unlink()
     return expected
+
+
+def latest_fix(db):
+    """Current position: the recorder's live state, since parked fixes are not repeated as rows."""
+    try:
+        row=db.execute('SELECT value FROM gps_state WHERE id=1').fetchone()
+        last=json.loads(row[0]).get('last') if row else None
+        if isinstance(last,dict) and all(isinstance(last.get(k),(int,float)) for k in ('ts','lat','lon')):return last
+    except (sqlite3.Error,ValueError,TypeError):pass
+    row=db.execute('SELECT id,ts,lat,lon,mode FROM fixes ORDER BY id DESC LIMIT 1').fetchone()
+    return dict(row) if row else None
 
 
 class Store:
@@ -175,6 +189,62 @@ class Store:
                 source.backup(target,pages=256,progress=progress,sleep=.01)
             self.add(backup,name+'-snapshot')
         with closing(self.db()) as db,db:db.execute('INSERT OR REPLACE INTO checkpoints VALUES(?,?)',(name,time.time()))
+    def increment(self,path,name,interval=3600,now=None,batches=20):
+        """Archive only rows added since the previous backup (gzip JSON lines).
+
+        Replaces repeated full database copies: all history is retained for all
+        time, but each row is archived once. The latest previously archived row
+        of each table is repeated so in-place updates (open stop/session end
+        times, snapshot success counts) reach the archive; readers keep the last
+        copy of a rowid. A rebuilt/replaced database (rowids reset) is exported
+        again from the start. The live database is opened read-only.
+        """
+        if self.storage_client:raise ValueError('Pi bulk backups belong on Tiny; no local SD spool')
+        path=Path(path);now=time.time() if now is None else now
+        if not path.is_file():return 0
+        with closing(self.db()) as db,db:
+            db.execute('CREATE TABLE IF NOT EXISTS increments(name TEXT,tbl TEXT,last INTEGER,digest TEXT,PRIMARY KEY(name,tbl))')
+            row=db.execute('SELECT stamp FROM checkpoints WHERE name=?',('increment:'+name,)).fetchone()
+            if row and now-row[0]<interval:return 0
+            marks={r['tbl']:(r['last'],r['digest']) for r in db.execute('SELECT tbl,last,digest FROM increments WHERE name=?',(name,))}
+        def fingerprint(row):return hashlib.sha256(repr(tuple(row)).encode()).hexdigest()
+        written=0;finished=False
+        with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=30)) as source:
+            source.execute('PRAGMA query_only=ON')
+            schema={r[0]:r[1] for r in source.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")}
+            for _ in range(batches):
+                sections=[];updates={}
+                for table in schema:
+                    quoted='"'+table.replace('"','""')+'"'
+                    try:top=source.execute('SELECT MAX(rowid) FROM '+quoted).fetchone()[0] or 0
+                    except sqlite3.Error:continue  # WITHOUT ROWID tables have no cursor
+                    last,seen=marks.get(table,(0,None))
+                    if top<last:last=0;seen=None
+                    cursor=source.execute('SELECT rowid,* FROM '+quoted+' WHERE rowid>=? ORDER BY rowid LIMIT ?',(last,INCREMENT_ROWS))
+                    rows=cursor.fetchall()
+                    if not rows:continue
+                    # Nothing new and the last archived row is unchanged: skip.
+                    if top==last and rows[0][0]==last and fingerprint(rows[0])==seen:continue
+                    columns=['rowid']+[d[0] for d in cursor.description[1:]]
+                    sections.append({'table':table,'columns':columns,'rows':rows})
+                    updates[table]=(rows[-1][0],fingerprint(rows[-1]))
+                if not sections:finished=True;break
+                with tempfile.TemporaryDirectory(dir=self.state) as temp:
+                    output=Path(temp)/('%s-%d-%d.jsonl.gz'%(name,int(now),written))
+                    def plain(value):
+                        if isinstance(value,bytes):return {'b64':base64.b64encode(value).decode('ascii')}
+                        raise TypeError('Unsupported SQLite value')
+                    with gzip.open(output,'wt',encoding='utf-8',compresslevel=9) as stream:
+                        stream.write(json.dumps({'format':1,'source':name,'created':now,'schema':schema})+'\n')
+                        for section in sections:stream.write(json.dumps(section,default=plain,separators=(',',':'))+'\n')
+                    self.add(output,name+'-increment',{'tables':{s['table']:[s['rows'][0][0],s['rows'][-1][0],len(s['rows'])] for s in sections}})
+                with closing(self.db()) as db,db:
+                    for table,(last,digest) in updates.items():db.execute('INSERT OR REPLACE INTO increments VALUES(?,?,?,?)',(name,table,last,digest))
+                marks.update(updates);written+=1
+                if all(len(s['rows'])<INCREMENT_ROWS for s in sections):finished=True;break
+        if finished:
+            with closing(self.db()) as db,db:db.execute('INSERT OR REPLACE INTO checkpoints VALUES(?,?)',('increment:'+name,now))
+        return written
     def archive(self):
         if not mounted(self.mount):return 'waiting-for-moosefs'
         if self.storage_client:
@@ -263,7 +333,7 @@ def radio_catalog(store,home,role):
         if not pending and gps.is_file():
             with closing(sqlite3.connect(gps.resolve().as_uri()+'?mode=ro',uri=True)) as db:
                 db.row_factory=sqlite3.Row
-                fix=db.execute('SELECT id,ts,lat,lon,mode FROM fixes ORDER BY id DESC LIMIT 1').fetchone()
+                fix=latest_fix(db)
             if fix and 0<=time.time()-fix['ts']<=60:
                 ident='gps:tiny:'+str(int(fix['ts']//300)).zfill(16)
                 if ident!=last:
@@ -307,7 +377,8 @@ def main():
             status['radio']=radio_catalog(store,home,role)
             if role=='tiny':
                 db,gps=recorder_paths(home)
-                store.snapshot(db,'obd');store.snapshot(gps,'gps')
+                # Row increments replace hourly full database copies.
+                store.increment(db,'obd');store.increment(gps,'gps')
             for directory in (home/'car-console/routes',home/'car-console/scheduled-routes'):
                 if directory.exists():
                     for path in sorted(directory.rglob('*'))[:1000]:

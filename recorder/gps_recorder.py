@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Persistent local gpsd journal. Records real fixes; never interpolates gaps."""
+"""Persistent local gpsd journal. Records real fixes; never interpolates gaps.
+
+Storage is deliberately light: a fix row is written only when the vehicle has
+actually moved, turned, or a new drive/connection/fix-loss segment begins. A
+parked car extends its single `stops` row instead of repeating its position.
+Routine 1 Hz TPV/SKY JSON is not duplicated into `gps_messages`, and raw gpsd
+bytes are kept only for lines that could not be parsed. Nothing is deleted.
+"""
 import argparse
 import base64
 from datetime import datetime
@@ -14,6 +21,11 @@ import tempfile
 import time
 
 STOP = False
+# A parked receiver wanders a few metres; require real movement before a new row.
+PARKED_METRES = 15
+MOVING_METRES = 5
+TURN_DEGREES = 20
+DEPARTURE_SECONDS = 60
 
 
 class StatusTracker:
@@ -100,11 +112,29 @@ def parse_fix(message, received):
             'mode':mode, 'epx':finite(message.get('epx')), 'epy':finite(message.get('epy'))}
 
 
+def moved_enough(stored, fix):
+    """True for real travel; GPS jitter while parked is not a new position."""
+    if stored is None:return True
+    metres = distance((stored['lat'],stored['lon']),(fix['lat'],fix['lon']))
+    speed = fix.get('speed')
+    if speed is None or speed < 1.0:return metres >= PARKED_METRES
+    if metres >= MOVING_METRES:return True
+    a,b = stored.get('heading'),fix.get('heading')
+    return a is not None and b is not None and metres >= 1 and abs((a-b+180)%360-180) >= TURN_DEGREES
+
+
+def insert_fix(db, fix):
+    columns = list(fix)
+    db.execute('INSERT INTO fixes('+','.join(columns)+') VALUES('+','.join('?' for _ in columns)+')',list(fix.values()))
+
+
 def record_message(db, message, received=None, commit=True):
     received = time.time() if received is None else received
-    raw = json.dumps(message, allow_nan=False)
-    db.execute('INSERT INTO gps_messages(received,class,raw) VALUES(?,?,?)',
-               (received,message.get('class','unknown') if isinstance(message,dict) else 'unknown',raw))
+    kind = message.get('class','unknown') if isinstance(message,dict) else 'unknown'
+    # Routine high-rate classes are summarised by fixes/status, not stored twice.
+    if kind not in ('TPV','SKY','PPS','TOFF','ATT','IMU','GST','RAW'):
+        db.execute('INSERT INTO gps_messages(received,class,raw) VALUES(?,?,?)',
+                   (received,kind,json.dumps(message, allow_nan=False)))
     fix = parse_fix(message, received)
     saved = db.execute('SELECT value FROM gps_state WHERE id=1').fetchone()
     state = json.loads(saved[0]) if saved else {}
@@ -126,8 +156,15 @@ def record_message(db, message, received=None, commit=True):
     reason=state.get('force_break') or reason
     segment = state.get('segment',0)+(1 if reason else 0)
     fix.update(segment=segment,break_reason=reason)
-    columns = list(fix)
-    db.execute('INSERT INTO fixes('+','.join(columns)+') VALUES('+','.join('?' for _ in columns)+')',list(fix.values()))
+    stored = state.get('stored') if not reason else None
+    keep = bool(reason) or moved_enough(stored, fix)
+    if keep:
+        # Record when a parked car left, not only where it next appeared.
+        if (stored and previous and previous.get('segment')==segment and not previous.get('stored')
+                and previous['ts']-stored['ts'] >= DEPARTURE_SECONDS):
+            insert_fix(db, {k:v for k,v in previous.items() if k!='stored'})
+        insert_fix(db, fix)
+        stored = dict(fix)
     candidate = state.get('candidate')
     if reason or candidate is None or distance((candidate['lat'],candidate['lon']),(fix['lat'],fix['lon'])) > 75:
         candidate = {'lat':fix['lat'],'lon':fix['lon'],'started':fix['ts'],'samples':0,'stop_id':None}
@@ -138,9 +175,10 @@ def record_message(db, message, received=None, commit=True):
             candidate['stop_id'] = db.execute('INSERT INTO stops(started,ended,lat,lon,samples,segment) VALUES(?,?,?,?,?,?)',values).lastrowid
         else:
             db.execute('UPDATE stops SET ended=?,samples=? WHERE id=?',(fix['ts'],candidate['samples'],candidate['stop_id']))
-    state = {'last':fix,'segment':segment,'candidate':candidate}
+    state = {'last':dict(fix,stored=keep),'segment':segment,'candidate':candidate,'stored':stored}
     db.execute('INSERT OR REPLACE INTO gps_state VALUES(1,?)',(json.dumps(state),))
     if commit:db.commit()
+    fix['stored'] = keep
     return fix
 
 
@@ -162,12 +200,15 @@ def end_session(db, session, reason, received=None):
                            (time.time() if received is None else received,reason,session))
 
 
+def keep_bytes(db, session, data, received):
+    db.execute('INSERT INTO gps_stream(received,session,raw_b64) VALUES(?,?,?)',
+               (received,session,base64.b64encode(data).decode('ascii')))
+
+
 def ingest_chunk(db, session, buffer, chunk, received=None,observer=None):
-    """Durably retain exact gpsd bytes, including malformed/partial JSON."""
+    """Parse gpsd lines; exact bytes are retained only for lines that fail to parse."""
     received=time.time() if received is None else received
     with db:
-        db.execute('INSERT INTO gps_stream(received,session,raw_b64) VALUES(?,?,?)',
-                   (received,session,base64.b64encode(chunk).decode('ascii')))
         buffer+=chunk
         while b'\n' in buffer:
             line,buffer=buffer.split(b'\n',1)
@@ -176,9 +217,11 @@ def ingest_chunk(db, session, buffer, chunk, received=None,observer=None):
                 message=json.loads(line);record_message(db,message,received,commit=False)
                 if observer:observer(message,received)
             except (ValueError,TypeError,UnicodeError):
+                keep_bytes(db,session,line+b'\n',received)
                 db.execute('INSERT INTO gps_events(ts,name,detail) VALUES(?,?,?)',
                            (received,'invalid_message','Malformed or oversized gpsd line; bytes retained'))
         if len(buffer)>262144:
+            keep_bytes(db,session,buffer,received)
             db.execute('INSERT INTO gps_events(ts,name,detail) VALUES(?,?,?)',
                        (received,'invalid_message','Unterminated gpsd line; bytes retained, parser reset'))
             buffer=b''

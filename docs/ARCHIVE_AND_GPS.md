@@ -124,9 +124,21 @@ or map subscription is contacted. Missing tiles leave the coordinate path visibl
 
 ## Retention and backups
 
-There is no automatic deletion or downsampling of the archive. Disk space is
-finite: monitor the data directory and back it up. GPS raw messages and OBD request
-logs add storage beyond the old sensor table. GPS uses SQLite WAL; do not copy just
+There is no automatic deletion of the archive; history is kept for all time.
+Storage is kept light instead:
+
+- A position row is written only after real movement (15 m from the last stored
+  point while slow/parked, 5 m or a 20° turn while driving) or when a new drive,
+  connection or fix-loss segment starts. A parked car does not repeat its
+  position: its single **Visited stops** row records how long it stayed, and the
+  departure time is stored when it drives away. Live position/status still
+  update every second from gpsd and `gps.status.json`.
+- Routine 1 Hz gpsd TPV/SKY JSON is no longer duplicated into GPS raw messages,
+  and raw gpsd bytes are retained only for lines that failed to parse. Rare
+  device/version/error messages are still kept verbatim.
+- Earlier rows are never removed or rewritten by this change.
+
+OBD request logs still add storage beyond the old sensor table. GPS uses SQLite WAL; do not copy just
 the live main file and assume it contains its WAL. Use SQLite's online backup API
 or the SQLite CLI `.backup` command for both databases, and protect backups like
 private vehicle/location history. Downloaded software courier packages contain
