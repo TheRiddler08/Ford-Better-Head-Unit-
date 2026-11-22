@@ -126,12 +126,14 @@ class FleetTests(unittest.TestCase):
     def test_role_installer_enables_wake_and_target_standby_without_suspending_now(self):
         units={};commands=[]
         def run(args,**kwargs):commands.append(args);return ''
-        with patch.object(fleet,'unit',side_effect=lambda name,content:units.update({name:content})),patch.object(fleet,'run',side_effect=run):
+        rules=Path(tempfile.mkdtemp())/'60-car-usb-share.rules'
+        with patch.object(fleet,'unit',side_effect=lambda name,content:units.update({name:content})),patch.object(fleet,'run',side_effect=run),patch.object(fleet,'USB_SHARE_RULES',rules):
             fleet.systemd_units('pi')
             self.assertIn('OnBootSec=30',units['car-wake-first.timer'])
             self.assertIn('OnBootSec=150',units['car-wake-retry.timer'])
             fleet.systemd_units('duet')
             self.assertIn('OnBootSec=15',units['car-boot-standby.timer'])
+            self.assertIn('ID_MM_DEVICE_IGNORE',rules.read_text())
         self.assertTrue(any('enable' in call and 'car-boot-standby.timer' in call for call in commands))
         self.assertFalse(any('--now' in call and 'car-boot-standby.timer' in call for call in commands))
         self.assertFalse(any('suspend' in call for call in commands))

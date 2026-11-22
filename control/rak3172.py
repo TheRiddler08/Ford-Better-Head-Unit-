@@ -10,14 +10,56 @@ import json
 import os
 import re
 import select
+import socket
 import sys
 import termios
 import time
 import tty
 
 
+# The Duet shares a hub-attached modem with Tiny over the car switch
+# (deploy/usb_share.py). Only this fixed endpoint is accepted as a network device.
+SHARED_DEVICE = 'tcp://172.16.42.1:8801'
+
+
+def shared_modem(timeout=2):
+    """True when the Duet reports a verified RAK3172 on its USB hub."""
+    try:
+        with socket.create_connection(('172.16.42.1', 8800), timeout=timeout) as sock:
+            value = json.loads(sock.recv(1024))
+        return value.get('schema') == 1 and 'lorawan' in value.get('devices', [])
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def effective_options(options, role, shared=shared_modem):
+    """Tiny uses its own USB modem when present, otherwise the Duet-shared one."""
+    if role != 'tiny' or options.get('radio_adapter') or options.get('radio_share', True) is False:
+        return options
+    if options.get('radio_model') not in (None, 'RAK3172'):
+        return options
+    device = options.get('radio_device')
+    if isinstance(device, str) and device.startswith('/dev/') and os.path.exists(device):
+        return options
+    if shared():
+        return dict(options, radio_model='RAK3172', radio_device=SHARED_DEVICE)
+    return options
+
+
 class RUI:
     def __init__(self, device, emit, timeout=5):
+        self.sock = None
+        if device == SHARED_DEVICE:
+            # Raw byte stream from the Duet; the modem's serial settings are
+            # applied there. Sealing still happens on this host.
+            self.sock = socket.create_connection(('172.16.42.1', 8801), timeout=10)
+            self.sock.setblocking(False)
+            self.fd = self.sock.fileno()
+            self.emit, self.timeout, self.buffer = emit, timeout, b''
+            self.fport = 10
+            self.auto_payload = False
+            self.last_dr = None
+            return
         self.fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         try:
             fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -36,6 +78,9 @@ class RUI:
         self.last_dr=None
 
     def close(self):
+        if self.sock is not None:
+            self.sock.close()
+            return
         try:
             termios.tcsetattr(self.fd, termios.TCSANOW, self.previous)
         finally:
@@ -140,8 +185,8 @@ def adapter_command(options):
     if options.get('radio_model') != 'RAK3172':
         return None
     device = options.get('radio_device')
-    if not isinstance(device, str) or not device.startswith('/dev/serial/by-id/') or '..' in device.split('/'):
-        raise ValueError('RAK3172 requires an explicit stable serial-by-id path')
+    if device != SHARED_DEVICE and (not isinstance(device, str) or not device.startswith('/dev/serial/by-id/') or '..' in device.split('/')):
+        raise ValueError('RAK3172 requires an explicit stable serial-by-id path or the Duet-shared modem')
     budget = payload_ceiling(options)
     port = options.get('radio_fport', 10)
     if type(budget) is not int or not 10 <= budget <= 242 or type(port) is not int or not 1 <= port <= 223:

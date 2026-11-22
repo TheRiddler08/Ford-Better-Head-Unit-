@@ -41,7 +41,7 @@ CONFIG=Path('/etc/car-dashboard/fleet.json')
 STATE=Path('/var/lib/car-dashboard-fleet')
 STATUS=Path('/etc/car-dashboard/fleet-status.json')
 ORIGIN='https://github.com/TheRiddler08/Ford-Better-Head-Unit-.git'
-SOURCES={'wifi_profiles.py':'deploy/wifi_profiles.py','native_firewall.py':'deploy/native_firewall.py','routing_setup.py':'dev/setup_us_routing.py','virtual_obd.py':'recorder/virtual_obd.py','virtual_gps.py':'recorder/virtual_gps.py','fleet.py':'deploy/fleet.py','wake.py':'power/wake.py','standby.py':'power/standby.py'}
+SOURCES={'wifi_profiles.py':'deploy/wifi_profiles.py','native_firewall.py':'deploy/native_firewall.py','routing_setup.py':'dev/setup_us_routing.py','virtual_obd.py':'recorder/virtual_obd.py','virtual_gps.py':'recorder/virtual_gps.py','fleet.py':'deploy/fleet.py','wake.py':'power/wake.py','standby.py':'power/standby.py','usb_share.py':'deploy/usb_share.py'}
 REQUIRED=('nmcli','ip','iptables','dnsmasq','curl','ethtool')
 STOP=False
 SCRIPT_DIR=Path(__file__).resolve().parent
@@ -198,6 +198,8 @@ class Sharing:
         if control:
             args=['iptables','-w','5','-t','filter']
             run([*args,'-A','CAR_FLEET_IN','-p','udp','-m','multiport','--dports','8796,8798,8799','-j','ACCEPT'])
+            # Duet-shared USB GPS/modem streams, reachable from Tiny only.
+            run([*args,'-A','CAR_FLEET_IN','-p','tcp','-s',ADDRESSES['tiny'],'-m','multiport','--dports','8800,8801,8802','-j','ACCEPT'])
             if run([*args,'-C','INPUT','-i',lan,'-s',SUBNET,'-j','CAR_FLEET_IN'],check=False).returncode:
                 run([*args,'-I','INPUT','1','-i',lan,'-s',SUBNET,'-j','CAR_FLEET_IN'])
             if wan:
@@ -294,7 +296,7 @@ def write_wake(config,nic,peers):
         with tempfile.NamedTemporaryFile(mode='w') as proposed:
             json.dump(candidate,proposed);proposed.flush()
             result=run(['/usr/bin/python3','-I',path/'standby.py','check','--config',proposed.name],check=False)
-        candidate['armed']=config.get('boot_standby',True) and result.returncode==0
+        candidate['armed']=config.get('boot_standby',False) and result.returncode==0
         save('/etc/car-dashboard/boot-standby.json',candidate)
         return 'armed' if candidate['armed'] else 'unsupported-or-disabled'
     return 'pi-sender'
@@ -607,6 +609,51 @@ depend() {{ need car-fleet; }}
         run(['rc-service','car-duet-power','restart' if enabled else 'stop'],check=False)
 
 
+USB_SHARE_RULES=Path('/etc/udev/rules.d/60-car-usb-share.rules')
+
+
+def install_usb_share(config):
+    """Duet shares its hub GPS/LoRaWAN modem with Tiny; Tiny attaches the GPS to gpsd."""
+    role=config['role'];current=BASE/'fleet-current'
+    if role not in ('duet','tiny'):return
+    name,action,description=(('car-usb-share','serve','Share Duet hub GPS and LoRaWAN modem with Tiny') if role=='duet'
+                             else ('car-remote-gps','attach-gps','Attach the Duet-shared GPS to gpsd'))
+    enabled=config.get('usb_share',True)
+    if role=='duet':
+        # Duet has no cellular modem; keep ModemManager from probing/grabbing hub serial devices.
+        rules=USB_SHARE_RULES
+        content=b'SUBSYSTEM=="tty", KERNEL=="ttyACM*|ttyUSB*", ENV{ID_MM_DEVICE_IGNORE}="1"\n'
+        if enabled and (not rules.exists() or rules.read_bytes()!=content):
+            save(rules,content)
+            if shutil.which('udevadm'):run(['udevadm','control','--reload'],check=False);run(['udevadm','trigger','--subsystem-match=tty'],check=False)
+    if Path('/run/systemd/system').exists():
+        unit(name+'.service',f'''[Unit]
+Description={description}
+After=car-fleet.service{' gpsd.socket' if role=='tiny' else ''}
+[Service]
+ExecStart=/usr/bin/python3 -I {current}/usb_share.py {action}
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+''')
+        run(['systemctl','daemon-reload'])
+        run(['systemctl','enable' if enabled else 'disable','--now',name+'.service'])
+        if enabled:run(['systemctl','try-restart',name+'.service'],check=False)
+    elif Path('/run/openrc').exists():
+        save(Path('/etc/init.d')/name,f'''#!/sbin/openrc-run
+supervisor="supervise-daemon"
+command="/usr/bin/python3"
+command_args="-I {current}/usb_share.py {action}"
+respawn_delay=5
+respawn_max=0
+depend() {{ need car-fleet; }}
+'''.encode())
+        os.chmod(Path('/etc/init.d')/name,0o755)
+        run(['rc-update','add' if enabled else 'del',name,'default'])
+        run(['rc-service',name,'restart' if enabled else 'stop'],check=False)
+
+
 def install_device_tools(config):
     """Independent input tools and navigation are available even with GPS disabled."""
     commit=config.get('commit') or git(config,'rev-parse','HEAD')
@@ -868,6 +915,7 @@ WantedBy=timers.target
 ''')
     if role=='laptop':install_laptop_power(config)
     if role=='duet':install_duet_power(config)
+    install_usb_share(dict(config,role=role))
     run(['systemctl','daemon-reload'])
     if managed_tunnel:
         enabled=link.get('home_tunnel_enabled',True)
@@ -924,6 +972,7 @@ depend() {{ need car-fleet; }}
     cfg=load(CONFIG,{})
     if role=='laptop':install_laptop_power(cfg)
     if role=='duet':install_duet_power(cfg)
+    install_usb_share(dict(cfg,role=role))
     if role=='tiny' and not cfg.get('map_layers',True):
         run(['rc-update','del','car-map-layers','default'],check=False);run(['rc-service','car-map-layers','stop'],check=False)
     for name,module in application_workers(role,cfg):
@@ -973,8 +1022,13 @@ def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False
     missing=native_dependencies(offline or not config.get('enabled',True),role)
     destination=publish(sources)
     defaults={'schema':1,'role':role,'repo':str(repo),'user':user,'home':account.pw_dir,
-              'enabled':True,'boot_standby':True,'interface':None,'commit':commit,'auto_update':role in ('pi','laptop'),'app_updates':True,'reboot_updates':True,'laptop_sleep':True,'laptop_sleep_delay':90,'duet_poweroff':True,'duet_poweroff_delay':150,'duet_low_battery':10,'pi_storage_client':True,'wifi_sync':True}
+              'enabled':True,'boot_standby':False,'interface':None,'commit':commit,'auto_update':role in ('pi','laptop'),'app_updates':True,'reboot_updates':True,'laptop_sleep':True,'laptop_sleep_delay':90,'duet_poweroff':True,'duet_poweroff_delay':150,'duet_low_battery':10,'pi_storage_client':True,'wifi_sync':True}
     defaults.update(config)
+    if defaults.get('boot_standby_policy')!=2:
+        # Tiny/Duet now start straight up on car power instead of suspending to
+        # wait for Pi's WOL burst. One-time migration; a later explicit
+        # boot_standby=true is kept because the policy marker is then present.
+        defaults['boot_standby']=False;defaults['boot_standby_policy']=2
     if commit:defaults['commit']=commit
     installed=load(STATE/'installed.json',{})
     configuration_hash=settings_fingerprint(defaults)
@@ -998,17 +1052,17 @@ def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False
         # clock prevents DNSSEC validation of the normal NTP pool hostname.
         save('/etc/systemd/timesyncd.conf.d/60-car-clock.conf',b'[Time]\nFallbackNTP=162.159.200.1 162.159.200.123\n')
         run(['timedatectl','set-ntp','true'],check=False)
-    if not defaults.get('boot_standby',True) and role!='pi':
+    if not defaults.get('boot_standby',False) and role!='pi':
         standby=Path('/etc/car-dashboard/boot-standby.json')
         if standby.exists():
             previous=load(standby,{});previous['armed']=False;save(standby,previous)
     if not defaults.get('enabled',True):
         install_wifi_sync(defaults)
         if Path('/run/systemd/system').exists():
-            for service in ['car-map-layers.service','car-home-tunnel.service','car-laptop-power.service','car-duet-power.service','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-messages.service','car-telemetry.service','car-file-sync.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
+            for service in ['car-map-layers.service','car-home-tunnel.service','car-laptop-power.service','car-duet-power.service','car-usb-share.service','car-remote-gps.service','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-messages.service','car-telemetry.service','car-file-sync.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
                 run(['systemctl','disable','--now',service],check=False)
         elif Path('/run/openrc').exists():
-            for service in ['car-map-layers','car-laptop-power','car-duet-power','car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-messages','car-telemetry','car-file-sync','car-data','car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount','car-fleet-boot','car-wake-status']:
+            for service in ['car-map-layers','car-laptop-power','car-duet-power','car-usb-share','car-remote-gps','car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-messages','car-telemetry','car-file-sync','car-data','car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount','car-fleet-boot','car-wake-status']:
                 run(['rc-update','del',service,'default'],check=False);run(['rc-service',service,'stop'],check=False)
         return {'provisioning':VERSION,'disabled':True,'missing':missing}
     if Path('/run/systemd/system').exists():
