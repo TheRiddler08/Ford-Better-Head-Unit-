@@ -2,8 +2,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
-from deploy import offline_updates as courier
+from deploy import offline_updates as courier, runtime_assets as assets
 
 
 class CourierTests(unittest.TestCase):
@@ -114,6 +115,32 @@ class CourierTests(unittest.TestCase):
         self.assertEqual((runtime/'proxy.py').read_text(),'VERSION = 2\n')
         self.assertEqual(result['launch.sh'],'local customization preserved')
         self.assertIn('my_customization',(runtime/'launch.sh').read_text())
+
+    def test_worker_fix_is_published_even_when_full_disk_blocks_the_download(self):
+        deploy=self.source/'deploy';deploy.mkdir()
+        for name in courier.COMPONENTS:(deploy/name).write_text('FIXED = True\n')
+        (deploy/'offline-runtime.json').write_text('{"schema":1,"image":"x","ubuntu":{}}')
+        self.source_git('add','.');self.source_git('commit','-m','worker fix')
+        fixed=self.source_git('rev-parse','HEAD').decode().strip()
+        state=self.root/'duet'/'courier'
+        def full(cache,spec):raise assets.InsufficientSpace('Insufficient Duet storage')
+        with patch.object(courier,'ORIGIN',str(self.source)),patch.object(assets,'build',full):
+            with self.assertRaises(assets.InsufficientSpace):courier.prepare(state,self.key)
+        current=self.root/'duet'/'courier-current'
+        self.assertEqual(current.resolve().name,fixed)
+        self.assertEqual((current/'runtime_assets.py').read_text(),'FIXED = True\n')
+        self.assertFalse((state/'ready.zip').exists())
+
+    def test_only_an_acknowledged_package_is_released_for_space(self):
+        state=self.root/'courier';state.mkdir()
+        with zipfile.ZipFile(state/'ready.zip','w') as archive:archive.writestr('manifest.json',json.dumps({'commit':self.commit,'payloadId':'p1'}))
+        self.assertFalse(courier.release_delivered_package(state))
+        (state/'delivered.json').write_text(json.dumps({'ok':True,'commit':self.commit,'payloadId':'old'}))
+        self.assertFalse(courier.release_delivered_package(state))
+        self.assertTrue((state/'ready.zip').exists())
+        (state/'delivered.json').write_text(json.dumps({'ok':True,'commit':self.commit,'payloadId':'p1'}))
+        self.assertTrue(courier.release_delivered_package(state))
+        self.assertFalse((state/'ready.zip').exists())
 
     def test_unexpected_archive_paths_and_ref_mismatch(self):
         package=self.root/'evil.zip'

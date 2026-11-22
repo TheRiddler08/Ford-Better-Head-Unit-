@@ -37,10 +37,13 @@ def sha(path):
     return value.hexdigest()
 
 
+class InsufficientSpace(ValueError):pass
+
+
 def ensure_space(path,needed=0):
     free=shutil.disk_usage(path).free
     if free<needed+MIN_FREE:
-        raise ValueError('Insufficient Duet storage for update download: %d MB free, %d MB required; previous package retained'%(free//1024**2,(needed+MIN_FREE)//1024**2))
+        raise InsufficientSpace('Insufficient Duet storage for update download: %d MB free, %d MB required; previous package retained'%(free//1024**2,(needed+MIN_FREE)//1024**2))
 
 
 def stale_temporaries(directory,directories_only=False):
@@ -374,11 +377,19 @@ def build(cache,spec):
     if spec.get('schema')!=1:raise ValueError('Unknown offline runtime specification')
     cache=Path(cache);downloads=Downloads(cache/'objects');files={}
     for directory in (cache/'objects',cache/'images',cache/'ubuntu'):stale_temporaries(directory)
-    image,info=image_archive(downloads,spec['image'],cache/'images');files['ha-image.tar.gz']=image
-    result={'image':info,'ubuntu':{}}
-    for version,codename in spec['ubuntu'].items():
-        archive,info=ubuntu_archive(downloads,version,codename,cache/'ubuntu')
-        name='ubuntu-'+version+'.tar.gz';files[name]=archive;result['ubuntu'][version]=info
+    for attempt in (1,2):
+        try:
+            image,info=image_archive(downloads,spec['image'],cache/'images');files['ha-image.tar.gz']=image
+            result={'image':info,'ubuntu':{}}
+            for version,codename in spec['ubuntu'].items():
+                archive,info=ubuntu_archive(downloads,version,codename,cache/'ubuntu')
+                name='ubuntu-'+version+'.tar.gz';files[name]=archive;result['ubuntu'][version]=info
+            break
+        except InsufficientSpace:
+            if attempt==2:raise
+            # Self-heal without an operator: drop superseded archives/objects,
+            # keeping everything this run already verified, then retry once.
+            prune(cache,files,downloads)
     freed=prune(cache,files,downloads)
     try:(cache/'prune.json').write_text(json.dumps({'freedBytes':freed}))
     except OSError:pass

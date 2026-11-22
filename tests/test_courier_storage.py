@@ -96,6 +96,22 @@ class CourierStorageTests(unittest.TestCase):
                 assets.ensure_space(temp,10)
                 with self.assertRaisesRegex(ValueError,'previous package retained'):assets.ensure_space(temp,11)
 
+    def test_out_of_space_build_cleans_superseded_cache_and_retries_once(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cache=Path(temp);(cache/'ubuntu').mkdir(parents=True);(cache/'ubuntu'/'22.04-old.tar.gz').write_bytes(b'o'*50)
+            calls=[]
+            def image(downloads,reference,output):
+                calls.append(1)
+                if len(calls)==1:raise assets.InsufficientSpace('full')
+                output.mkdir(exist_ok=True);(output/'i.tar.gz').write_bytes(b'i');return output/'i.tar.gz',{'sha256':'i'}
+            with patch.object(assets,'image_archive',image):
+                files,_=assets.build(cache,{'schema':1,'image':'x','ubuntu':{}})
+            self.assertEqual(len(calls),2)
+            self.assertFalse((cache/'ubuntu'/'22.04-old.tar.gz').exists())
+            self.assertEqual(files['ha-image.tar.gz'].name,'i.tar.gz')
+            with patch.object(assets,'image_archive',side_effect=assets.InsufficientSpace('still full')):
+                with self.assertRaises(assets.InsufficientSpace):assets.build(cache,{'schema':1,'image':'x','ubuntu':{}})
+
     def test_failed_build_keeps_partial_downloads_for_resume(self):
         with tempfile.TemporaryDirectory() as temp:
             cache=Path(temp);(cache/'objects').mkdir(parents=True);(cache/'objects'/'layer').write_bytes(b'l')
