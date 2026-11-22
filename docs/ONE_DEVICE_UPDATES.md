@@ -140,6 +140,17 @@ staging, Docker image extraction and HA configuration backups. Cached artifacts
 and the current ready bundle are retained for retry. Do not expect a release that
 was never downloaded to appear on an offline device.
 
+The Duet keeps only the **current** runtime set in
+`~/.local/share/drive-console/courier/runtime-cache`. After each complete
+download, superseded HA images, Ubuntu package archives and signed indexes are
+deleted; still-referenced packages are reused rather than downloaded again.
+Interrupted downloads are kept for resume until the next complete build, and
+temporary packages left by a power cut are removed. Downloads stop with
+`Insufficient Duet storage` while less than 2 GB would remain free; the previous
+ready package stays usable and the worker retries later. Older workers kept
+every Ubuntu index refresh, so a Duet that is already full may need the one-time
+cleanup in the release notes before it can fetch this fix.
+
 ## What gets installed offline
 
 The default full bundle includes:

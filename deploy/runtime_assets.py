@@ -24,6 +24,10 @@ ROOT_PACKAGES=('osmium-tool','gpsd','gpsd-clients','docker.io','ca-certificates'
 KEEP={'Package','Version','Architecture','Filename','SHA256','Size','Depends','Pre-Depends','Provides'}
 DIGEST=re.compile(r'^sha256:[0-9a-f]{64}$')
 MAX_DOWNLOAD=6*1024**3
+# The Duet is also the car display. Never let carried downloads consume its last
+# space; a failed download retains the previous package and retries later.
+MIN_FREE=2*1024**3
+TEMPORARY=re.compile(r'^tmp[a-z0-9_]{6,}$')
 
 
 def sha(path):
@@ -31,6 +35,36 @@ def sha(path):
     with Path(path).open('rb') as f:
         for chunk in iter(lambda:f.read(1024*1024),b''):value.update(chunk)
     return value.hexdigest()
+
+
+def ensure_space(path,needed=0):
+    free=shutil.disk_usage(path).free
+    if free<needed+MIN_FREE:
+        raise ValueError('Insufficient Duet storage for update download: %d MB free, %d MB required; previous package retained'%(free//1024**2,(needed+MIN_FREE)//1024**2))
+
+
+def stale_temporaries(directory,directories_only=False):
+    """Interrupted tempfile output, e.g. after car power loss. Caller holds the lock."""
+    directory=Path(directory)
+    if not directory.is_dir():return 0
+    freed=0
+    for entry in directory.iterdir():
+        if not TEMPORARY.fullmatch(entry.name) or entry.is_symlink():continue
+        if directories_only and not entry.is_dir():continue
+        freed+=remove(entry)
+    return freed
+
+
+def remove(path):
+    path=Path(path);size=0
+    try:
+        if path.is_dir() and not path.is_symlink():
+            size=sum(item.stat().st_size for item in path.rglob('*') if item.is_file() and not item.is_symlink())
+            shutil.rmtree(path)
+        else:
+            size=path.stat().st_size;path.unlink()
+    except FileNotFoundError:pass
+    return size
 
 
 def safe_path(name):
@@ -54,22 +88,32 @@ class Downloads:
         self.cache=Path(cache);self.cache.mkdir(parents=True,exist_ok=True)
         self.client=build_opener(Redirect())
         self.token=None
+        self.used=set()
+    def keep(self,path):
+        self.used.add(Path(path).name)
+    def release(self,path):
+        self.used.discard(Path(path).name)
     def fetch(self,url,expected=None,headers=None,limit=MAX_DOWNLOAD):
         if urlsplit(url).scheme!='https':raise ValueError('Artifacts require HTTPS')
         if expected and not re.fullmatch('[0-9a-f]{64}',expected):raise ValueError('Invalid expected digest')
         target=self.cache/expected if expected else None
-        if target and target.exists() and sha(target)==expected:return target
+        if target and target.exists() and sha(target)==expected:
+            self.keep(target);return target
         temporary=None
         try:
-            with self.client.open(Request(url,headers=headers or {}),timeout=45) as response, tempfile.NamedTemporaryFile(dir=self.cache,delete=False) as f:
-                temporary=Path(f.name);size=0
-                for chunk in iter(lambda:response.read(1024*1024),b''):
-                    size+=len(chunk)
-                    if size>limit:raise ValueError('Artifact exceeds size limit')
-                    f.write(chunk)
+            with self.client.open(Request(url,headers=headers or {}),timeout=45) as response:
+                length=response.headers.get('Content-Length','')
+                ensure_space(self.cache,int(length) if length.isdigit() else 0)
+                with tempfile.NamedTemporaryFile(dir=self.cache,delete=False) as f:
+                    temporary=Path(f.name);size=0
+                    for chunk in iter(lambda:response.read(1024*1024),b''):
+                        size+=len(chunk)
+                        if size>limit:raise ValueError('Artifact exceeds size limit')
+                        if size%(256*1024**2)<len(chunk):ensure_space(self.cache)
+                        f.write(chunk)
             actual=sha(temporary)
             if expected and actual!=expected:raise ValueError('Artifact checksum mismatch')
-            target=self.cache/actual;temporary.replace(target);return target
+            target=self.cache/actual;temporary.replace(target);self.keep(target);return target
         except HTTPError as exc:
             raise RuntimeError('Artifact download failed: '+urlsplit(url).hostname+' HTTP '+str(exc.code)) from None
         finally:
@@ -166,6 +210,7 @@ def image_archive(downloads,reference,output):
                 if not DIGEST.fullmatch(digest) or not DIGEST.fullmatch(diff_ids[index]):raise ValueError('Invalid layer digest')
                 blob=downloads.registry('blobs/'+digest,digest[7:])
                 target=temp/'layer.tar';kind=layer.get('mediaType','')
+                ensure_space(output,2*Path(blob).stat().st_size)
                 size=0
                 with target.open('wb') as dst:
                     for chunk in layer_chunks(blob,kind):
@@ -174,6 +219,7 @@ def image_archive(downloads,reference,output):
                         dst.write(chunk)
                 if 'sha256:'+sha(target)!=diff_ids[index]:raise ValueError('Unpacked image layer checksum mismatch')
                 name=digest[7:]+'/layer.tar';tar.add(target,arcname=name);target.unlink()
+                downloads.release(blob)  # The verified archive now holds this layer.
                 docker_manifest[0]['Layers'].append(name)
             data=json.dumps(docker_manifest).encode();entry=tarfile.TarInfo('manifest.json');entry.size=len(data);tar.addfile(entry,io.BytesIO(data))
         info={'reference':reference,'imageId':config_digest,'manifestSha256':identity,'sha256':sha(temp/'image.tar.gz')}
@@ -270,10 +316,17 @@ def ubuntu_archive(downloads,version,codename,output):
     identity=hashlib.sha256(json.dumps({'format':6,'releases':releases,'roots':ROOT_PACKAGES},sort_keys=True).encode()).hexdigest()
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
     archive=output/(version+'-'+identity+'.tar.gz');info_file=archive.with_suffix('.json')
+    for path in metadata.values():downloads.keep(path)
+    try:selected=closure(index)
+    except ValueError:selected=None
+    del index
+    # Unchanged packages are reused by the next signed index refresh.
+    for record in selected or ():
+        if re.fullmatch('[0-9a-f]{64}',record.get('SHA256','')):downloads.keep(downloads.cache/record['SHA256'])
     if archive.exists() and info_file.exists():
         info=json.loads(info_file.read_text())
         if sha(archive)==info['sha256']:return archive,info
-    selected=closure(index);del index
+    if selected is None:raise ValueError('Ubuntu dependency metadata is incomplete')
     for record in selected:
         filename=str(safe_path(record['Filename']))
         if not filename.startswith('pool/'):raise ValueError('Unexpected Ubuntu package filename')
@@ -282,6 +335,7 @@ def ubuntu_archive(downloads,version,codename,output):
         metadata[filename]=payload
     details={'version':version,'codename':codename,'architecture':'amd64','suites':list(pockets),
              'releases':releases,'packages':[{k:r[k] for k in ('Package','Version','Architecture','Filename','SHA256')} for r in selected]}
+    ensure_space(output,sum(Path(path).stat().st_size for path in metadata.values()))
     with tempfile.NamedTemporaryFile(dir=output,delete=False) as f:pending=Path(f.name)
     try:
         with tarfile.open(pending,'w:gz') as tar:
@@ -294,12 +348,38 @@ def ubuntu_archive(downloads,version,codename,output):
     info_file.write_text(json.dumps(info));return archive,info
 
 
+def prune(cache,files,downloads):
+    """Delete superseded archives and unreferenced objects after a complete build.
+
+    Each signed Ubuntu index refresh produces new archives. Without this, the
+    Duet retained every previous HA image and Ubuntu package set until full.
+    The ready package is a separate self-contained copy and is not touched.
+    """
+    cache=Path(cache);freed=0;current={Path(path).name for path in files.values()}
+    # Image metadata is <id>.json; Ubuntu metadata is <id>.tar.json (with_suffix).
+    current|={name[:-len('.tar.gz')]+'.json' for name in current if name.endswith('.tar.gz')}
+    current|={Path(path).with_suffix('.json').name for path in files.values()}
+    for directory in (cache/'images',cache/'ubuntu'):
+        if not directory.is_dir():continue
+        for entry in directory.iterdir():
+            if entry.name not in current and not entry.is_symlink():freed+=remove(entry)
+    objects=cache/'objects'
+    if objects.is_dir():
+        for entry in objects.iterdir():
+            if entry.name not in downloads.used and not entry.is_symlink():freed+=remove(entry)
+    return freed
+
+
 def build(cache,spec):
     if spec.get('schema')!=1:raise ValueError('Unknown offline runtime specification')
     cache=Path(cache);downloads=Downloads(cache/'objects');files={}
+    for directory in (cache/'objects',cache/'images',cache/'ubuntu'):stale_temporaries(directory)
     image,info=image_archive(downloads,spec['image'],cache/'images');files['ha-image.tar.gz']=image
     result={'image':info,'ubuntu':{}}
     for version,codename in spec['ubuntu'].items():
         archive,info=ubuntu_archive(downloads,version,codename,cache/'ubuntu')
         name='ubuntu-'+version+'.tar.gz';files[name]=archive;result['ubuntu'][version]=info
+    freed=prune(cache,files,downloads)
+    try:(cache/'prune.json').write_text(json.dumps({'freedBytes':freed}))
+    except OSError:pass
     return files,result
