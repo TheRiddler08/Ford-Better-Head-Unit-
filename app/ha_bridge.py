@@ -45,7 +45,11 @@ def snapshot(sensors, gps, now=None):
             if isinstance(gps.get('lat'),bool) or isinstance(gps.get('lon'),bool):raise ValueError('Invalid coordinates')
             lat,lon=float(gps['lat']),float(gps['lon'])
             fresh=math.isfinite(lat) and math.isfinite(lon) and -90<=lat<=90 and -180<=lon<=180
-            if gps.get('time'):
+            received=gps.get('receivedAt')
+            if type(received) in (int,float) and math.isfinite(received):
+                # Local receipt time: immune to an offline system clock that differs from GPS time.
+                fresh=fresh and -5<=now-received<=45
+            elif gps.get('time'):
                 stamp=datetime.fromisoformat(str(gps['time']).replace('Z','+00:00'))
                 fresh=fresh and stamp.tzinfo is not None and -20<=now-stamp.timestamp()<=45
             if fresh:position={'lat':lat,'lon':lon,'time':gps.get('time'),'mode':gps.get('mode')}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Managed boot standby and spare-laptop car-off deep sleep."""
+"""Managed boot standby, spare-laptop car-off deep sleep and Duet car-off power-off."""
 import argparse
 from contextlib import ExitStack
 import fcntl
@@ -147,6 +147,92 @@ def ac_connected(root=Path('/sys/class/power_supply')):
                 values.append((path/'online').read_text().strip()=='1')
         except OSError:continue
     return any(values) if values else None
+
+
+def battery_percent(root=Path('/sys/class/power_supply')):
+    """Lowest reported internal battery charge, or None when no battery is exposed."""
+    values=[]
+    for path in root.glob('*'):
+        try:
+            if (path/'type').read_text().strip()!='Battery':continue
+            scope=path/'scope'
+            if scope.exists() and scope.read_text().strip().lower()=='device':continue  # e.g. a stylus/keyboard
+            value=int((path/'capacity').read_text().strip())
+            if 0<=value<=100:values.append(value)
+        except (OSError,ValueError):continue
+    return min(values) if values else None
+
+
+class CarPowerSession:
+    """Duet car-off policy: external power is the car signal, never the network.
+
+    External power must first be seen (a confirmed car session) so manual use on
+    battery never powers the display off. After power is removed the Duet powers
+    off after the grace delay, or immediately if its battery is at/below the floor
+    (including when it drops there during the grace period). Power returning
+    cancels the countdown.
+    """
+    def __init__(self):
+        self.armed=False;self.off_since=None
+    def observe(self,now,ac,battery,delay=150,floor=10):
+        if ac is True:
+            self.armed=True;self.off_since=None;return 'car-power-on'
+        if not self.armed:return 'waiting-car-power'
+        if ac is None:
+            self.off_since=None;return 'pending-power-sensor'
+        if self.off_since is None:self.off_since=now
+        if battery is not None and battery<=floor:return 'poweroff-low-battery'
+        if now-self.off_since>=delay:return 'poweroff-car-off'
+        return 'car-off-grace-period'
+
+
+def poweroff_command():
+    if Path('/run/systemd/system').exists():return ['systemctl','poweroff']
+    if shutil.which('loginctl'):return ['loginctl','poweroff']
+    return ['poweroff']
+
+
+def write_power_status(value,path=Path('/etc/car-dashboard/duet-power-status.json')):
+    import tempfile
+    value=dict(value,updated=time.time())
+    with tempfile.NamedTemporaryFile(mode='w',dir=path.parent,delete=False) as stream:
+        json.dump(value,stream);stream.flush();os.fsync(stream.fileno());pending=Path(stream.name)
+    pending.chmod(0o644);os.replace(pending,path)
+
+
+def duet_power_monitor(path,interval=5,sensors=None,clock=time.monotonic,act=None,once=False):
+    """Root service on Duet. Firmware boot-on-power cannot be enabled from Linux."""
+    sensors=sensors or (ac_connected,battery_percent)
+    session=CarPowerSession()
+    while True:
+        try:
+            config=json.loads(Path(path).read_text())
+            if config.get('role')!='duet':return
+            enabled=config.get('enabled',True) and config.get('duet_poweroff',True)
+            delay=min(600,max(60,int(config.get('duet_poweroff_delay',150))))
+            floor=min(50,max(0,int(config.get('duet_low_battery',10))))
+            ac,battery=sensors[0](),sensors[1]()
+            phase=session.observe(clock(),ac,battery,delay,floor) if enabled else 'disabled'
+            if not enabled:session=CarPowerSession()
+            remaining=None
+            if phase=='car-off-grace-period':remaining=max(0,int(delay-(clock()-session.off_since)))
+            status={'phase':phase,'ac':ac,'battery':battery,'delaySeconds':delay,'lowBatteryPercent':floor,
+                    'secondsUntilPowerOff':remaining,'bootOnPower':'firmware-dependent; verify by restoring car power once'}
+            if phase.startswith('poweroff-'):
+                # Re-check just before acting: returning power always wins.
+                if sensors[0]() is True:session.observe(clock(),True,battery,delay,floor);status['phase']='car-power-on'
+                else:
+                    write_power_status(dict(status,phase='powering-off',reason=phase))
+                    subprocess.run(['sync'],timeout=30,check=False)
+                    (act or (lambda:subprocess.run(poweroff_command(),timeout=60,check=False)))()
+                    if once:return status
+                    time.sleep(30);continue
+            write_power_status(status)
+            if once:return status
+        except (OSError,ValueError,TypeError,subprocess.SubprocessError) as exc:
+            write_power_status({'phase':'pending-power-sensor','detail':str(exc)[:300]})
+            if once:raise
+        time.sleep(interval)
 
 
 def lid_closed(root=Path('/proc/acpi/button/lid')):
@@ -302,9 +388,12 @@ def hardware_model():
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=['check','boot','test-suspend','laptop'])
+    parser.add_argument('action',choices=['check','boot','test-suspend','laptop','duet-power'])
     parser.add_argument('--config',default='/etc/car-dashboard/boot-standby.json')
     args=parser.parse_args()
+    if args.action=='duet-power':
+        if os.geteuid()!=0:raise SystemExit('Use the normal Duet role installer')
+        duet_power_monitor(args.config);raise SystemExit(0)
     if args.action=='laptop':
         if os.geteuid()!=0:raise SystemExit('Use the normal laptop installer')
         laptop_monitor(args.config);raise SystemExit(0)

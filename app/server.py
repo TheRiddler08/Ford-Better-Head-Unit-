@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Read-only vehicle telemetry dashboard. Python standard library only."""
+from contextlib import closing
 import json
 import logging
 import os
@@ -189,15 +190,20 @@ def parse_gps_message(message):
 
 
 def query_gpsd():
-    """One bounded localhost-only gpsd WATCH request, best effort."""
+    """One bounded localhost-only gpsd WATCH request, best effort.
+
+    A receiver is connected when gpsd lists an active device or relays any device
+    report; a TPV is not required within the probe window. Positions carry the
+    local receipt time so a drifting offline system clock cannot hide a live fix.
+    """
     result = {"fix": False, "source": "gpsd", "message": "No GNSS fix received"}
     try:
-        deadline=time.monotonic()+1.5
+        deadline=time.monotonic()+3.0
         with socket.create_connection(("127.0.0.1", 2947), timeout=0.6) as sock:
             sock.settimeout(0.75)
             sock.sendall(b'?WATCH={"enable":true,"json":true};\n')
             with sock.makefile("rb") as stream:
-                for _ in range(12):
+                for _ in range(40):
                     remaining=deadline-time.monotonic()
                     if remaining<=0:break
                     sock.settimeout(min(.75,remaining))
@@ -213,12 +219,46 @@ def query_gpsd():
                         continue
                     position = parse_gps_message(message)
                     if position is not None:
-                        return position
-                    if isinstance(message,dict) and message.get('class')=='TPV':
+                        return dict(position,connected=True,receivedAt=time.time())
+                    if not isinstance(message,dict):continue
+                    if message.get('class')=='TPV':
                         return dict(result,connected=True,message='GPS connected; waiting for a GNSS fix')
+                    devices=message.get('devices') if message.get('class')=='DEVICES' else None
+                    if message.get('class') in ('SKY','PPS') or (isinstance(devices,list) and any(isinstance(d,dict) and d.get('path') for d in devices)):
+                        result=dict(result,connected=True,message='GPS connected; waiting for a GNSS fix')
         return result
     except OSError:
         return {"fix": False, "source": "gpsd", "message": "GPS daemon not connected"}
+
+
+def recorder_gps(now=None,status_path=None,db_path=None):
+    """The always-on GPS recorder's live view, used when the short probe is inconclusive."""
+    now=time.time() if now is None else now
+    status_path=Path(status_path or GPS_DB_PATH.with_suffix('.status.json'))
+    try:
+        status=json.loads(status_path.read_text()) if status_path.is_file() and status_path.stat().st_size<65536 else {}
+    except (OSError,ValueError):status={}
+    updated=status.get('updated');message=status.get('lastMessageAt');fixed=status.get('lastFixAt')
+    def recent(value,limit):return type(value) in (int,float) and -5<=now-value<=limit
+    if not recent(updated,15) or not recent(message,10):return None
+    result={"fix":False,"source":"gps-recorder","connected":True,"message":"GPS connected; waiting for a GNSS fix"}
+    if status.get('gpsMode') in (2,3) and recent(fixed,5):
+        try:
+            with closing(sqlite3.connect(Path(db_path or GPS_DB_PATH).resolve().as_uri()+'?mode=ro',uri=True,timeout=.3)) as db:
+                row=db.execute('SELECT value FROM gps_state WHERE id=1').fetchone()
+            last=json.loads(row[0]).get('last') if row else None
+            if isinstance(last,dict) and recent(last.get('received'),5):
+                result.update(fix=True,lat=last['lat'],lon=last['lon'],mode=last.get('mode'),speedMps=last.get('speed'),receivedAt=last['received'])
+        except (OSError,ValueError,TypeError,KeyError,sqlite3.Error):pass
+    return result
+
+
+def gps_observation():
+    probe=query_gpsd()
+    if probe.get('fix'):return probe
+    recorder=recorder_gps()
+    if recorder and (recorder.get('fix') or not probe.get('connected')):return recorder
+    return probe
 
 
 def local_tile_path(path):
@@ -316,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
                 with connect() as db:live=route_live(db)
                 sensors=live['sensors']
             except (OSError,ValueError,sqlite3.Error):sensors={}
-            return self.send_json(ha_bridge.snapshot(sensors,query_gpsd()))
+            return self.send_json(ha_bridge.snapshot(sensors,gps_observation()))
         if url.path=="/api/home-assistant":
             try:
                 data=json.loads(Path('/etc/car-dashboard/home-assistant.json').read_text())
@@ -413,7 +453,7 @@ class Handler(BaseHTTPRequestHandler):
                                    "configRevision": config_rev,
                                    "packagesExecutable": False})
         if url.path == "/api/gps":
-            return self.send_json(query_gpsd())
+            return self.send_json(gps_observation())
         tile = local_tile_path(url.path)
         if tile is not None:
             try:

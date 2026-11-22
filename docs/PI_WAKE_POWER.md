@@ -201,6 +201,27 @@ link, wake-registration and Pi timing checks. Unsupported hardware stays awake.
 Source updates arrive through the normal Git/courier path; rerun the role's power
 installer to refresh its installed root-owned helper and units.
 
+## Duet car-off power-off
+
+Normal Duet role install/update enables `car-duet-power` automatically. External
+(USB-C/charger) power is the car signal; the network is never used to decide the
+car is off.
+
+- Once car power has been seen, removing it starts a **150-second** countdown,
+  then the Duet powers off normally. Power returning cancels the countdown.
+- If the battery is at or below **10%** when power is removed, or falls to 10%
+  during the countdown, it powers off immediately.
+- A Duet started on battery without car power (manual use) is never powered off.
+- Status: `/etc/car-dashboard/duet-power-status.json`, the Devices/Health cards
+  and the Duet's peer beacon. Opt out with `"duet_poweroff": false` in
+  `/etc/car-dashboard/fleet.json`; `duet_poweroff_delay` (60–600 s) and
+  `duet_low_battery` (0–50%) adjust the policy.
+
+**Turning on when car power returns is a firmware behaviour.** Linux cannot
+enable it. Test once: let the Duet power itself off, then restore car power. If it
+does not start, it needs its power button (or a hardware power-on solution) after
+each power-off; set `"duet_poweroff": false` instead if that is unacceptable.
+
 ## Power off still needs retained power
 
 Without a UPS/ignition-delay controller, the car can remove power while a target

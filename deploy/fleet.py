@@ -94,7 +94,7 @@ def eligible_peer(message,address,now):
 def local_health(config):
     """Small status-only beacons. Never include credentials or use health to sleep."""
     home=Path(config['home'])
-    paths={'power':Path('/etc/car-dashboard/laptop-power-status.json'),
+    paths={'power':Path('/etc/car-dashboard/duet-power-status.json' if config.get('role')=='duet' else '/etc/car-dashboard/laptop-power-status.json'),
            'wifi':Path('/run/car-dashboard/wifi-sync-status.json'),
            'storage':home/'.local/share/car-data/status.json',
            'software':home/'.local/state/drive-console/software/status.json',
@@ -574,6 +574,39 @@ depend() {{ need car-fleet; }}
         run(['rc-service','car-laptop-power','restart' if enabled else 'stop'],check=False)
 
 
+def install_duet_power(config):
+    """Car-off power-off for the Duet display; explicit opt-out is duet_poweroff=false."""
+    current=BASE/'fleet-current'
+    enabled=config.get('duet_poweroff',True)
+    if Path('/run/systemd/system').exists():
+        unit('car-duet-power.service',f'''[Unit]
+Description=Duet power-off after car power loss
+After=car-fleet.service
+[Service]
+ExecStart=/usr/bin/python3 -I {current}/standby.py duet-power --config /etc/car-dashboard/fleet.json
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+[Install]
+WantedBy=multi-user.target
+''')
+        run(['systemctl','daemon-reload'])
+        run(['systemctl','enable' if enabled else 'disable','--now','car-duet-power.service'])
+        if enabled:run(['systemctl','try-restart','car-duet-power.service'],check=False)
+    elif Path('/run/openrc').exists():
+        save('/etc/init.d/car-duet-power',f'''#!/sbin/openrc-run
+supervisor="supervise-daemon"
+command="/usr/bin/python3"
+command_args="-I {current}/standby.py duet-power --config /etc/car-dashboard/fleet.json"
+respawn_delay=5
+respawn_max=0
+depend() {{ need car-fleet; }}
+'''.encode())
+        os.chmod('/etc/init.d/car-duet-power',0o755)
+        run(['rc-update','add' if enabled else 'del','car-duet-power','default'])
+        run(['rc-service','car-duet-power','restart' if enabled else 'stop'],check=False)
+
+
 def install_device_tools(config):
     """Independent input tools and navigation are available even with GPS disabled."""
     commit=config.get('commit') or git(config,'rev-parse','HEAD')
@@ -834,6 +867,7 @@ AccuracySec=1
 WantedBy=timers.target
 ''')
     if role=='laptop':install_laptop_power(config)
+    if role=='duet':install_duet_power(config)
     run(['systemctl','daemon-reload'])
     if managed_tunnel:
         enabled=link.get('home_tunnel_enabled',True)
@@ -889,6 +923,7 @@ depend() {{ need car-fleet; }}
         run(['rc-service','car-wake-status','restart'])
     cfg=load(CONFIG,{})
     if role=='laptop':install_laptop_power(cfg)
+    if role=='duet':install_duet_power(cfg)
     if role=='tiny' and not cfg.get('map_layers',True):
         run(['rc-update','del','car-map-layers','default'],check=False);run(['rc-service','car-map-layers','stop'],check=False)
     for name,module in application_workers(role,cfg):
@@ -938,7 +973,7 @@ def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False
     missing=native_dependencies(offline or not config.get('enabled',True),role)
     destination=publish(sources)
     defaults={'schema':1,'role':role,'repo':str(repo),'user':user,'home':account.pw_dir,
-              'enabled':True,'boot_standby':True,'interface':None,'commit':commit,'auto_update':role in ('pi','laptop'),'app_updates':True,'reboot_updates':True,'laptop_sleep':True,'laptop_sleep_delay':90,'pi_storage_client':True,'wifi_sync':True}
+              'enabled':True,'boot_standby':True,'interface':None,'commit':commit,'auto_update':role in ('pi','laptop'),'app_updates':True,'reboot_updates':True,'laptop_sleep':True,'laptop_sleep_delay':90,'duet_poweroff':True,'duet_poweroff_delay':150,'duet_low_battery':10,'pi_storage_client':True,'wifi_sync':True}
     defaults.update(config)
     if commit:defaults['commit']=commit
     installed=load(STATE/'installed.json',{})
@@ -970,10 +1005,10 @@ def install(role,repo,user,sources,offline=False,commit=None,retry_missing=False
     if not defaults.get('enabled',True):
         install_wifi_sync(defaults)
         if Path('/run/systemd/system').exists():
-            for service in ['car-map-layers.service','car-home-tunnel.service','car-laptop-power.service','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-messages.service','car-telemetry.service','car-file-sync.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
+            for service in ['car-map-layers.service','car-home-tunnel.service','car-laptop-power.service','car-duet-power.service','car-fleet.service','car-fleet-refresh.timer','car-update-link.service','car-radio-adapter.service','car-messages.service','car-telemetry.service','car-file-sync.service','car-data.service','car-storage-master.service','car-storage-chunks.service','car-storage-metadata.service','car-storage-mount.service','car-dashboard-update.timer','car-boot-standby.timer','car-wake-first.timer','car-wake-retry.timer','car-wake-status.service']:
                 run(['systemctl','disable','--now',service],check=False)
         elif Path('/run/openrc').exists():
-            for service in ['car-map-layers','car-laptop-power','car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-messages','car-telemetry','car-file-sync','car-data','car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount','car-fleet-boot','car-wake-status']:
+            for service in ['car-map-layers','car-laptop-power','car-duet-power','car-fleet','car-fleet-refresh','car-update-link','car-radio-adapter','car-messages','car-telemetry','car-file-sync','car-data','car-storage-master','car-storage-chunks','car-storage-metadata','car-storage-mount','car-fleet-boot','car-wake-status']:
                 run(['rc-update','del',service,'default'],check=False);run(['rc-service',service,'stop'],check=False)
         return {'provisioning':VERSION,'disabled':True,'missing':missing}
     if Path('/run/systemd/system').exists():

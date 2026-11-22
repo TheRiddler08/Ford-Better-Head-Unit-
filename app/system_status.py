@@ -116,7 +116,7 @@ def snapshot(home,role,settings='/etc/car-dashboard',runtime='/run/car-dashboard
             peripherals.append({'name':device.name,'kind':kind})
     result={'schema':1,'role':role,'observedAt':now,'network':network,'wifiSync':wifi,'storage':storage,'gps':gps,
       'radio':radio,'software':observation(software/'status.json',now,60),
-      'power':observation(settings/'laptop-power-status.json',now,90),
+      'power':observation(settings/('duet-power-status.json' if role=='duet' else 'laptop-power-status.json'),now,90),
       'reboot':observation(settings/'reboot-status.json',now),
       'navigation':observation(settings/'navigation-status.json',now),
       'assistant':{k:v for k,v in read(settings/'home-assistant.json').items() if k in ('installed','enabled','ready','runtime')},
