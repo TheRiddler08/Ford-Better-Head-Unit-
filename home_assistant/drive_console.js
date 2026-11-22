@@ -41,20 +41,36 @@ const DASHBOARD_CSS="/* Shared car dashboard surfaces. Owner card/page CSS is ap
 const UI_BUILD='__DRIVE_CONSOLE_BUILD__';
 const uiParticipants=window.__driveConsoleParticipants||(window.__driveConsoleParticipants=new Set());
 let uiCheck;
-function reloadDashboard(message){
+function dashboardBusy(){
   // A first upgrade can still be running older element classes which do not
-  // register participants. Inspect existing HA shadow roots on explicit reload.
+  // register participants. Inspect existing HA shadow roots too.
   const cards=new Set(uiParticipants),roots=[document];
   while(roots.length){const root=roots.pop();for(const element of root.querySelectorAll('*')){if(element.matches('drive-console-layout,drive-console-widget,drive-console-service'))cards.add(element);if(element.shadowRoot)roots.push(element.shadowRoot);}}
-  const editing=[...cards].some(card=>card._draft||card._lovelace?.editMode||card.shadowRoot?.querySelector('video')?.paused===false||card.shadowRoot?.querySelector('#playPause')?.textContent==='❚❚')||window.__driveConsoleAudio?.paused===false;
-  if(editing){message.textContent='Save your changes and stop playback before reloading.';return;}
+  const editorOpen=!!document.querySelector('home-assistant')?.shadowRoot?.querySelector('ha-dialog,hui-dialog-edit-card,hui-dialog-edit-view');
+  return editorOpen||[...cards].some(card=>card._draft||card._lovelace?.editMode||card.shadowRoot?.querySelector('video')?.paused===false||card.shadowRoot?.querySelector('#playPause')?.textContent==='❚❚')||window.__driveConsoleAudio?.paused===false;
+}
+function reloadDashboard(message){
+  if(dashboardBusy()){message.textContent='Save your changes and stop playback before reloading.';return;}
   location.reload();
+}
+function vehicleMoving(hass){
+  const speed=Number(hass?.states?.['sensor.car_speed']?.state);
+  return Number.isFinite(speed)&&speed>1;
+}
+function reloadWhenIdle(build,hass){
+  // Apply a verified newer build without a tap: only while not editing/playing,
+  // not while the vehicle reports movement, and at most once per build so a
+  // cached asset cannot cause a reload loop.
+  if(typeof location==='undefined'||!/^[0-9a-f]{12}$/.test(String(build))||dashboardBusy()||vehicleMoving(hass))return false;
+  const key='drive-console-auto-reload';
+  try{if(sessionStorage.getItem(key)===build)return false;sessionStorage.setItem(key,build);}catch(_){if(window.__driveConsoleAutoReload===build)return false;window.__driveConsoleAutoReload=build;}
+  location.reload();return true;
 }
 function updateNotice(){
   if(typeof document==='undefined'||document.getElementById('drive-console-update-notice'))return;
   const box=document.createElement('aside');box.id='drive-console-update-notice';box.setAttribute('role','status');
   box.style.cssText='position:fixed;inset:auto 16px 16px auto;margin:0;z-index:10000;padding:12px 16px;background:#20262c;color:#f4f5f6;border:1px solid #64717d;border-radius:8px;font:14px system-ui;max-width:min(360px,calc(100vw - 32px));box-shadow:0 4px 12px #0003';
-  const text=document.createElement('span');text.textContent='Dashboard update ready. Save any changes, then reload.';
+  const text=document.createElement('span');text.textContent='Dashboard update ready. It reloads by itself once you finish editing or playback.';
   const button=document.createElement('button');button.textContent='Reload dashboard';button.style.cssText='margin-left:12px;padding:8px 12px;border:1px solid #8996a2;border-radius:5px;background:transparent;color:inherit;font:inherit;cursor:pointer';button.onclick=()=>reloadDashboard(text);box.append(text,button);document.body.append(box);if(box.showPopover){box.setAttribute('popover','manual');box.showPopover();}
 }
 if(typeof document!=='undefined'){
@@ -633,7 +649,7 @@ class DriveConsoleLayout extends HTMLElement {
   versionLabel(){
     const label=this.shadowRoot.getElementById('uiVersion'),button=this.shadowRoot.getElementById('uiReload');if(!label||!button)return;
     const state=this._uiVersion;label.textContent='Dashboard '+UI_BUILD;label.title='Loaded dashboard build: '+UI_BUILD;
-    if(state){label.title+='\nInstalled build: '+state.build+'\nAsset verified: '+state.assetMatch+'\nResource registered: '+state.resourceRegistered;const update=state.build!==UI_BUILD&&state.assetMatch&&state.resourceRegistered;button.hidden=!update;if(update)label.textContent+=' · update ready';else if(!state.assetMatch||!state.resourceRegistered)label.textContent+=' · installation incomplete';label.className=update?'ui-update':'';}
+    if(state){label.title+='\nInstalled build: '+state.build+'\nAsset verified: '+state.assetMatch+'\nResource registered: '+state.resourceRegistered;const update=state.build!==UI_BUILD&&state.assetMatch&&state.resourceRegistered;button.hidden=!update;if(update){label.textContent+=' · update ready';reloadWhenIdle(state.build,this._hass);}else if(!state.assetMatch||!state.resourceRegistered)label.textContent+=' · installation incomplete';label.className=update?'ui-update':'';}
   }
   async checkUI(){if(!this.isConnected||!this._hass?.connected||this._uiChecking||Date.now()-(this._uiCheckedAt||0)<60000)return;this._uiChecking=true;this._uiCheckedAt=Date.now();try{const value=await dashboardVersion(this._hass);if(value){this._uiVersion=value;this.versionLabel();}}finally{this._uiChecking=false;}}
 
@@ -859,7 +875,8 @@ class CarServiceCard extends HTMLElement{
         this.body.append(node('p','Connect the Duet to your new Wi-Fi first. Paired devices receive saved personal networks over car Ethernet. Wi-Fi passwords stay out of this dashboard. A wired-only Tiny uses the elected gateway.'));
       }else if(feature==='power'){
         const laptop=data.network.fresh&&data.network.peerStatus?.laptop?.present?data.network.peerStatus.laptop:null;
-        this.status('This device power policy',data.power);if(laptop)this.status('Laptop last reported power policy',{phase:laptop.health.power||'pending'});this.status('Reboot / Park gate',data.reboot);this.body.append(node('p','Sleep requires confirmed car power loss and supported hardware. A missing network alone does not trigger sleep. Boot-on-power and closed-lid wake require firmware support.'));this.say('The laptop sleeps only after confirmed power loss.');
+        const duet=data.network.fresh&&data.network.peerStatus?.duet?.present?data.network.peerStatus.duet:null;
+        this.status('This device power policy',data.power);if(duet)this.status('Duet last reported power policy',{phase:duet.health.power||'pending'});if(laptop)this.status('Laptop last reported power policy',{phase:laptop.health.power||'pending'});this.status('Reboot / Park gate',data.reboot);this.body.append(node('p','The Duet powers off 150 s after car power is removed (immediately at 10% battery or lower); the laptop sleeps after confirmed power loss. A missing network alone never triggers either. Boot-on-power and closed-lid wake require firmware support.'));this.say('The laptop sleeps only after confirmed power loss.');
       }else if(feature==='storage'){
         this.status('MooseFS provision',data.storage);this.status('Archive worker',data.storage.worker);this.body.append(node('p','Pool mounted: '+(data.storage.poolMounted?'yes':'no')+' · local free: '+bytes(data.storage.localFreeBytes)+' · replica goal: '+data.storage.replicaGoal),node('p',data.storage.clientOnly?'Pi is a storage client; no bulk fallback to its microSD.':'Active GPS/OBD databases stay local. Originals are retained when archived.'));this.table(data.storage.catalog,[['kind','Archive type'],['objects','Objects'],['bytes','Bytes'],['archived','Archived objects']]);this.say(data.storage.reserveLow?'Disk space is low. Review your recordings and archives.':'');
       }else if(feature==='radio'){

@@ -60,12 +60,17 @@ class ArchiveTests(unittest.TestCase):
         for bad in [{'limit':['nan']},{'after':['-1']},{'limit':['9999']}]:
             with self.assertRaises(ValueError):reporting.page(reader,'values',bad)
 
+    def fix_ts(self,ts):
+        from datetime import datetime
+        return datetime.fromisoformat(self.fix(ts)['time'].replace('Z','+00:00')).timestamp()
+
     def fix(self,ts,lat=40,lon=-74):
         return {'class':'TPV','mode':3,'time':f'2026-10-27T12:{ts//60:02}:{ts%60:02}Z','lat':lat,'lon':lon,'speed':1.0}
 
     def test_gps_every_fix_gaps_stops_and_restart(self):
         for t in (0,60,120,180,240):gps.record_message(self.gps,self.fix(t),received=1000+t)
-        self.assertEqual(self.gps.execute('SELECT COUNT(*) FROM fixes').fetchone()[0],5)
+        # Repeated identical positions are one row; the stop keeps the duration.
+        self.assertEqual(self.gps.execute('SELECT COUNT(*) FROM fixes').fetchone()[0],1)
         self.assertEqual(self.gps.execute('SELECT COUNT(*) FROM stops').fetchone()[0],1)
         # Reopen and retain the movement segment and stop candidate.
         self.gps.close();self.gps=gps.open_db(self.root/'gps.sqlite3')
@@ -74,8 +79,9 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(self.gps.execute('SELECT break_reason FROM fixes ORDER BY id DESC LIMIT 1').fetchone()[0],'gap')
         invalid={'class':'TPV','mode':1,'lat':40,'lon':-74}
         gps.record_message(self.gps,invalid,received=1501)
-        self.assertEqual(self.gps.execute('SELECT COUNT(*) FROM gps_messages').fetchone()[0],8)
-        self.assertEqual(self.gps.execute('SELECT COUNT(*) FROM fixes').fetchone()[0],7)
+        self.assertEqual(self.gps.execute('SELECT COUNT(*) FROM gps_messages').fetchone()[0],0)
+        self.assertEqual(self.gps.execute('SELECT COUNT(*) FROM fixes').fetchone()[0],2)
+        self.assertEqual(self.gps.execute('SELECT started,ended FROM stops').fetchone(),(self.fix_ts(0),self.fix_ts(250)))
         self.gps.close()
 
     def test_bad_fix_never_creates_route(self):

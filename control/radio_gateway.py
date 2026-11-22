@@ -63,7 +63,8 @@ def main():
         options=json.loads(config.read_text()) if config.exists() else {}
         stamp=config.stat().st_mtime_ns if config.exists() else 0
         try:
-            from control.rak3172 import adapter_command
+            from control.rak3172 import adapter_command,effective_options
+            options=effective_options(options,role)
             command=adapter_command(options)
         except ValueError:
             status.event('invalid-adapter-config');time.sleep(5);continue

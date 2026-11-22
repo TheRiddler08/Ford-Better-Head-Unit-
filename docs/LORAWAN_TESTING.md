@@ -18,6 +18,10 @@ Do not reset keys, change masks or restart join loops as a routine test.
 Keep private keys and AppKey out of logs and Git. The initial `Hello` was a
 manual commissioning sample, not the production encrypted application protocol.
 
+The modem may now be moved to the Duet's USB hub; see
+[automatic device setup](AUTOMATIC_DEVICE_SETUP.md#gps-and-lorawan-modem-on-the-duets-usb-hub).
+Tiny keeps the keys and sealing and reaches the modem over the switch.
+
 ## Explicitly deferred TODO
 
 - **Automatic GPS reporting and its hardware test are deferred at the user's

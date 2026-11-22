@@ -49,8 +49,13 @@ map operations to an unprivileged shared identity and disable executable/device
 mount use. This assumes the physical car LAN is trusted; it is not tenant isolation
 or encrypted LAN storage. Do not port-forward MooseFS to the Internet.
 
-The worker takes consistent hourly online SQLite backups of GPS/OBD databases,
-copies changed routes/scheduled routes from `~/car-console/routes` and
+The worker backs up GPS/OBD databases hourly as **compressed row increments**:
+only rows added since the previous backup (plus the latest row of a table if it
+was updated in place, e.g. a stop's end time) are archived as gzip JSON lines,
+read through a read-only SQLite connection. Each row is archived once, so an
+parked car adds only a few updated rows per hour; replaying the increments in order (last copy
+of a rowid wins) rebuilds every table. Full hourly copies made by earlier versions
+are kept. The worker also copies changed routes/scheduled routes from `~/car-console/routes` and
 `~/car-console/scheduled-routes`, and archives the managed `ui-config.json`.
 These remain **local car archives**, not radio uploads. Active SQLite/WAL files
 remain on local disks. Dashboard/route working copies also stay usable locally.

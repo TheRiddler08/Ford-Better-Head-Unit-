@@ -50,7 +50,8 @@ def plan(ruleset,lan,wan,control=True):
         base_name=identifier(base['name'])
         expressions=[]
         if control and hook=='input':
-            expressions=[f'iifname {q(lan)} ip saddr {SUBNET} udp dport {{ 8796, 8798, 8799 }} counter accept']
+            expressions=[f'iifname {q(lan)} ip saddr {SUBNET} udp dport {{ 8796, 8798, 8799 }} counter accept',
+                         f'iifname {q(lan)} ip saddr 172.16.42.2 tcp dport {{ 8800, 8801, 8802 }} counter accept']
             if wan:expressions+=[f'iifname {q(lan)} ip saddr {SUBNET} meta l4proto {{ tcp, udp }} th dport 53 counter accept']
         if wan and hook=='forward':
             expressions=[f'iifname {q(lan)} oifname {q(wan)} ip saddr {SUBNET} counter accept',

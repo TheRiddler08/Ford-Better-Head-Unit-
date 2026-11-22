@@ -149,23 +149,35 @@ def prepare(state,key,include_runtime=True,blocking=False):
     state=Path(state);state.mkdir(parents=True,exist_ok=True)
     with locked(state/'prepare.lock',blocking=blocking):
         key=ensure_key(key)
+        assets=support('runtime_assets')
+        # A power cut while packaging leaves a multi-GB temporary directory.
+        assets.stale_temporaries(state,directories_only=True)
         repo=state/'cache.git'
         if not repo.exists():run(['git','init','--bare',repo])
         run(['git','--git-dir',repo,'fetch','--no-tags',ORIGIN,'refs/heads/main'],timeout=180)
         commit=run(['git','--git-dir',repo,'rev-parse','FETCH_HEAD']).decode().strip()
         run(['git','--git-dir',repo,'update-ref','refs/heads/main',commit])
+        # Publish the worker before any large download. A Duet that cannot fit a
+        # full runtime build must still receive fixes (e.g. cache cleanup). The
+        # running build keeps its own module versions; the watcher restarts into
+        # the new worker as soon as this prepare releases its lock.
+        updated=publish_version(lambda *a:run(['git','--git-dir',repo,*a]),commit,state.parent)
         files={};runtime=None
         if include_runtime:
             spec=json.loads(run(['git','--git-dir',repo,'show',commit+':deploy/offline-runtime.json']))
-            files,runtime=support('runtime_assets').build(state/'runtime-cache',spec)
+            files,runtime=assets.build(state/'runtime-cache',spec)
         identity=hashlib.sha256(json.dumps({'commit':commit,'runtime':runtime},sort_keys=True).encode()).hexdigest()
         previous=json.loads((state/'prepared.json').read_text()) if (state/'prepared.json').exists() else {}
         if ((runtime and previous.get('payloadId')==identity) or (not runtime and previous.get('schema')==1 and previous.get('commit')==commit)) and (state/'ready.zip').exists():
-            updated=publish_version(lambda *a:run(['git','--git-dir',repo,*a]),commit,state.parent)
             return dict(previous,unchanged=True,workerUpdated=updated)
         with tempfile.TemporaryDirectory(dir=state) as temp:
             temp=Path(temp);bundle=temp/'update.bundle'
             run(['git','--git-dir',repo,'bundle','create',bundle,'refs/heads/main'],timeout=180)
+            needed=bundle.stat().st_size+sum(Path(path).stat().st_size for path in files.values())
+            try:assets.ensure_space(state,needed)
+            except ValueError:
+                if not release_delivered_package(state):raise
+                assets.ensure_space(state,needed)
             manifest={'schema':2 if runtime else 1,'repository':REPOSITORY,'branch':'main','commit':commit,
                       'bundleSha256':digest(bundle),'created':int(time.time())}
             if runtime:manifest.update(payloadId=identity,runtime=runtime)
@@ -181,8 +193,20 @@ def prepare(state,key,include_runtime=True,blocking=False):
                 os.replace(temp/'ready.zip',state/'ready.zip');save_json(state/'prepared.json',manifest)
         refreshed=refresh_duet_runtime(repo,commit,state.parent)
         save_json(state/'duet-runtime.json',refreshed)
-        updated=publish_version(lambda *a:run(['git','--git-dir',repo,*a]),commit,state.parent)
         return dict(manifest,duetRuntime=refreshed,workerUpdated=updated)
+
+
+def release_delivered_package(state):
+    """Free the old package only when Tiny already acknowledged installing it."""
+    state=Path(state);package=state/'ready.zip'
+    try:
+        with locked(state/'courier.lock'):
+            if not package.exists():return False
+            with zipfile.ZipFile(package) as archive:manifest=json.loads(archive.read('manifest.json'))
+            receipt=json.loads((state/'delivered.json').read_text())
+            if receipt.get('ok') is not True or receipt.get('payloadId',receipt.get('commit'))!=delivery_id(manifest):return False
+            package.unlink();return True
+    except (BlockingIOError,OSError,ValueError,KeyError,zipfile.BadZipFile):return False
 
 
 def verify_package(package,allowed_signers,destination):

@@ -208,3 +208,35 @@ on the actual devices.
 The normal role installer also enables the [resumable software link and activation services](RESUMABLE_UPDATES.md). They wait for home authentication/radio configuration when missing; they do not guess credentials or serial ports. Duet source checkouts now advance automatically after tests, and active display helpers restart with rollback.
 
 The removable spare laptop has a separate [.4 role and car-off sleep policy](SPARE_LAPTOP.md).
+
+## GPS and LoRaWAN modem on the Duet's USB hub
+
+Plug the GPS and the RAK3172 modem into the Duet's hub (the hub also provides
+Ethernet and charging pass-through). Normal Duet/Tiny role install/update
+handles the rest; nothing needs to be configured by hand.
+
+- Duet `car-usb-share` identifies each hub serial device by what it says: a
+  device already sending NMEA is the GPS; one answering the read-only `AT+VER=?`
+  with a RAK3172 RUI banner is the modem. No keys, join, band or GPS settings are
+  changed. It streams them on `172.16.42.1` ports 8801 (modem) and 8802 (GPS) to
+  Tiny's address only; 8800 reports which are present. ModemManager is told to
+  ignore the hub's serial devices.
+- Tiny `car-remote-gps` adds the Duet GPS to the local gpsd, so the recorder,
+  dashboard, HA and history stay on Tiny unchanged.
+- Tiny's radio adapter uses its own USB modem when one is plugged in, otherwise
+  the Duet-shared one. Radio keys, the encrypted queue and the public-key sealing
+  stay on Tiny; only sealed frames cross the switch.
+- Status: `/run/car-dashboard/usb-share.json` (Duet),
+  `/run/car-dashboard/remote-gps.json` and the Radio/Health cards (Tiny).
+  `"usb_share": false` or `"radio_share": false` opts out.
+
+GPS and the radio are available while the Duet is on; it powers off 150 s after
+car power is removed.
+
+## Startup on car power
+
+Tiny and Duet now start straight up on car power and stay on. They no longer
+suspend at boot to wait for Pi's Wake-on-LAN burst (`boot_standby` is off by
+default; existing installs are switched off once, and an explicit later
+`"boot_standby": true` is kept). Starting when power is applied is a firmware
+setting on each device (Tiny: *Restore on AC power loss → Power On*).

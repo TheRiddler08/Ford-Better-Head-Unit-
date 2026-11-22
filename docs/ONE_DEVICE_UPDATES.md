@@ -140,6 +140,25 @@ staging, Docker image extraction and HA configuration backups. Cached artifacts
 and the current ready bundle are retained for retry. Do not expect a release that
 was never downloaded to appear on an offline device.
 
+The Duet keeps only the **current** runtime set in
+`~/.local/share/drive-console/courier/runtime-cache`. After each complete
+download, superseded HA images, Ubuntu package archives and signed indexes are
+deleted; still-referenced packages are reused rather than downloaded again.
+Interrupted downloads are kept for resume until the next complete build, and
+temporary packages left by a power cut are removed. No command is needed:
+if a download would leave less than 2 GB free, the worker first deletes
+superseded cache and retries once, and may drop an old ready package only after
+Tiny acknowledged installing it. If space is still short, status reports
+`Insufficient Duet storage` and the worker retries later.
+
+The Duet installs worker fixes immediately after the small Git check, before
+any large download, so a full disk can no longer block the fix that would clear
+it. Tiny and Pi still cannot send commands to the Duet; changes arrive only
+through the Duet's normal verified update. Workers released before this change
+published fixes only after a complete download, so a Duet that already filled
+up with them needs its `courier/runtime-cache` folder deleted once (Files app,
+show hidden files, `~/.local/share/drive-console/courier`) to pick this up.
+
 ## What gets installed offline
 
 The default full bundle includes:

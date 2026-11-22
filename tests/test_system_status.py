@@ -17,6 +17,29 @@ class SystemStatusTests(unittest.TestCase):
         with patch.object(server.socket,'create_connection',return_value=sock):data=server.query_gpsd()
         self.assertFalse(data['fix']);self.assertTrue(data['connected']);self.assertEqual(stream.readline.call_count,1)
 
+    def test_gps_device_list_counts_as_connected_and_recorder_fills_in(self):
+        from app import server,ha_bridge
+        from unittest.mock import MagicMock
+        stream=MagicMock();stream.__enter__.return_value=stream
+        stream.readline.side_effect=[b'{"class":"VERSION"}\n',b'{"class":"DEVICES","devices":[{"class":"DEVICE","path":"/dev/ttyACM0"}]}\n',b'']
+        sock=MagicMock();sock.__enter__.return_value=sock;sock.makefile.return_value=stream
+        with patch.object(server.socket,'create_connection',return_value=sock):data=server.query_gpsd()
+        self.assertTrue(data['connected']);self.assertFalse(data['fix'])
+        with tempfile.TemporaryDirectory() as directory:
+            from recorder import gps_recorder as gps
+            db_path=Path(directory)/'gps.sqlite3';db=gps.open_db(db_path)
+            gps.record_message(db,{'class':'TPV','mode':3,'lat':40.0,'lon':-75.0,'time':'2001-01-01T00:00:00Z'},995.0);db.close()
+            status=db_path.with_suffix('.status.json')
+            status.write_text(json.dumps({'updated':999,'lastMessageAt':998,'lastFixAt':995,'gpsMode':3,'phase':'recording'}))
+            live=server.recorder_gps(now=1000,status_path=status,db_path=db_path)
+            self.assertTrue(live['fix']);self.assertEqual(live['receivedAt'],995.0)
+            # GPS time is far from the (offline) system clock, yet the fix is live by receipt.
+            snap=ha_bridge.snapshot({},live,now=1000)
+            self.assertEqual(snap['gpsStatus']['phase'],'fix');self.assertEqual(snap['gps']['lat'],40.0)
+            status.write_text(json.dumps({'updated':900,'lastMessageAt':900,'lastFixAt':900,'gpsMode':3}))
+            self.assertIsNone(server.recorder_gps(now=1000,status_path=status,db_path=db_path))
+            self.assertIsNone(ha_bridge.snapshot({},{'fix':True,'lat':1,'lon':1,'receivedAt':900},now=1000)['gps'])
+
     def test_radio_restart_has_a_fresh_challenge_and_never_forges_passed(self):
         from control.radio_diagnostic import Diagnostic
         with tempfile.TemporaryDirectory() as directory:
