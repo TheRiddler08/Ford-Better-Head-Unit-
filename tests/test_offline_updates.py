@@ -5,10 +5,20 @@ import unittest
 from unittest.mock import patch
 import zipfile
 from deploy import offline_updates as courier, runtime_assets as assets
+import os
+
+# Newer Git (2.5x on CI) runs detached auto-maintenance after fetch/commit. A
+# background process still writing in .git races TemporaryDirectory cleanup
+# ("Directory not empty"). Keep test repositories free of detached work.
+QUIET_GIT={'GIT_CONFIG_COUNT':'4','GIT_CONFIG_KEY_0':'maintenance.auto','GIT_CONFIG_VALUE_0':'false',
+           'GIT_CONFIG_KEY_1':'maintenance.autoDetach','GIT_CONFIG_VALUE_1':'false',
+           'GIT_CONFIG_KEY_2':'gc.auto','GIT_CONFIG_VALUE_2':'0',
+           'GIT_CONFIG_KEY_3':'gc.autoDetach','GIT_CONFIG_VALUE_3':'false'}
 
 
 class CourierTests(unittest.TestCase):
     def setUp(self):
+        quiet=patch.dict(os.environ,QUIET_GIT);quiet.start();self.addCleanup(quiet.stop)
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.source=self.root/'source';self.tiny=self.root/'tiny'
         courier.run(['git','init',self.source])
