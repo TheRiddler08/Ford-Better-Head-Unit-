@@ -560,7 +560,7 @@ class DriveConsoleLayout extends HTMLElement {
   versionLabel(){
     const label=this.shadowRoot.getElementById('uiVersion'),button=this.shadowRoot.getElementById('uiReload');if(!label||!button)return;
     const state=this._uiVersion;label.textContent='Dashboard '+UI_BUILD;label.title='Loaded dashboard build: '+UI_BUILD;
-    if(state){label.title+='\nInstalled build: '+state.build+'\nAsset verified: '+state.assetMatch+'\nResource registered: '+state.resourceRegistered;const update=state.build!==UI_BUILD&&state.assetMatch&&state.resourceRegistered;button.hidden=!update;if(update)label.textContent+=' · update ready';else if(!state.assetMatch||!state.resourceRegistered)label.textContent+=' · installation incomplete';label.className=update?'ui-update':'';}
+    if(state){label.title+='\nInstalled build: '+state.build+'\nAsset verified: '+state.assetMatch+'\nResource registered: '+state.resourceRegistered;const update=state.build!==UI_BUILD&&state.assetMatch&&state.resourceRegistered;button.hidden=!update;if(update){label.textContent+=' · update ready';reloadWhenIdle(state.build,this._hass);}else if(!state.assetMatch||!state.resourceRegistered)label.textContent+=' · installation incomplete';label.className=update?'ui-update':'';}
   }
   async checkUI(){if(!this.isConnected||!this._hass?.connected||this._uiChecking||Date.now()-(this._uiCheckedAt||0)<60000)return;this._uiChecking=true;this._uiCheckedAt=Date.now();try{const value=await dashboardVersion(this._hass);if(value){this._uiVersion=value;this.versionLabel();}}finally{this._uiChecking=false;}}
 
